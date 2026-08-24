@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Everything Timeline · Frontend Mockup (FE-1)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650&family=Familjen+Grotesk:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink-0: #070a10;          /* page background          */
+  --ink-1: #0b0f17;          /* panel background         */
+  --ink-2: #111725;          /* raised panel             */
+  --ink-3: #1a2233;          /* hover / wells            */
+  --hair: #1f2940;           /* hairline borders         */
+  --hair-2: #2c3a57;
+  --text-1: #e8e4d8;         /* warm paper white         */
+  --text-2: #9aa3b5;
+  --text-3: #5d6880;
+  --amber: #e8b45a;          /* selection / cursor       */
+  --amber-soft: rgba(232,180,90,.14);
+  --cyan: #6fd4d0;           /* NOW / future             */
+  --war: #c96b4a;            /* category: war            */
+  --pol: #7d94c9;            /* category: politics       */
+  --sci: #63b8a0;            /* category: science        */
+  --cul: #b58ac9;            /* category: culture        */
+  --ocean: #0c1420;
+  --land: #202b3d;
+  --land-edge: #35486b;
+  --axis: rgba(201,107,74,.34);
+  --soviet: rgba(125,148,201,.30);
+  --allied: rgba(140,168,110,.30);
+  --neutral: rgba(120,128,144,.18);
+  --ui: "Familjen Grotesk", -apple-system, sans-serif;
+  --disp: "Fraunces", Georgia, serif;
+  --mono: "Spline Sans Mono", ui-monospace, Menlo, monospace;
+}
+* { box-sizing: border-box; margin: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--ink-0);
+  color: var(--text-1);
+  font: 13.5px/1.45 var(--ui);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+.app { display: flex; flex-direction: column; height: 100vh; }
+
+/* ============ load choreography ============ */
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+.topbar        { animation: rise .5s .05s cubic-bezier(.2,.7,.2,1) both; }
+.stage         { animation: rise .6s .15s cubic-bezier(.2,.7,.2,1) both; }
+.inspector     { animation: rise .6s .30s cubic-bezier(.2,.7,.2,1) both; }
+.timeline-shell{ animation: rise .6s .45s cubic-bezier(.2,.7,.2,1) both; }
+
+/* ============ top bar ============ */
+.topbar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 16px; height: 52px; flex: none;
+  background: linear-gradient(180deg, #0e1320, var(--ink-1));
+  border-bottom: 1px solid var(--hair);
+}
+.brand { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
+.brand .mark {
+  font-family: var(--disp); font-weight: 650; font-size: 17px; letter-spacing: .01em;
+  color: var(--text-1);
+}
+.brand .mark em { font-style: italic; color: var(--amber); }
+.brand .ver { font: 500 9.5px var(--mono); color: var(--text-3); letter-spacing: .08em; }
+.search {
+  flex: 1; max-width: 460px; display: flex; align-items: center; gap: 9px;
+  background: var(--ink-2); border: 1px solid var(--hair); border-radius: 8px;
+  padding: 7px 12px; color: var(--text-2); cursor: text;
+  transition: border-color .2s;
+}
+.search:hover { border-color: var(--hair-2); }
+.search svg { flex: none; opacity: .55; }
+.search .hint { margin-left: auto; font: 500 10px var(--mono); color: var(--text-3);
+  border: 1px solid var(--hair); border-radius: 4px; padding: 1px 5px; }
+.views { display: flex; margin-left: auto; background: var(--ink-2); border: 1px solid var(--hair);
+  border-radius: 8px; padding: 3px; gap: 2px; }
+.views button {
+  font: 600 12px var(--ui); color: var(--text-2); background: none; border: 0;
+  padding: 5px 12px; border-radius: 6px; cursor: pointer; letter-spacing: .02em;
+  position: relative; transition: color .15s, background .15s;
+}
+.views button:hover { color: var(--text-1); }
+.views button.on { background: var(--amber-soft); color: var(--amber); }
+.views button .v2 {
+  position: absolute; top: -4px; right: 0; font: 600 7px var(--mono);
+  color: var(--cyan); letter-spacing: .05em;
+}
+.top-actions { display: flex; gap: 8px; }
+.chip-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 600 12px var(--ui); color: var(--text-2); background: var(--ink-2);
+  border: 1px solid var(--hair); border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.chip-btn:hover { color: var(--text-1); border-color: var(--hair-2); }
+.chip-btn.ask { color: var(--cyan); border-color: rgba(111,212,208,.3); }
+
+/* ============ middle: map + inspector ============ */
+.mid { flex: 1; display: flex; min-height: 0; }
+.stage { flex: 1; position: relative; background: var(--ocean); min-width: 0; overflow: hidden; }
+.stage svg.map { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* date chip */
+.datechip {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: baseline; gap: 10px;
+  background: rgba(11,15,23,.86); backdrop-filter: blur(6px);
+  border: 1px solid var(--hair-2); border-radius: 10px; padding: 8px 18px;
+  box-shadow: 0 8px 30px rgba(0,0,0,.45);
+}
+.datechip .d { font-family: var(--disp); font-weight: 650; font-size: 19px; letter-spacing: .01em; }
+.datechip .b { font: 500 10px var(--mono); color: var(--amber); letter-spacing: .12em; }
+
+/* layer rail */
+.layers {
+  position: absolute; top: 14px; left: 14px; display: flex; flex-direction: column; gap: 6px;
+  width: 168px;
+}
+.layers .title { font: 600 10px var(--mono); letter-spacing: .14em; color: var(--text-3);
+  padding: 0 2px 2px; }
+.lyr {
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(11,15,23,.84); border: 1px solid var(--hair); border-radius: 7px;
+  padding: 6px 9px; font: 500 12px var(--ui); color: var(--text-2); cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.lyr:hover { border-color: var(--hair-2); color: var(--text-1); }
+.lyr .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.lyr.on { color: var(--text-1); }
+.lyr.off { opacity: .55; }
+.lyr .tag { margin-left: auto; font: 600 8.5px var(--mono); color: var(--cyan); letter-spacing: .06em; }
+.lyr .st  { margin-left: auto; font: 600 11px var(--ui); color: var(--amber); }
+
+/* legend */
+.legend {
+  position: absolute; left: 14px; bottom: 12px;
+  background: rgba(11,15,23,.84); border: 1px solid var(--hair); border-radius: 8px;
+  padding: 9px 12px; font: 500 11px var(--ui); color: var(--text-2); width: 195px;
+}
+.legend .row { display: flex; align-items: center; gap: 8px; padding: 2.5px 0; }
+.legend .k { width: 26px; flex: none; display: flex; align-items: center; }
+.legend .solid { height: 2px; width: 100%; background: var(--land-edge); }
+.legend .dashed { height: 0; width: 100%; border-top: 2px dashed var(--war); }
+.legend .fuzz { height: 8px; width: 100%; border-radius: 4px;
+  background: radial-gradient(ellipse at center, rgba(181,138,201,.5), transparent 75%); }
+.legend .note { margin-top: 5px; font-size: 10px; color: var(--text-3); line-height: 1.35; }
+
+/* zoom + attribution */
+.mapzoom {
+  position: absolute; right: 14px; bottom: 34px; display: flex; flex-direction: column;
+  border: 1px solid var(--hair-2); border-radius: 8px; overflow: hidden;
+}
+.mapzoom button {
+  width: 30px; height: 30px; background: rgba(11,15,23,.9); color: var(--text-2);
+  border: 0; font: 500 15px var(--ui); cursor: pointer;
+}
+.mapzoom button:first-child { border-bottom: 1px solid var(--hair); }
+.mapzoom button:hover { color: var(--amber); }
+.attrib {
+  position: absolute; right: 14px; bottom: 10px;
+  font: 400 9.5px var(--ui); color: var(--text-3);
+}
+.attrib b { font-weight: 500; color: var(--text-2); }
+
+/* map marker labels (HTML overlaid) */
+.mk {
+  position: absolute; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  cursor: pointer; pointer-events: auto;
+}
+.mk .dot {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--war);
+  border: 1.5px solid #f0d9c8; box-shadow: 0 0 0 3px rgba(201,107,74,.25);
+  transition: transform .15s;
+}
+.mk:hover .dot { transform: scale(1.35); }
+.mk .lbl {
+  font: 600 10.5px var(--ui); color: var(--text-1); white-space: nowrap;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9), 0 0 10px rgba(0,0,0,.7);
+}
+.mk .sub { font: 500 9px var(--mono); color: var(--text-2); margin-top: -3px;
+  text-shadow: 0 1px 4px rgba(0,0,0,.9); }
+.mk.city .dot { width: 5px; height: 5px; background: var(--text-2); border: 0; box-shadow: none; }
+.mk.city .lbl { font-weight: 500; color: var(--text-2); font-size: 9.5px; }
+.mk.sel .dot {
+  width: 12px; height: 12px; background: var(--amber); border-color: #fff3da;
+  box-shadow: 0 0 0 4px rgba(232,180,90,.3);
+  animation: pulse 2.2s ease-out infinite;
+}
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 4px rgba(232,180,90,.35); }
+  60%  { box-shadow: 0 0 0 13px rgba(232,180,90,0); }
+  100% { box-shadow: 0 0 0 4px rgba(232,180,90,0); }
+}
+.mk.sel .lbl { color: var(--amber); font-size: 11.5px; }
+
+/* ============ inspector ============ */
+.inspector {
+  width: 348px; flex: none; background: var(--ink-1); border-left: 1px solid var(--hair);
+  display: flex; flex-direction: column; overflow-y: auto;
+}
+.insp-head { padding: 18px 18px 14px; border-bottom: 1px solid var(--hair);
+  background: linear-gradient(180deg, rgba(232,180,90,.05), transparent); }
+.crumbs { font: 500 10px var(--mono); color: var(--text-3); letter-spacing: .04em; margin-bottom: 7px; }
+.crumbs a { color: var(--pol); text-decoration: none; }
+.crumbs a:hover { text-decoration: underline; }
+.insp-title { font-family: var(--disp); font-weight: 650; font-size: 23px; line-height: 1.12;
+  letter-spacing: .005em; margin-bottom: 8px; }
+.badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.badge {
+  font: 600 9.5px var(--mono); letter-spacing: .08em; border-radius: 99px; padding: 2.5px 9px;
+}
+.badge.doc { background: rgba(140,168,110,.15); color: #a9c98b; border: 1px solid rgba(140,168,110,.3); }
+.badge.cat { background: rgba(201,107,74,.13); color: var(--war); border: 1px solid rgba(201,107,74,.3); }
+.insp-when { display: flex; align-items: baseline; gap: 8px; margin-top: 11px; }
+.insp-when .rng { font: 600 13px var(--mono); color: var(--text-1); }
+.insp-when .dur { font: 500 10.5px var(--ui); color: var(--text-3); }
+
+.insp-sec { padding: 13px 18px; border-bottom: 1px solid var(--hair); }
+.insp-sec h4 {
+  font: 600 10px var(--mono); letter-spacing: .14em; color: var(--text-3);
+  margin-bottom: 9px; text-transform: uppercase;
+}
+.prop { display: flex; align-items: baseline; padding: 4px 0; gap: 10px; }
+.prop .k { width: 108px; flex: none; color: var(--text-2); font-size: 12px; }
+.prop .v { font: 500 12.5px var(--ui); color: var(--text-1); }
+.prop .v .rng { font-family: var(--mono); font-size: 12px; }
+.prop .src {
+  font: 500 9.5px var(--mono); color: var(--pol); cursor: pointer; white-space: nowrap;
+  margin-left: auto;
+}
+.prop .src:hover { text-decoration: underline; }
+.est { color: var(--amber); font-style: normal; font-size: 9px; font-family: var(--mono);
+  letter-spacing: .05em; vertical-align: 2px; }
+
+.claims-note {
+  margin-top: 8px; background: var(--ink-2); border: 1px solid var(--hair); border-radius: 8px;
+  padding: 9px 11px; font-size: 11px; color: var(--text-2); line-height: 1.5;
+}
+.claims-note .bar { display: flex; align-items: center; gap: 7px; margin-top: 6px; }
+.claims-note .bar .lab { font: 500 9.5px var(--mono); width: 88px; flex: none; color: var(--text-3); }
+.claims-note .bar .track { flex: 1; height: 5px; border-radius: 3px; background: var(--ink-3); position: relative; }
+.claims-note .bar .fill { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--war); opacity: .75; }
+
+.media-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
+.thumb {
+  aspect-ratio: 4/3; border-radius: 6px; border: 1px solid var(--hair-2); position: relative;
+  overflow: hidden; cursor: pointer; background:
+    linear-gradient(145deg, #2a3348, #171d2b);
+}
+.thumb::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(180deg, transparent 40%, rgba(0,0,0,.55));
+}
+.thumb .cap { position: absolute; left: 6px; bottom: 4px; z-index: 1;
+  font: 500 8.5px var(--mono); color: #d9d4c8; }
+.thumb.vid::before {
+  content: "▶"; position: absolute; inset: 0; display: grid; place-items: center;
+  color: rgba(232,228,216,.9); font-size: 15px; z-index: 1;
+  text-shadow: 0 1px 6px rgba(0,0,0,.8);
+}
+.attr-line { margin-top: 6px; font: 400 9px var(--ui); color: var(--text-3); }
+
+.rel { display: flex; flex-wrap: wrap; gap: 6px; }
+.rel a {
+  font: 500 11px var(--ui); color: var(--text-1); text-decoration: none;
+  background: var(--ink-2); border: 1px solid var(--hair); border-radius: 99px; padding: 4px 11px;
+  transition: border-color .15s, color .15s;
+}
+.rel a:hover { border-color: var(--amber); color: var(--amber); }
+.rel a span { color: var(--text-3); font-size: 9.5px; font-family: var(--mono); margin-right: 4px; }
+
+.insp-actions { padding: 13px 18px 18px; display: flex; gap: 7px; }
+.act {
+  flex: 1; font: 600 11.5px var(--ui); padding: 8px 0; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--hair-2); background: var(--ink-2); color: var(--text-2);
+  transition: color .15s, border-color .15s;
+}
+.act:hover { color: var(--text-1); border-color: var(--amber); }
+.act.pri { background: var(--amber-soft); border-color: rgba(232,180,90,.4); color: var(--amber); }
+
+/* ============ timeline ============ */
+.timeline-shell {
+  flex: none; background: var(--ink-1); border-top: 1px solid var(--hair-2);
+  box-shadow: 0 -14px 40px rgba(0,0,0,.35);
+}
+/* deep-time overview strip */
+.overview { position: relative; height: 34px; border-bottom: 1px solid var(--hair);
+  background: var(--ink-0); overflow: hidden; }
+.ov-band { position: absolute; inset: 6px 0 6px 0; display: flex; }
+.ov-seg { position: relative; height: 100%; border-right: 1px solid rgba(31,41,64,.8); }
+.ov-seg .t {
+  position: absolute; left: 7px; top: 50%; transform: translateY(-50%);
+  font: 500 8.5px var(--mono); letter-spacing: .07em; color: var(--text-3); white-space: nowrap;
+}
+.ov-seg.s1 { width: 13%; background: linear-gradient(90deg, #14101f, #131627); }
+.ov-seg.s2 { width: 12%; background: #121a2a; }
+.ov-seg.s3 { width: 13%; background: #12202b; }
+.ov-seg.s4 { width: 13%; background: #16231f; }
+.ov-seg.s5 { width: 12%; background: #1d2420; }
+.ov-seg.s6 { width: 14%; background: #262718; }
+.ov-seg.s7 { width: 13%; background: #0f2126; }
+.ov-seg.s8 { flex: 1;    background: repeating-linear-gradient(90deg, #0d1e24 0 8px, #0b161c 8px 16px); }
+.ov-seg.s7 .t, .ov-seg.s8 .t { color: rgba(111,212,208,.75); }
+.ov-window {
+  position: absolute; top: 2px; bottom: 2px; left: 76.6%; width: 8px;
+  border: 1.5px solid var(--amber); border-radius: 3px;
+  background: rgba(232,180,90,.18); box-shadow: 0 0 12px rgba(232,180,90,.35);
+  cursor: grab;
+}
+.ov-now { position: absolute; top: 0; bottom: 0; left: 79.5%; width: 1px;
+  background: var(--cyan); opacity: .8; }
+.ov-now::after {
+  content: "NOW"; position: absolute; top: 1px; left: 4px;
+  font: 600 7.5px var(--mono); letter-spacing: .1em; color: var(--cyan);
+}
+
+/* main band */
+.tl-main { position: relative; padding: 0 0 4px; }
+.tl-rows { position: relative; }
+.tl-axis {
+  display: flex; align-items: center; height: 26px; border-bottom: 1px solid var(--hair);
+  position: relative; font: 500 10px var(--mono); color: var(--text-3); letter-spacing: .05em;
+}
+.tick { position: absolute; top: 0; bottom: 0; display: flex; align-items: center;
+  border-left: 1px solid var(--hair); padding-left: 6px; }
+.tl-grid { position: absolute; top: 26px; bottom: 0; left: 0; right: 0; pointer-events: none; }
+.tl-grid i { position: absolute; top: 0; bottom: 0; border-left: 1px solid rgba(31,41,64,.55); }
+
+.lane { display: flex; align-items: center; height: 34px; border-bottom: 1px solid rgba(31,41,64,.5);
+  position: relative; }
+.lane .lab {
+  width: 84px; flex: none; padding-left: 14px; font: 600 9.5px var(--mono);
+  letter-spacing: .12em; color: var(--text-3); z-index: 2;
+}
+.lane .lab i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 6px; }
+.ev {
+  position: absolute; height: 16px; top: 9px; border-radius: 4px;
+  font: 600 10px var(--ui); color: #0d0f14; display: flex; align-items: center;
+  padding: 0 8px; white-space: nowrap; cursor: pointer; z-index: 1;
+  transition: filter .15s, transform .15s;
+}
+.ev:hover { filter: brightness(1.2); transform: translateY(-1px); }
+.ev.war { background: var(--war); }
+.ev.pol { background: var(--pol); }
+.ev.sci { background: var(--sci); }
+.ev.cul { background: var(--cul); }
+.ev.dot { width: 10px; height: 10px; top: 12px; border-radius: 50%; padding: 0; }
+.ev.dot .flag {
+  position: absolute; left: 13px; top: -2px; font: 500 9.5px var(--ui); color: var(--text-2);
+}
+.ev.hollow { background: transparent; border: 1.6px solid var(--pol); }
+.ev.parent { opacity: .5; height: 7px; top: 13px; font-size: 0; }
+.ev.sel {
+  background: var(--amber); color: #241a08; box-shadow: 0 0 14px rgba(232,180,90,.5);
+  height: 18px; top: 8px; z-index: 3; font-weight: 700;
+}
+/* playhead */
+.playhead {
+  position: absolute; top: 0; bottom: 0; left: 58.2%; width: 1.5px;
+  background: linear-gradient(180deg, var(--amber), rgba(232,180,90,.25)); z-index: 4;
+  pointer-events: none;
+}
+.playhead::before {
+  content: ""; position: absolute; top: -1px; left: -4.5px;
+  border: 5px solid transparent; border-top-color: var(--amber);
+}
+/* timeline footer controls */
+.tl-ctl {
+  display: flex; align-items: center; gap: 12px; height: 34px; padding: 0 14px;
+  border-top: 1px solid var(--hair);
+}
+.tzoom { display: flex; align-items: center; gap: 7px; }
+.tzoom button {
+  width: 24px; height: 24px; border-radius: 6px; background: var(--ink-2); color: var(--text-2);
+  border: 1px solid var(--hair); cursor: pointer; font: 500 13px var(--ui);
+}
+.tzoom button:hover { color: var(--amber); border-color: var(--hair-2); }
+.bucket { font: 600 10px var(--mono); letter-spacing: .1em; color: var(--amber);
+  background: var(--amber-soft); border: 1px solid rgba(232,180,90,.28); border-radius: 5px;
+  padding: 3px 8px; }
+.tl-ctl .range { font: 500 10.5px var(--mono); color: var(--text-2); letter-spacing: .04em; }
+.status-key { margin-left: auto; display: flex; gap: 14px; font: 500 10px var(--ui); color: var(--text-3); }
+.status-key b { display: inline-block; vertical-align: -1px; margin-right: 5px;
+  width: 8px; height: 8px; border-radius: 50%; }
+.status-key .s1 b { background: var(--text-2); }
+.status-key .s2 b { background: transparent; border: 1.6px solid var(--text-2); }
+.status-key .s3 b { background: radial-gradient(circle, var(--cyan) 20%, transparent 75%); }
+.imp { display: flex; align-items: center; gap: 8px; font: 500 10.5px var(--ui); color: var(--text-3); }
+.imp .track { width: 88px; height: 3px; border-radius: 2px; background: var(--ink-3); position: relative; }
+.imp .knob { position: absolute; left: 62%; top: 50%; transform: translate(-50%,-50%);
+  width: 11px; height: 11px; border-radius: 50%; background: var(--text-2);
+  border: 2px solid var(--ink-1); cursor: grab; }
+
+/* grain overlay for atmosphere */
+.grain { position: fixed; inset: 0; pointer-events: none; opacity: .35; z-index: 50; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ══════════════ TOP BAR ══════════════ -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark">Everything <em>Timeline</em></span>
+      <span class="ver">v2026-08</span>
+    </div>
+    <div class="search">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      Search anything: “Stalingrad”, “T. rex”, “fastest car 1970”…
+      <span class="hint">⌘K</span>
+    </div>
+    <div class="top-actions">
+      <button class="chip-btn">◫ Layers</button>
+      <button class="chip-btn">⇄ Compare</button>
+      <button class="chip-btn ask">✦ Ask</button>
+    </div>
+    <nav class="views">
+      <button class="on">Map</button>
+      <button>Graph<span class="v2">V2</span></button>
+      <button>Compare</button>
+      <button>Charts<span class="v2">V2</span></button>
+      <button>Scale<span class="v2">V2</span></button>
+    </nav>
+  </header>
+
+  <!-- ══════════════ MAP + INSPECTOR ══════════════ -->
+  <div class="mid">
+    <section class="stage">
+      <!-- stylized Europe, September 1942 -->
+      <svg class="map" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid slice">
+        <defs>
+          <radialGradient id="vig" cx="50%" cy="42%" r="75%">
+            <stop offset="60%" stop-color="transparent"/>
+            <stop offset="100%" stop-color="rgba(0,0,0,.5)"/>
+          </radialGradient>
+          <filter id="soft"><feGaussianBlur stdDeviation="1.1"/></filter>
+        </defs>
+
+        <!-- graticule -->
+        <g stroke="#152034" stroke-width="1">
+          <line x1="0" y1="110" x2="1000" y2="110"/><line x1="0" y1="220" x2="1000" y2="220"/>
+          <line x1="0" y1="330" x2="1000" y2="330"/><line x1="0" y1="440" x2="1000" y2="440"/>
+          <line x1="0" y1="550" x2="1000" y2="550"/>
+          <line x1="125" y1="0" x2="125" y2="640"/><line x1="250" y1="0" x2="250" y2="640"/>
+          <line x1="375" y1="0" x2="375" y2="640"/><line x1="500" y1="0" x2="500" y2="640"/>
+          <line x1="625" y1="0" x2="625" y2="640"/><line x1="750" y1="0" x2="750" y2="640"/>
+          <line x1="875" y1="0" x2="875" y2="640"/>
+        </g>
+
+        <!-- landmass (simplified, mockup-grade) -->
+        <g fill="var(--land)" stroke="var(--land-edge)" stroke-width="1.4" stroke-linejoin="round">
+          <!-- continental europe + western ussr -->
+          <path d="M226,372 236,344 224,318 246,300 278,296 300,272 336,262 352,238 392,220 402,196
+                   440,178 486,160 520,132 560,118 610,108 668,96 736,86 828,78 940,72 1000,70
+                   1000,470 940,470 900,452 862,462 828,446 800,452 760,436 724,442 700,430 668,438
+                   640,426 620,438 588,428 560,436 540,424 520,430 500,420 470,428 452,414 430,420
+                   412,404 390,410 370,396 350,402 330,388 306,396 286,382 262,390 244,378 Z"/>
+          <!-- iberia -->
+          <path d="M180,414 226,398 262,406 276,428 262,458 226,474 190,468 168,444 Z"/>
+          <!-- italy boot -->
+          <path d="M452,388 470,402 480,428 496,452 514,470 508,486 490,478 474,454 458,432 446,410 Z"/>
+          <!-- britain -->
+          <path d="M312,206 330,188 344,196 340,222 352,244 340,262 318,256 308,232 Z"/>
+          <!-- ireland -->
+          <path d="M282,218 296,212 300,230 288,240 278,232 Z"/>
+          <!-- scandinavia -->
+          <path d="M448,58 484,42 516,52 508,84 492,116 470,148 452,140 458,104 Z"/>
+          <path d="M520,50 552,44 560,72 540,104 522,96 526,70 Z"/>
+          <!-- north africa -->
+          <path d="M150,560 260,540 360,548 470,538 570,548 700,540 820,552 1000,544 1000,640 150,640 Z"/>
+          <!-- anatolia -->
+          <path d="M600,470 660,458 730,462 780,478 770,502 700,512 640,506 600,492 Z"/>
+        </g>
+
+        <!-- territory layers (political control, Sep 1942) -->
+        <g filter="url(#soft)">
+          <!-- axis controlled -->
+          <path fill="var(--axis)" d="M280,296 336,262 352,238 402,196 440,178 486,160 520,132 560,118
+                610,108 668,96 700,120 716,170 728,230 740,290 742,330 700,360 660,380 620,400 588,428
+                560,436 520,430 470,428 430,420 390,410 350,402 306,396 286,382 262,390 246,378 236,344 Z"/>
+          <!-- soviet -->
+          <path fill="var(--soviet)" d="M700,120 760,100 828,78 940,72 1000,70 1000,430 940,440 900,420
+                862,430 828,414 800,420 760,404 742,330 740,290 728,230 716,170 Z"/>
+          <!-- allied (uk) -->
+          <path fill="var(--allied)" d="M312,206 330,188 344,196 340,222 352,244 340,262 318,256 308,232 Z"/>
+          <!-- neutral: iberia, sweden, turkey -->
+          <path fill="var(--neutral)" d="M180,414 226,398 262,406 276,428 262,458 226,474 190,468 168,444 Z"/>
+          <path fill="var(--neutral)" d="M520,50 552,44 560,72 540,104 522,96 526,70 Z"/>
+          <path fill="var(--neutral)" d="M600,470 660,458 730,462 780,478 770,502 700,512 640,506 600,492 Z"/>
+        </g>
+
+        <!-- eastern front (estimated) -->
+        <path d="M712,120 C726,170 736,220 742,268 C748,318 760,350 790,376 C808,392 812,412 806,432"
+              fill="none" stroke="var(--war)" stroke-width="2.4" stroke-dasharray="7 5" opacity=".9"/>
+
+        <!-- vignette -->
+        <rect width="1000" height="640" fill="url(#vig)"/>
+      </svg>
+
+      <!-- markers (HTML for crisp text) -->
+      <div class="mk city" style="left:33.4%; top:35.2%"><span class="dot"></span><span class="lbl">London</span></div>
+      <div class="mk city" style="left:47.4%; top:41.5%"><span class="dot"></span><span class="lbl">Berlin</span></div>
+      <div class="mk city" style="left:47.6%; top:66.0%"><span class="dot"></span><span class="lbl">Rome</span></div>
+      <div class="mk city" style="left:80.5%; top:26.5%"><span class="dot"></span><span class="lbl">Moscow</span></div>
+      <div class="mk" style="left:70.6%; top:23.5%"><span class="dot"></span><span class="lbl">Siege of Leningrad</span><span class="sub">1941–44</span></div>
+      <div class="mk" style="left:56.0%; top:86.0%"><span class="dot"></span><span class="lbl">El Alamein</span><span class="sub">Jul–Nov 1942</span></div>
+      <div class="mk sel" style="left:79.6%; top:56.5%"><span class="dot"></span><span class="lbl">Battle of Stalingrad</span><span class="sub">Aug 1942 – Feb 1943</span></div>
+
+      <div class="datechip"><span class="d">12 September 1942</span><span class="b">T10 · YEAR</span></div>
+
+      <div class="layers">
+        <div class="title">LAYERS</div>
+        <div class="lyr on"><span class="sw" style="background:var(--pol)"></span>Political control<span class="st">✓</span></div>
+        <div class="lyr on"><span class="sw" style="background:var(--war)"></span>Events &amp; battles<span class="st">✓</span></div>
+        <div class="lyr on"><span class="sw" style="background:var(--text-2)"></span>Cities<span class="st">✓</span></div>
+        <div class="lyr on"><span class="sw" style="background:var(--war)"></span>Front lines<span class="st">✓</span></div>
+        <div class="lyr off"><span class="sw" style="background:var(--cul)"></span>Religion<span class="tag">V2</span></div>
+        <div class="lyr off"><span class="sw" style="background:var(--sci)"></span>Languages<span class="tag">V2</span></div>
+      </div>
+
+      <div class="legend">
+        <div class="row"><span class="k"><span class="solid"></span></span>border · exact / administrative</div>
+        <div class="row"><span class="k"><span class="dashed"></span></span>front line · estimated</div>
+        <div class="row"><span class="k"><span class="fuzz"></span></span>cultural / linguistic · fuzzy</div>
+        <div class="note">Fills show political control, Sep 1942. Reconstruction: OHM consensus.</div>
+      </div>
+
+      <div class="mapzoom"><button>+</button><button>−</button></div>
+      <div class="attrib">© <b>OpenStreetMap</b> &amp; <b>OpenHistoricalMap</b> contributors · <b>Wikidata</b> CC0</div>
+    </section>
+
+    <!-- ══════════════ INSPECTOR ══════════════ -->
+    <aside class="inspector">
+      <div class="insp-head">
+        <div class="crumbs"><a href="#">World War II</a> › <a href="#">Eastern Front</a> › <b>Battle of Stalingrad</b></div>
+        <h2 class="insp-title">Battle of Stalingrad</h2>
+        <div class="badges">
+          <span class="badge doc">DOCUMENTED</span>
+          <span class="badge cat">WAR · BATTLE</span>
+        </div>
+        <div class="insp-when">
+          <span class="rng">23 Aug 1942 → 2 Feb 1943</span>
+          <span class="dur">164 days</span>
+        </div>
+      </div>
+
+      <div class="insp-sec">
+        <h4>Key facts</h4>
+        <div class="prop"><span class="k">Location</span><span class="v">Stalingrad, USSR</span><span class="src">Wikidata</span></div>
+        <div class="prop"><span class="k">Belligerents</span><span class="v">Germany, Romania, Italy, Hungary · USSR</span><span class="src">Wikidata</span></div>
+        <div class="prop"><span class="k">Result</span><span class="v">Soviet victory</span><span class="src">Wikidata</span></div>
+        <div class="prop"><span class="k">Casualties</span><span class="v"><span class="rng">1.8 – 2.7 M</span> <span class="est">EST · 3 CLAIMS</span></span><span class="src">view claims ▸</span></div>
+        <div class="claims-note">
+          Competing casualty estimates are preserved as sourced claims - the range shown is the synthesis, never a fake exact number.
+          <div class="bar"><span class="lab">Glantz 1995</span><span class="track"><span class="fill" style="left:22%; width:34%"></span></span></div>
+          <div class="bar"><span class="lab">Overy 1997</span><span class="track"><span class="fill" style="left:35%; width:40%"></span></span></div>
+          <div class="bar"><span class="lab">Beevor 1998</span><span class="track"><span class="fill" style="left:28%; width:46%"></span></span></div>
+        </div>
+      </div>
+
+      <div class="insp-sec">
+        <h4>Media</h4>
+        <div class="media-row">
+          <div class="thumb"><span class="cap">COMMONS</span></div>
+          <div class="thumb"><span class="cap">MAP 1942</span></div>
+          <div class="thumb vid"><span class="cap">DOC · 45 MIN</span></div>
+        </div>
+        <div class="attr-line">Images: Wikimedia Commons, licenses per file · Video: YouTube embed, curated</div>
+      </div>
+
+      <div class="insp-sec">
+        <h4>Related</h4>
+        <div class="rel">
+          <a href="#"><span>part of</span>Eastern Front</a>
+          <a href="#"><span>caused by</span>Operation Barbarossa</a>
+          <a href="#"><span>resulted in</span>Operation Uranus</a>
+          <a href="#"><span>contemporary</span>Second Battle of El Alamein</a>
+          <a href="#"><span>contemporary</span>Manhattan Project begins</a>
+        </div>
+      </div>
+
+      <div class="insp-sec">
+        <h4>Read &amp; verify</h4>
+        <div class="rel">
+          <a href="#">Wikipedia ↗</a>
+          <a href="#">Wikidata Q41474 ↗</a>
+          <a href="#">Sources (12)</a>
+          <a href="#">History</a>
+        </div>
+      </div>
+
+      <div class="insp-actions">
+        <button class="act pri">Focus timeline</button>
+        <button class="act">Compare</button>
+        <button class="act">Copy link</button>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ══════════════ TIMELINE ══════════════ -->
+  <footer class="timeline-shell">
+
+    <!-- deep-time overview: the signature strip -->
+    <div class="overview">
+      <div class="ov-band">
+        <div class="ov-seg s1"><span class="t">BIG BANG · 13.8 Ga</span></div>
+        <div class="ov-seg s2"><span class="t">EARTH · 4.5 Ga</span></div>
+        <div class="ov-seg s3"><span class="t">LIFE</span></div>
+        <div class="ov-seg s4"><span class="t">DINOSAURS</span></div>
+        <div class="ov-seg s5"><span class="t">HUMANS</span></div>
+        <div class="ov-seg s6"><span class="t">CIVILIZATION</span></div>
+        <div class="ov-seg s7"><span class="t">FUTURE</span></div>
+        <div class="ov-seg s8"><span class="t">HEAT DEATH · 10¹⁰⁰ y</span></div>
+      </div>
+      <div class="ov-window" title="current viewport: 1939–1946"></div>
+      <div class="ov-now"></div>
+    </div>
+
+    <!-- zoomed band: 1939–1946 -->
+    <div class="tl-main">
+      <div class="tl-axis">
+        <span class="tick" style="left:84px">1939</span>
+        <span class="tick" style="left:calc(84px + (100% - 98px)*0.143)">1940</span>
+        <span class="tick" style="left:calc(84px + (100% - 98px)*0.286)">1941</span>
+        <span class="tick" style="left:calc(84px + (100% - 98px)*0.429)">1942</span>
+        <span class="tick" style="left:calc(84px + (100% - 98px)*0.571)">1943</span>
+        <span class="tick" style="left:calc(84px + (100% - 98px)*0.714)">1944</span>
+        <span class="tick" style="left:calc(84px + (100% - 98px)*0.857)">1945</span>
+      </div>
+      <div class="tl-rows">
+        <div class="tl-grid">
+          <i style="left:84px"></i>
+          <i style="left:calc(84px + (100% - 98px)*0.143)"></i>
+          <i style="left:calc(84px + (100% - 98px)*0.286)"></i>
+          <i style="left:calc(84px + (100% - 98px)*0.429)"></i>
+          <i style="left:calc(84px + (100% - 98px)*0.571)"></i>
+          <i style="left:calc(84px + (100% - 98px)*0.714)"></i>
+          <i style="left:calc(84px + (100% - 98px)*0.857)"></i>
+        </div>
+
+        <div class="lane">
+          <span class="lab"><i style="background:var(--war)"></i>WAR</span>
+          <span class="ev war parent" style="left:12.5%; width:86%" title="World War II (parent event)"></span>
+          <span class="ev war" style="left:13%; width:4%" title="Invasion of Poland">Poland</span>
+          <span class="ev war" style="left:24.5%; width:5.5%">Fall of France</span>
+          <span class="ev war" style="left:30.8%; width:8%">Battle of Britain</span>
+          <span class="ev war" style="left:42.5%; width:9%">Barbarossa</span>
+          <span class="ev war sel" style="left:57.5%; width:8.5%">★ Stalingrad</span>
+          <span class="ev war" style="left:60%; width:6%; top:26px; height:12px; font-size:9px">El Alamein</span>
+          <span class="ev war" style="left:70.5%; width:4.5%">Kursk</span>
+          <span class="ev war" style="left:79%; width:3.5%">D-Day</span>
+        </div>
+
+        <div class="lane">
+          <span class="lab"><i style="background:var(--pol)"></i>POLITICS</span>
+          <span class="ev pol dot" style="left:37.2%"><span class="flag">Tripartite Pact</span></span>
+          <span class="ev pol dot" style="left:53.5%"><span class="flag">Atlantic Charter</span></span>
+          <span class="ev pol dot" style="left:56.4%"><span class="flag">Pearl Harbor → US enters</span></span>
+          <span class="ev pol dot" style="left:76%"><span class="flag">Tehran Conf.</span></span>
+          <span class="ev pol dot" style="left:92%"><span class="flag">UN founded</span></span>
+        </div>
+
+        <div class="lane">
+          <span class="lab"><i style="background:var(--sci)"></i>SCIENCE</span>
+          <span class="ev sci dot" style="left:33%"><span class="flag">Penicillin purified</span></span>
+          <span class="ev sci" style="left:55.5%; width:20%">Manhattan Project</span>
+          <span class="ev sci dot" style="left:64.8%"><span class="flag">First reactor (CP-1)</span></span>
+          <span class="ev sci dot" style="left:87.5%"><span class="flag">ENIAC begun</span></span>
+        </div>
+
+        <div class="lane">
+          <span class="lab"><i style="background:var(--cul)"></i>CULTURE</span>
+          <span class="ev cul dot" style="left:27.5%"><span class="flag">The Grapes of Wrath</span></span>
+          <span class="ev cul dot" style="left:47%"><span class="flag">Citizen Kane</span></span>
+          <span class="ev cul dot" style="left:59.5%"><span class="flag">Casablanca</span></span>
+          <span class="ev cul dot" style="left:82%"><span class="flag">Le Petit Prince</span></span>
+        </div>
+
+        <div class="playhead"></div>
+      </div>
+
+      <div class="tl-ctl">
+        <div class="tzoom"><button>−</button><button>+</button></div>
+        <span class="bucket">T10 · YEAR</span>
+        <span class="range">Jan 1939 – Dec 1946 · Europe 34°–71°N</span>
+        <div class="imp">importance<span class="track"><span class="knob"></span></span></div>
+        <div class="status-key">
+          <span class="s1"><b></b>documented</span>
+          <span class="s2"><b></b>estimated</span>
+          <span class="s3"><b></b>projected</span>
+        </div>
+      </div>
+    </div>
+  </footer>
+</div>
+
+<!-- film grain -->
+<svg class="grain" width="100%" height="100%">
+  <filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2"/>
+    <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .03 0"/></filter>
+  <rect width="100%" height="100%" filter="url(#n)"/>
+</svg>
+</body>
+</html>

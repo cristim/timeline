@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>07 Semantic Zoom &amp; Ranking · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 07 Semantic Zoom</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a class="current" href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>07 · Semantic Zoom &amp; Ranking</h1>
+<p class="lead">The hard and interesting problem: <em>which 50 things should appear out of 5 million,
+at this exact time scale, geographic scale, and topic filter?</em> If this ranking works, the product
+works. Everything here is precomputed; rendering must be cheap.</p>
+
+<h2>The mechanic</h2>
+<div class="req"><div class="req-head"><span class="req-id">ZOOM-1</span><span class="req-title">Zoom changes the information hierarchy, not just the scale</span><span class="badge mvp">MVP</span></div>
+<table>
+<tr><th>Time visible</th><th>What appears</th></tr>
+<tr><td>14 billion years</td><td>~20 cosmic milestones</td></tr>
+<tr><td>1 billion years</td><td>geological periods</td></tr>
+<tr><td>10 million years</td><td>evolution, hominins</td></tr>
+<tr><td>100,000 years</td><td>migrations, species</td></tr>
+<tr><td>10,000 years</td><td>civilizations, agriculture</td></tr>
+<tr><td>1,000 years</td><td>empires, religions, technology</td></tr>
+<tr><td>100 years</td><td>major wars, politics, science</td></tr>
+<tr><td>1 year</td><td>battles, elections, treaties, releases</td></tr>
+<tr><td>1 day / 1 hour</td><td>individual sub-events where data exists</td></tr>
+</table>
+<p>Simultaneously, geographic zoom shifts which importance dimension applies: world view uses global
+importance; zoom into Germany blends national importance; zoom into Berlin surfaces local history that
+would never appear at world scale. Europe+1500&ndash;1600 must not surface Japanese village events.</p>
+</div>
+
+<h2>Precomputed importance</h2>
+<div class="req"><div class="req-head"><span class="req-id">ZOOM-2</span><span class="req-title">Importance vector per entity</span><span class="badge mvp">MVP</span></div>
+<pre>importance (jsonb on entity):
+{
+  "global":   0.97,
+  "region":   { "DE": 0.99, "EU": 0.98 },     -- sparse, top regions only
+  "category": { "war": 0.99 },
+  "quality":  0.9                             -- data completeness score
+}</pre>
+<p>MVP scoring function (deterministic, computed at import; weights in config, not code):</p>
+<pre>global = w1 * norm(log(wikipedia_sitelink_count))
+       + w2 * norm(log(wikipedia_pageviews_1y))     -- from Wikimedia pageview dumps
+       + w3 * norm(log(1 + inbound_wikidata_refs))
+       + w4 * type_prior                            -- e.g. states > minor sports events
+region[r] = blend(global, locality(r))              -- entities located in r get a
+                                                    -- regional boost so local history
+                                                    -- surfaces at local zoom</pre>
+<ul>
+<li>Scores are floats 0..1, comparable only within the same dataset version.</li>
+<li>The scoring job emits a ranked sample report (top 100 per bucket) on every run; eyeballing that
+report is part of import review.</li>
+<li>V2: crowd pairwise voting ("which is more important: first powered flight vs. founding of company X")
+feeds a contextual Elo-style adjustment (<a href="09-contributions.html">CONTRIB-6</a>). The storage
+shape already supports it.</li>
+</ul>
+</div>
+
+<h2>Temporal buckets</h2>
+<div class="req"><div class="req-head"><span class="req-id">ZOOM-3</span><span class="req-title">Buckets T0–T13</span><span class="badge mvp">MVP</span></div>
+<pre>T0   universe        (10+ Gy visible)     T7   millennium
+T1   billion years                        T8   century
+T2   100 My                               T9   decade
+T3   10 My                                T10  year
+T4   1 My                                 T11  month
+T5   100 ky                               T12  day
+T6   10 ky                                T13  hour</pre>
+<p>Each entity gets <code>bucket_min/bucket_max</code>: the range of buckets where it is a sensible
+render candidate. Examples: Big Bang T0&ndash;T4 · Roman Empire T5&ndash;T9 · WWII T6&ndash;T10 ·
+D-Day T8&ndash;T12 · Omaha Beach assault T10&ndash;T13.</p>
+<p>Assignment rule (import-time):</p>
+<pre>bucket_min = coarsest bucket where the entity ranks in the top N of its
+             time-window at its importance level (N per bucket, config)
+bucket_max = finest bucket justified by its time_precision
+             (a day-precision battle: T13; a million-year species: T8)</pre>
+<p>The client's continuous zoom maps to a bucket via visible-range thresholds; crossing a threshold
+loads the adjacent bucket's data (prefetched, crossfaded - <a href="06-frontend.html">FE-2</a>).</p>
+</div>
+
+<h2>The ranking function</h2>
+<div class="req"><div class="req-head"><span class="req-id">ZOOM-4</span><span class="req-title">relevance() for the viewport query</span><span class="badge mvp">MVP</span></div>
+<pre>relevance(entity, view) =
+    base importance for view scope
+        world view:            importance.global
+        region/country view:   max(importance.global * 0.8,
+                                   importance.region[view.region])
+  * category boost   (entity.category in view.cat ? 1 : 0 when filtered)
+  * overlap factor   (fraction of [t0,t1] the entity overlaps; full-span
+                      background entities like "Roman Empire" at T9 get a
+                      floor so context bands don't vanish)
+  * quality factor   (importance.quality, floor 0.5)</pre>
+<ul>
+<li>Pure SQL over precomputed columns + a small Go re-rank of the candidate set (fetch 3x limit,
+re-rank, cut). No live scoring of the full corpus, ever.</li>
+<li>Deterministic: same inputs &rarr; same list, stable ordering (ties broken by id) - required for CDN
+cacheability and testability.</li>
+<li>Diversity guard: at most K items per category per screen at coarse buckets (config), so 1942 doesn't
+render as 300 battles and nothing else.</li>
+</ul>
+</div>
+
+<h2>Acceptance criteria</h2>
+<div class="req"><div class="req-head"><span class="req-id">ZOOM-5</span><span class="req-title">Golden-view tests</span><span class="badge mvp">MVP</span></div>
+<p>A checked-in suite of golden viewport queries with expected inclusions/exclusions, run against every
+dataset build (data regression tests, not unit tests). Each golden-view expectation file pins the
+<code>seed_version</code> / dataset version it was written against, so a data change that breaks a view
+shows up as an explicit expectation diff to review, never as flakiness:</p>
+<ul class="checklist">
+<li>Whole-universe view (T0): shows Big Bang, galaxy formation, Sun/Earth formation, first life,
+Cambrian explosion, dinosaurs, extinction, humans, NOW, red-giant future - between 15 and 30 items total.</li>
+<li>World + T8 (century) at 1900&ndash;2000: WWI, WWII, Moon landing, Internet present; no local festivals.</li>
+<li>Europe + T10 (year) at 1942: Stalingrad present; Pacific-only events absent unless global-tier.</li>
+<li>Berlin + T10 at 1942: local Berlin events present that the Europe view did not show.</li>
+<li>Kyoto + 1500&ndash;1600 at T9: Japanese history dense; European events only global-tier.</li>
+<li>Category filter "science" at T8, 1850&ndash;1950: relativity, quantum theory, penicillin, DNA precursors; no battles.</li>
+<li>Every view returns ≤ limit items and &lt; 150 ms at origin.</li>
+</ul>
+<p>These views double as the Phase-0 demo script (<a href="10-roadmap.html">ROAD-1</a>).</p>
+</div>
+
+<div class="note"><strong>Design guard:</strong> resist making ranking "smart" early. A transparent,
+debuggable formula over sitelinks+pageviews+type priors, plus hand-tuned per-bucket caps, beats an opaque
+model while the product is finding its shape. Crowd ranking and learned ranking are V2+ refinements over
+the same stored shape.</div>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 07 Semantic Zoom &amp; Ranking</footer>
+</body>
+</html>

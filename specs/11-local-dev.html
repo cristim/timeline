@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11 Local Development Plan · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 11 Local Dev</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a class="current" href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>11 · Local Development Plan</h1>
+<p class="lead">How we start building: everything runs locally via docker-compose for development
+speed - no CDN, no cloud accounts, data processed into local PostgreSQL and the local filesystem.
+Every choice below is made so the eventual cloud deployment (Aurora Serverless v2, S3, CloudFront,
+ECS) is a configuration swap, not a rewrite.</p>
+
+<div class="note">This document refines <a href="04-architecture.html">04 Architecture</a> and
+<a href="10-roadmap.html">10 Roadmap</a> for the build-start phase. Where they conflict for local
+development, this document wins until MVP deploy planning begins.</div>
+
+<h2>Principles</h2>
+<div class="req"><div class="req-head"><span class="req-id">DEV-1</span><span class="req-title">Local-first, cloud-shaped</span><span class="badge mvp">MVP</span></div>
+<ul>
+<li><strong>One command up.</strong> <code>make up</code> gives a working stack: database, API, frontend, seed data. A new checkout reaches a browsable app in under 15 minutes (excluding large dump downloads).</li>
+<li><strong>No CDN in dev</strong>, but the API still emits the <code>Cache-Control</code>/<code>ETag</code>/dataset-version headers from <a href="05-api.html">API-5</a> from day one, so CloudFront later fronts the same origin unchanged.</li>
+<li><strong>MinIO is the blob store: the app speaks S3 everywhere.</strong> One S3 client code path
+(aws-sdk-go-v2) in dev and in cloud; dumps, Parquet, and tiles live in MinIO buckets locally and in
+real S3 later. The difference is entirely env config: <code>S3_ENDPOINT</code>, credentials,
+<code>S3_FORCE_PATH_STYLE=true</code> for MinIO - never a code branch.</li>
+<li><strong>Postgres runs in compose next to the app</strong> and is the Aurora stand-in: same major
+version, Aurora-compatible extensions only (DEV-4). The app reaches it purely through
+<code>DATABASE_URL</code>.</li>
+<li><strong>Identical artifacts, parameterized environment.</strong> The same container images and
+application code run in dev and in cloud; dev vs. cloud differs only at the infra level (compose file
+vs. Terraform: Aurora endpoint instead of the db container, S3 endpoint instead of MinIO, CloudFront
+in front). All configuration via env vars with a checked-in <code>.env.example</code>; the same
+variables map 1:1 to ECS task definitions.</li>
+</ul>
+</div>
+
+<h2>Repository layout</h2>
+<div class="req"><div class="req-head"><span class="req-id">DEV-2</span><span class="req-title">Monorepo layout</span><span class="badge mvp">MVP</span></div>
+<pre>world_knowlege/
+├── specs/                  # this spec pack (already exists)
+├── reference/              # source conversation (already exists)
+├── docker-compose.yml
+├── Makefile
+├── .env.example
+├── go.mod                  # single Go module
+├── cmd/
+│   ├── api/                # HTTP API server (viewport, entity, search, tiles)
+│   └── importer/           # batch jobs: import, census, rank, bucketize
+├── internal/
+│   ├── model/              # DM-* types, timeline_time codec
+│   ├── store/              # pgx pool + sqlc-generated queries, migrations embed
+│   ├── blob/               # thin S3 client wrapper (aws-sdk-go-v2); MinIO in dev, S3 in cloud
+│   ├── viewport/           # ZOOM-4 ranking + API-1 quantization
+│   ├── ingest/             # wikidata/ohm parsers, validators, reject handling
+│   └── tiles/              # ST_AsMVT tile queries
+├── db/migrations/          # golang-migrate SQL files, numbered
+├── web/                    # Vite + React + TS + MapLibre; timeline canvas
+└── data/                   # gitignored container volumes + staging
+    ├── minio/              # MinIO object storage volume (backs the buckets below)
+    ├── seed/               # Phase-0 curated seed set (checked in, small)
+    └── staging/            # transient download staging before `mc` upload
+
+# S3 buckets (MinIO locally, real S3 in cloud - same names, same code):
+#   wk-dumps    COLD: wikidata json.bz2, OHM pbf, pageview counts (immutable)
+#   wk-warm     WARM: Parquet candidate sets, census outputs, import reports
+#   wk-tiles    pregenerated MVT (later; dev serves dynamic from Postgres)
+#   wk-basemap  protomaps .pmtiles basemap file</pre>
+<p>One Go module, two binaries. No separate services until a measured need exists
+(<a href="04-architecture.html">ARCH-1</a> non-deployments apply to dev too).</p>
+<p><strong>Data access: <code>pgx</code> + <code>sqlc</code>, no ORM.</strong> Queries are checked-in
+SQL files; sqlc generates typed Go from them. This keeps every hot-path query visible for the
+EXPLAIN gates in DEV-4 and CI. Migrations via golang-migrate, embedded in the binaries.</p>
+</div>
+
+<h2>docker-compose stack</h2>
+<div class="req"><div class="req-head"><span class="req-id">DEV-3</span><span class="req-title">Compose services and profiles</span><span class="badge mvp">MVP</span></div>
+<pre># docker-compose.yml (shape, not final file)
+services:
+  db:
+    image: postgis/postgis:16-3.4        # match Aurora PG major version
+    environment:
+      POSTGRES_DB: worldknowledge
+      POSTGRES_USER: wk
+      POSTGRES_PASSWORD: wk-dev          # dev only
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    command: >-                          # dev-tuned for bulk imports
+      postgres -c shared_buffers=1GB -c maintenance_work_mem=1GB
+               -c max_wal_size=4GB -c synchronous_commit=off
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U wk"], interval: 3s }
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: wk
+      MINIO_ROOT_PASSWORD: wk-dev-minio        # dev only
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["./data/minio:/data"]
+    healthcheck: { test: ["CMD", "mc", "ready", "local"], interval: 3s }
+
+  minio-init:                            # one-shot: create buckets, then exit
+    image: minio/mc
+    depends_on: { minio: { condition: service_healthy } }
+    entrypoint: >-
+      /bin/sh -c "mc alias set wk http://minio:9000 wk wk-dev-minio &&
+                  mc mb -p wk/wk-dumps wk/wk-warm wk/wk-tiles wk/wk-basemap"
+
+  api:
+    build: { context: ., target: api }   # air hot-reload + source bind mount in dev
+    environment:
+      DATABASE_URL: postgres://wk:wk-dev@db:5432/worldknowledge
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: wk
+      AWS_SECRET_ACCESS_KEY: wk-dev-minio
+      DATASET_VERSION: dev
+    ports: ["8080:8080"]
+    depends_on:
+      db: { condition: service_healthy }
+      minio: { condition: service_healthy }
+
+  web:
+    build: ./web                         # vite dev server + source bind mount
+    ports: ["5173:5173"]
+    environment: { VITE_API_URL: http://localhost:8080 }
+
+  importer:                              # never long-running; invoked via
+    build: { context: ., target: importer }   # `docker compose run importer <job>`
+    profiles: ["jobs"]
+    environment: *same-env-as-api        # anchor in the real file
+
+volumes: { pgdata: }</pre>
+<ul>
+<li><strong>Everything runs in compose:</strong> <code>db</code>, <code>minio</code>, <code>api</code>, and
+<code>web</code> come up together with <code>make up</code>. Hot reload stays fast via bind mounts
+(<code>air</code> for Go, Vite's own watcher for the frontend); running a binary natively against the
+compose db/minio remains a personal escape hatch, not the documented flow.</li>
+<li><strong>The app is 12-factor parameterized:</strong> the api/importer containers know nothing about
+"dev vs cloud" - they read <code>DATABASE_URL</code> and the <code>S3_*</code>/<code>AWS_*</code> variables.
+Pointing those at Aurora and real S3 (dropping <code>S3_ENDPOINT</code>/path-style) is the entire
+deployment delta; no code changes, only infra.</li>
+<li><strong>Importer is a job, not a service:</strong> <code>docker compose run importer import-wikidata --dump s3://wk-dumps/...</code>.
+Long dump processing runs are resumable and write progress to stdout + a state row.</li>
+<li>The dev Postgres flags trade durability for import speed; they are dev-only and must never
+appear in cloud parameter groups.</li>
+<li>Makefile is the interface: <code>make up / down / migrate / seed / import-census / test / smoke / psql</code>.</li>
+</ul>
+</div>
+
+<h2>Cloud parity rules</h2>
+<div class="req"><div class="req-head"><span class="req-id">DEV-4</span><span class="req-title">Aurora Serverless v2 compatibility guardrails</span><span class="badge mvp">MVP</span></div>
+<p>Target production database: <strong>Aurora PostgreSQL Serverless v2</strong>. Everything built
+locally must stay inside its envelope:</p>
+<table>
+<tr><th>Rule</th><th>Why</th></tr>
+<tr><td>Pin Postgres major version to one Aurora currently offers (16.x); record it in <code>.env.example</code> and CI.</td><td>No surprise SQL/planner differences at migration time.</td></tr>
+<tr><td>Extensions allowlist: <code>postgis</code>, <code>pg_trgm</code>, <code>btree_gist</code>, <code>pg_stat_statements</code> only. Adding any extension requires checking Aurora's supported-extensions list first and noting it here.</td><td>Aurora rejects unsupported extensions; discovering that at deploy time is a rewrite risk.</td></tr>
+<tr><td>No superuser assumptions, no <code>COPY FROM PROGRAM</code>, no server filesystem access, no FDWs, no custom tablespaces, no logical-replication tricks.</td><td>Not available on managed Postgres.</td></tr>
+<tr><td>Bulk loads use client-driven <code>COPY FROM STDIN</code> from the importer.</td><td>Works identically against local Postgres and Aurora.</td></tr>
+<tr><td>Schema + queries assume nothing about instance-local caching; heavy read paths must be coverable by indexes (test with <code>EXPLAIN</code> gates in CI).</td><td>Serverless v2 capacity scales with load; unindexed scans translate directly into ACU cost.</td></tr>
+<tr><td>Connection handling via a small pool (pgx pool, max ~10 in dev); keep the API pool-friendly so RDS Proxy can be inserted later if Lambda-style scaling is ever used.</td><td>Aurora connection limits scale with ACU.</td></tr>
+</table>
+<p>Other parity mappings, all mechanical swaps:</p>
+<table>
+<tr><th>Local (now)</th><th>Cloud (later)</th><th>Seam</th></tr>
+<tr><td>Docker postgis container</td><td>Aurora Serverless v2 PostgreSQL</td><td><code>DATABASE_URL</code></td></tr>
+<tr><td>MinIO container (S3 API)</td><td>Amazon S3</td><td><code>S3_ENDPOINT</code>, <code>S3_FORCE_PATH_STYLE</code>, credentials env; same aws-sdk-go-v2 client code</td></tr>
+<tr><td>Go API container in compose</td><td>ECS Fargate service (same image)</td><td>env vars only (compose <code>environment:</code> → task definition / SSM)</td></tr>
+<tr><td>Importer via <code>compose run</code></td><td>ECS one-off tasks (or Step Functions later)</td><td>same image, same CLI args</td></tr>
+<tr><td>Vite dev server</td><td>S3 static hosting + CloudFront</td><td><code>npm run build</code> artifact</td></tr>
+<tr><td>No CDN; API sets cache headers anyway</td><td>CloudFront in front of API + tiles + static</td><td>headers already correct (API-5)</td></tr>
+<tr><td>Dynamic MVT tiles from Postgres (<code>ST_AsMVT</code>)</td><td>Pregenerated tiles on S3 + dynamic fallback (ARCH-3)</td><td>same tile URLs</td></tr>
+<tr><td>Local basemap: protomaps <code>.pmtiles</code> file served by the API</td><td>Hosted vector basemap or self-hosted tiles on S3</td><td>MapLibre style URL</td></tr>
+</table>
+</div>
+
+<h2>Data processing locally</h2>
+<div class="req"><div class="req-head"><span class="req-id">DEV-5</span><span class="req-title">Local data pipeline</span><span class="badge mvp">MVP</span></div>
+<ul>
+<li><strong>Dumps land in the <code>wk-dumps</code> bucket</strong> (COLD): Wikidata JSON dump (start
+with the <em>filtered/truthy</em> variant, not the full ~100&nbsp;GB dump), an OHM extract, Wikimedia
+pageview counts. <code>make fetch-dumps</code> downloads to <code>./data/staging/</code>, verifies
+checksums, then <code>mc</code>-uploads into MinIO; importers stream from S3 URLs so the same commands
+work against cloud buckets later.</li>
+<li><strong>Streaming, resumable importers in Go</strong> (<code>internal/ingest</code>): bz2/gz stream →
+line-delimited JSON → filter → normalize → validate → <code>COPY</code> into staging → atomic swap
+(<a href="03-data-sources.html">SRC-3</a> unchanged). A full local Wikidata pass is an hours-scale
+batch job; progress reporting and resume-from-offset are requirements, not nice-to-haves.</li>
+<li><strong>Rejects are data:</strong> reject tables + a per-run import report written to
+<code>s3://wk-warm/reports/</code>.</li>
+<li><strong>DuckDB as the local analytics sidecar</strong> (CLI, not a service): ad-hoc queries over
+Parquet outputs, census report generation (ROAD-2), and JSON→Parquet transforms where Go code isn't
+worth writing. Anything DuckDB produces that the product needs must still be reproducible via
+<code>make</code> targets.</li>
+<li><strong>Precompute jobs run as importer subcommands</strong>: <code>rank</code> (ZOOM-2),
+<code>bucketize</code> (ZOOM-3), <code>build-chunks</code> (timeline chunks to <code>wk-tiles</code>). Output
+tables carry the dataset version stamp.</li>
+<li><strong>Seed set is first-class</strong> (<a href="03-data-sources.html">SRC-8</a>): the Phase-0
+curated set is checked-in <strong>NDJSON</strong> (one entity per line) under <code>data/seed/</code>,
+split by domain (<code>universe.ndjson</code>, <code>life.ndjson</code>, <code>civilizations.ndjson</code>,
+<code>science-tech.ndjson</code>, <code>culture.ndjson</code>, <code>future.ndjson</code>, ...) plus a
+<code>manifest.json</code> with <code>seed_version</code>, per-file entity counts, and sha256 checksums.
+NDJSON wins over CSV/Parquet here because seed entities need nested structure (temporal claims,
+properties with units and sources, inline GeoJSON geometry) that CSV cannot express, git diffs stay
+line-per-entity reviewable, and the lines flow through the same streaming ingest path as the Wikidata
+dumps. Curation workflow: generate candidates per era via Wikidata SPARQL, hand-prune, commit.</li>
+</ul>
+</div>
+
+<h2>Build milestones</h2>
+<div class="req"><div class="req-head"><span class="req-id">DEV-6</span><span class="req-title">Milestones M0-M6 (each independently verifiable)</span><span class="badge mvp">MVP</span></div>
+<table>
+<tr><th>#</th><th>Deliverable</th><th>Done when (verified, not assumed)</th></tr>
+<tr><td>M0</td><td><strong>Scaffold.</strong> Repo layout (DEV-2), compose file, Makefile, migrations 0001 (schema subset: entity, claim, source, geometry_record, relationship per DM-1..9), <code>/api/health</code>, web hello page, CI running <code>go test</code> + <code>vet</code> + golden EXPLAIN checks.</td><td><code>make up &amp;&amp; make smoke</code> passes on a clean checkout: DB up, migrations applied, MinIO buckets created, API healthy with a blob write/read round-trip, web served.</td></tr>
+<tr><td>M1</td><td><strong>Seed pipeline.</strong> <code>importer seed</code> loads the <code>data/seed/</code> NDJSON files per <code>manifest.json</code> (start: ~2k hand-picked entities across Big Bang → future; grow toward 10k-50k), through the full validate/reject path. Slugs assigned per DM-2a.</td><td>Row counts match the manifest; deliberately corrupt fixture rows land in reject table with reasons; re-run is idempotent; <code>seed_version</code> recorded in the DB.</td></tr>
+<tr><td>M2</td><td><strong>Core APIs.</strong> API-1 viewport (with time/bbox quantization), API-2 entity, SRCH-1 search (tsvector+trigram), <code>rank</code>+<code>bucketize</code> jobs.</td><td>ZOOM-5 golden-view tests pass as Go integration tests against the seeded DB; viewport p95 &lt; 150 ms locally; responses carry ETag/Cache-Control.</td></tr>
+<tr><td>M3</td><td><strong>Frontend shell.</strong> FE-1 layout, Canvas timeline (FE-2: zoom/pan/buckets/status markers), MapLibre with local pmtiles basemap, inspector (FE-6), URL state (API-6). The <a href="mockup.html">mockup</a> is the visual target.</td><td>The Phase-0 demo script runs in the browser against local API: Big Bang → WWII → today → future navigation works; 60 fps with seed data; shared URL restores the view.</td></tr>
+<tr><td>M4</td><td><strong>Geometry + tiles.</strong> OHM extract import for one region/era slice; dynamic <code>ST_AsMVT</code> endpoint with time-step snapping (ARCH-3); borders layer renders and changes with the time cursor.</td><td>Dragging the timeline over the covered era visibly updates borders; per-feature <code>license=*</code> exceptions honored in the import report.</td></tr>
+<tr><td>M5</td><td><strong>Wikidata census + first bulk import (ROAD-2).</strong> <code>importer census</code> streams a filtered dump → Parquet + report (per century/type counts, precision/coords/sitelinks coverage); then <code>import-wikidata</code> promotes a bounded slice (~100k-500k entities) into the HOT DB alongside the seed.</td><td>Census report reviewed and stored in <code>s3://wk-warm/reports/</code>; app remains responsive with the enlarged dataset; golden views still pass (adjusting per-bucket caps is expected, silent breakage is not).</td></tr>
+<tr><td>M6</td><td><strong>Fun-test gate (ROAD-1).</strong> Outside testers on the local build.</td><td>ROAD-1 exit criteria; the go/no-go decision is recorded in the plan file before any cloud spend or full-dump ingestion.</td></tr>
+</table>
+<p>Cloud deployment intentionally has <em>no milestone here</em>: it begins only after M6 passes, as
+Terraform for the parity table in DEV-4 (Aurora Serverless v2, S3, CloudFront, ECS), and should
+change no application code beyond env vars and the <code>blob.S3</code> implementation.</p>
+</div>
+
+<h2>Out of scope for this phase</h2>
+<ul>
+<li>No accounts/auth, no AI endpoints, no contributions - unchanged from <a href="10-roadmap.html">10</a>.</li>
+<li>No Kubernetes, no LocalStack (MinIO covers all the S3 parity we need), no Kafka, no cache layer (the DB is fast enough at seed scale; caching design stays header-level per DEV-1).</li>
+<li>No tile pregeneration pipeline (dynamic tiles suffice at local scale).</li>
+<li>No full Wikidata dump ingestion before the M6 gate passes.</li>
+</ul>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 11 Local Development Plan</footer>
+</body>
+</html>

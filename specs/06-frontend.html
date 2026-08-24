@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>06 Frontend &amp; UI · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 06 Frontend</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a class="current" href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>06 · Frontend &amp; UI</h1>
+<p class="lead">TypeScript + React + MapLibre GL JS + a custom Canvas/WebGL timeline renderer.
+The timeline never disappears: it is the anchor of the whole product.</p>
+
+<h2>Layout</h2>
+<div class="req"><div class="req-head"><span class="req-id">FE-1</span><span class="req-title">Three-area layout</span><span class="badge mvp">MVP</span></div>
+<pre>┌──────────────────────────────────────────────────────────────┐
+│ Search anything...                   Layers  Compare  Ask    │
+├─────────────────────────────────────────────────┬────────────┤
+│                                                 │ INSPECTOR  │
+│                 MAIN CANVAS                     │            │
+│        (map | graph | compare | charts)         │ T. rex     │
+│                                                 │ 68–66 Ma   │
+│                                                 │ 8–10 t     │
+│                                                 │ wiki/media │
+├─────────────────────────────────────────────────┴────────────┤
+│ TIMELINE  (always visible, zoomable, Canvas-rendered)        │
+│ 100 Ma ───────── 80 Ma ── 66 Ma ─────── 50 Ma               │
+│    [−]━━━━━━━━━━━━━━━●━━━━━━━━━━━━━━━━━━━━[+]                │
+└──────────────────────────────────────────────────────────────┘</pre>
+<table>
+<tr><th>Area</th><th>Purpose</th></tr>
+<tr><td>Main canvas</td><td>Map (default), later graph / compare / charts / scale views via view switcher</td></tr>
+<tr><td>Timeline</td><td>Always visible, continuous zoom across the full time range, drag to move, scroll/pinch to zoom</td></tr>
+<tr><td>Inspector</td><td>Details of selected entity; opens as a panel, never navigates away</td></tr>
+</table>
+<p>Desktop/tablet-first design even though it is a website; phones get a stacked layout: map /
+timeline / bottom-sheet inspector.</p>
+</div>
+
+<h2>Timeline renderer</h2>
+<div class="req"><div class="req-head"><span class="req-id">FE-2</span><span class="req-title">Custom Canvas/WebGL timeline</span><span class="badge mvp">MVP</span></div>
+<ul>
+<li>Not DOM, not SVG: thousands of visible objects at 60 fps requires Canvas 2D first, WebGL if profiling
+demands it.</li>
+<li>Interaction is Google-Maps-like: scroll/pinch zooms time around the cursor; drag pans; double-click
+zooms in; the zoom is <em>continuous</em>, while data loading follows discrete buckets T0&ndash;T13
+(<a href="07-semantic-zoom.html">ZOOM-3</a>) with crossfade between bucket datasets.</li>
+<li>Scale legend adapts: "13.8 Ga … NOW" at T0, "1939 … 1945" at T10, "00:00 … 24:00" at T13.</li>
+<li>Entities render as: point markers (moments), spans (durations), band lanes grouped by category;
+labels use collision avoidance with importance priority.</li>
+<li>Renders from viewport-query data (<a href="05-api.html">API-1</a>) with prefetch of adjacent
+time-windows and adjacent buckets, so zooming rarely shows an empty lane.</li>
+<li>Performance budget: first interactive &lt; 3s on mid-range laptop; zoom/pan at 60 fps with 2,000
+on-screen objects; memory &lt; 300 MB.</li>
+</ul>
+</div>
+
+<h2>Map</h2>
+<div class="req"><div class="req-head"><span class="req-id">FE-3</span><span class="req-title">MapLibre GL JS map, time-synchronized</span><span class="badge mvp">MVP</span></div>
+<ul>
+<li>MapLibre GL JS with our vector tiles (<a href="04-architecture.html">ARCH-3</a>); deck.gl added only
+if a layer measurably exceeds MapLibre's rendering capacity.</li>
+<li>Map and timeline are one control: moving the timeline re-requests time-dependent layers
+(borders, cities, events); panning/zooming the map re-issues the viewport query. Both update the URL
+(<a href="05-api.html">API-6</a>) debounced.</li>
+<li>Event geometry vocabulary: battle = point/polygon; empire = time-varying polygon; migration = arrow;
+voyage = route line; war = set of changing fronts (V2).</li>
+<li>Representation rendering (<a href="02-domain-model.html">DM-7</a>): <code>exact</code> = solid lines;
+<code>estimated</code> = dashed; <code>fuzzy</code> = gradient/heat without hard edge;
+<code>point_distribution</code> = dots. A legend explains this. Non-negotiable: false precision is a bug.</li>
+</ul>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">FE-4</span><span class="req-title">Map layers</span><span class="badge mvp">MVP: political + events + cities</span> <span class="badge v2">V2: the rest</span></div>
+<p>Layers are first-class and combinable (e.g. "Languages + political borders, 1910";
+"Coal + railways + population, 1850"). MVP ships political borders, events, cities. V2+ adds, in rough
+order of data availability: religion, trade routes, languages, demographics/population, culture,
+science/universities, technology spread, economy, environment/climate, infrastructure, military
+fronts, historical map scans (georeferenced overlays). Each layer = a tile layer + a legend + a data
+source note; every layer is time-aware.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">FE-5</span><span class="req-title">Deep-time basemap switching</span><span class="badge v2">V2</span></div>
+<p>Beyond ~10k years ago the modern basemap fades to reconstructed paleogeography (ice sheets, coastlines,
+continental positions; Pangaea at 200 Ma). Basemap selection is automatic from the time cursor with a
+manual override. Fossils and species render on the reconstructed continents. MVP behavior: modern basemap
+with a visible "modern coastlines" disclaimer chip when viewing deep time.</p>
+</div>
+
+<h2>Inspector</h2>
+<div class="req"><div class="req-head"><span class="req-id">FE-6</span><span class="req-title">Inspector panel</span><span class="badge mvp">MVP</span></div>
+<p>Clicking an entity opens the inspector (no page navigation): name, temporal summary with status badge,
+key properties (with ranges and value-type flags), classification, description, Wikipedia link, media
+(Commons images with attribution, ranked YouTube embeds), relationships ("Related: Triceratops,
+Chicxulub impact"), sources. Actions: focus timeline, focus map, compare, copy link.</p>
+<p>Property drill-down: clicking a property shows its claim history ("mass estimates over time:
+1980: 5.5t → 2020: 9.x t" with the paper behind each) via <code>/entity/{slug}/claims</code> - the
+claims model made visible.</p>
+</div>
+
+<h2>Past/future and uncertainty visual language</h2>
+<div class="req"><div class="req-head"><span class="req-id">FE-7</span><span class="req-title">Temporal status rendering</span><span class="badge mvp">MVP</span></div>
+<pre>PAST                          NOW                       FUTURE
+──────●────────●───────●───────│░░░░░▒▒▒▒▒▒▓▓▓▓▓
+                              2026      increasing uncertainty →</pre>
+<table>
+<tr><th>Status</th><th>Marker</th></tr>
+<tr><td>observed / documented</td><td>solid marker</td></tr>
+<tr><td>estimated / reconstructed</td><td>hollow marker</td></tr>
+<tr><td>legendary / disputed</td><td>hollow + badge</td></tr>
+<tr><td>projected</td><td>fuzzy/range marker</td></tr>
+<tr><td>model_dependent / speculative</td><td>dotted marker</td></tr>
+</table>
+<p>NOW is a permanently visible line on the timeline. The Battle of Waterloo and the heat death of the
+universe must never be visually equivalent facts. Ranges render as ranges; single-point rendering of an
+uncertain value is a bug.</p>
+</div>
+
+<h2>View switcher</h2>
+<div class="req"><div class="req-head"><span class="req-id">FE-8</span><span class="req-title">Multiple views, one dataset</span><span class="badge mvp">Map+Compare MVP</span> <span class="badge v2">Graph/Charts/Scale V2</span></div>
+<pre>[ Map ] [ Graph ] [ Compare ] [ Charts ] [ Scale ]</pre>
+<ul>
+<li><strong>Map</strong> (MVP): default canvas.</li>
+<li><strong>Compare</strong> (MVP, 2 entities): aligned property table + temporal overlap bar
+("T. rex and Stegosaurus: ✗ - closer to you than to each other").</li>
+<li><strong>Graph</strong> (V2): relationship/causality explorer (VIS-7).</li>
+<li><strong>Charts</strong> (V2): property time series + records-over-time, events annotated underneath.</li>
+<li><strong>Scale</strong> (V2): to-scale visual comparison (human / T. rex / blue whale / Titanic / Saturn V).</li>
+</ul>
+</div>
+
+<h2>App state and quality bars</h2>
+<div class="req"><div class="req-head"><span class="req-id">FE-9</span><span class="req-title">State, accessibility, i18n posture</span><span class="badge mvp">MVP</span></div>
+<ul>
+<li>View state (time range, bucket, bbox, layers, selection, view) is a single serializable object,
+two-way bound to the URL; browser back/forward = view history.</li>
+<li>Attribution is automatic wherever media/geometry renders (license data from
+<a href="02-domain-model.html">DM-9</a>); a page-level credits popover lists active sources. The
+basemap carries its own required attribution independent of data layers: "&copy; OpenStreetMap
+contributors" for OSM-derived basemaps (incl. the protomaps pmtiles used in dev), alongside
+OpenHistoricalMap and Wikidata credits.</li>
+<li>Accessibility floor: keyboard navigation for timeline (arrow = pan, +/- = zoom), focus management in
+inspector, alt text from media metadata, WCAG AA contrast.</li>
+<li>English-only MVP; all strings externalized from day one.</li>
+<li>Error surfaces are explicit: a failed viewport load shows a retry chip, never a silently empty
+timeline.</li>
+</ul>
+</div>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 06 Frontend &amp; UI</footer>
+</body>
+</html>

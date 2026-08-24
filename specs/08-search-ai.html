@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>08 Search &amp; AI · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 08 Search &amp; AI</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a class="current" href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>08 · Search &amp; AI</h1>
+<p class="lead">Search is how most sessions start. Most "AI-like" questions are database queries;
+the LLM's job is translating language into structured queries and explaining results - not answering
+every interaction.</p>
+
+<h2>Entity search</h2>
+<div class="req"><div class="req-head"><span class="req-id">SRCH-1</span><span class="req-title">MVP search: PostgreSQL full-text + trigram</span><span class="badge mvp">MVP</span></div>
+<ul>
+<li>Typical queries: "T rex", "Battle of Berlin", "Roman Empire", "invention of radio". Instant
+search-as-you-type over entity names + aliases + short descriptions.</li>
+<li>Implementation: <code>tsvector</code> + <code>pg_trgm</code> GIN indexes; ranking blends text score
+with <code>importance.global</code> so "Rome" surfaces the empire before minor namesakes.</li>
+<li>Aliases table populated from Wikidata labels/aliases (multilingual aliases accepted even though the
+UI is English-only, so "Rom", "Roma" resolve).</li>
+<li>Result action: selecting a result focuses timeline + map + inspector on the entity (not a page
+navigation).</li>
+<li>p95 &lt; 50 ms at origin. Move to OpenSearch/Meilisearch only when measured quality/latency demands
+it (<span class="badge later">LATER</span>).</li>
+</ul>
+</div>
+
+<h2>Structured question compilation</h2>
+<div class="req"><div class="req-head"><span class="req-id">SRCH-2</span><span class="req-title">Query templates before LLMs</span><span class="badge v2">V2</span></div>
+<p>Many valuable questions compile to SQL with no model at all. Ship a template library with typed slots
+(entity, time range, place, category, property):</p>
+<pre>"Which dinosaurs lived at the same time as {X}?"
+    → overlap(species.start, species.end, X.start, X.end)
+"What wars were happening when {person} was {age}?"
+    → time window from birth+age, category=war
+"Fastest {product_type} in {year}?"
+    → property_value max_speed where valid_from <= year
+"Inventions from {country} between {y1} and {y2}"
+"What existed together?" / contemporaries    → API-2 sub-resource</pre>
+<p>The search box detects template matches (rule-based parse first); each template renders as a real
+view with a shareable URL. This is also the SEO page generator's vocabulary.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">SRCH-3</span><span class="req-title">Natural-language questions ("Ask")</span><span class="badge v2">V2</span></div>
+<pre>user question
+   → cheap intent classifier / template matcher      (no LLM or tiny model)
+   → if template match: execute structured query, render view
+   → else: small LLM converts to structured query plan against the
+     schema (entities, relationships, properties, time, place)
+   → execute; LLM writes a short explanation OVER RETRIEVED FACTS ONLY,
+     with entity links; every numeric statement must cite a claim id
+   → large model reserved for multi-hop questions that fail the above</pre>
+<p>Answers must be grounded: the model never asserts facts that are not in the retrieved result set.
+"Ask about current view" passes the viewport state as context.</p>
+</div>
+
+<h2>Cost policy</h2>
+<div class="req"><div class="req-head"><span class="req-id">SRCH-4</span><span class="req-title">AI cost fence</span><span class="badge mvp">MVP (policy)</span></div>
+<p>Naive LLM-per-interaction at 1M MAU ≈ $100k/month and would dwarf all infrastructure. Binding rules:</p>
+<ul>
+<li>Search, map, timeline, entity browsing, comparisons: <strong>never</strong> require a model call.</li>
+<li>Escalation ladder is mandatory: template &rarr; small model &rarr; large model; each step logged with
+cost attribution; conversion rates between steps on the ops dashboard.</li>
+<li>NL answers for common questions are cached by normalized question + dataset version.</li>
+<li>Free tier gets a metered number of AI questions; Pro raises the cap. Hard monthly budget alarm; the
+feature degrades to template-only rather than overspending (with an explicit user-facing message, not a
+silent downgrade).</li>
+</ul>
+</div>
+
+<h2>SEO surface</h2>
+<div class="req"><div class="req-head"><span class="req-id">SRCH-5</span><span class="req-title">Long-tail landing pages</span><span class="badge v2">V2</span></div>
+<p>Every entity page is crawlable from MVP (<a href="05-api.html">API-6</a>). V2 adds generated
+intersection pages from the snapshot job: <code>/time/1945/berlin</code>,
+<code>/inventions/19th-century</code>, <code>/dinosaurs/cretaceous</code>, <code>/cars/fastest/1970s</code>.
+Pages are static-rendered from precomputed data (no per-crawl compute), interlinked, and each carries the
+interactive app as progressive enhancement. Organic search is the primary acquisition channel; these
+pages are the funnel.</p>
+</div>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 08 Search &amp; AI</footer>
+</body>
+</html>

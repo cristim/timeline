@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>03 Data Sources &amp; Ingestion · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 03 Data Sources</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a class="current" href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>03 · Data Sources &amp; Ingestion</h1>
+<p class="lead">We do not build a historical dataset from zero. Machines provide breadth; our
+intellectual work is classification, importance ranking, relationships, and semantic zoom.</p>
+
+<h2>Source tiers</h2>
+<div class="req"><div class="req-head"><span class="req-id">SRC-1</span><span class="req-title">Five source tiers</span><span class="badge mvp">MVP</span></div>
+<table>
+<tr><th>Tier</th><th>Sources</th><th>Role</th><th>License</th><th>MVP?</th></tr>
+<tr><td>1 Core facts</td><td><strong>Wikidata</strong> (full dump, not live SPARQL)</td><td>Main knowledge graph: events, people, places, species, inventions, dates, coordinates, relationships, identifiers</td><td>CC0 - free for commercial use, transformation, resale</td><td>Yes</td></tr>
+<tr><td>2 Geography</td><td><strong>OpenHistoricalMap</strong> (weekly dumps, Overpass), selected open GIS sets (historical-basemaps)</td><td>Historical borders, roads, buildings, cities, time-tagged geometry</td><td>CC0 by default; individual features may carry <code>license=*</code> tags - must be honored per feature</td><td>Yes</td></tr>
+<tr><td>3 Content</td><td><strong>Wikipedia</strong></td><td>Links, fact extraction with citations, sub-day event sequences. Never copy article prose into our DB (CC BY-SA share-alike trap)</td><td>CC BY-SA</td><td>Yes (links + limited extraction)</td></tr>
+<tr><td>4 Media</td><td><strong>Wikimedia Commons</strong>, <strong>YouTube</strong> (embed + Data API)</td><td>Images, paintings, historical photos, map scans; curated video links</td><td>Per-file (Commons); YouTube via embed/API terms only</td><td>Yes</td></tr>
+<tr><td>5 Specialist</td><td>NASA, paleo/geology datasets, <strong>OpenAlex/Crossref</strong> (papers), patent-office bulk data, Open Library</td><td>Deep time, science graph, papers, patents, books</td><td>Mostly open/public domain, per-dataset check</td><td>Seed subsets only</td></tr>
+</table>
+<div class="warn-box"><strong>Never</strong> import a competitor's derived database (ChronoAtlas polygons,
+Chronas cleaned data) without verifying their license explicitly. Using the same upstream source is fine;
+copying their resulting database is not. Their cleaning/ranking work is itself protectable value.
+Before commercial launch, have a lawyer review the Wikipedia fact-extraction method (EU database rights).</div>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">SRC-2</span><span class="req-title">Provenance on every record</span><span class="badge mvp">MVP</span></div>
+<p>Every imported claim/geometry/media row carries <code>source, source_id, license, attribution,
+source_url, retrieved_at</code> (<a href="02-domain-model.html">DM-9</a>). The pipeline automatically
+applies attribution in the UI and can exclude by license. A record arriving without resolvable license
+is a hard ingestion error, not a default to "assume fine".</p>
+</div>
+
+<h2>Ingestion pipeline</h2>
+<div class="req"><div class="req-head"><span class="req-id">SRC-3</span><span class="req-title">Importer architecture</span><span class="badge mvp">MVP</span></div>
+<pre>S3 (raw dumps: wikidata json.bz2, OHM pbf, commons metadata)
+   │  versioned, immutable - COLD tier
+   ▼
+importer (Go, batch jobs, idempotent, resumable)
+   ├── parse + filter        (entity type allowlist, quality gates)
+   ├── normalize             (to DM-* schema; unit + calendar normalization)
+   ├── entity resolution     (wikidata_id is the join key; OHM wikidata tags)
+   ├── validate              (schema, coordinate sanity, date sanity - fail loud,
+   │                          write rejects to a reject table with reason)
+   ├── classify              (category facets from instance_of/subclass trees)
+   ├── rank                  (importance vector - see 07 ZOOM-2)
+   └── load                  (PostgreSQL COPY into staging, atomic swap)
+   ▼
+WARM tier: full filtered datasets as Parquet on S3 (papers, patents, all candidates)
+HOT  tier: curated 1-5M entities in PostgreSQL</pre>
+<ul>
+<li>Imports are reproducible: same dump + same code &rarr; same DB. Every run records dump version and
+counts (parsed / accepted / rejected per reason).</li>
+<li>Re-import is a full staging rebuild + swap, not incremental mutation, until user contributions exist
+(then: contributions live in overlay tables that survive swaps).</li>
+<li>Wikidata extraction pulls at minimum: labels, descriptions, instance_of/subclass_of, P580/P582/P585
+(times), P625 (coords), P276 (location), P710 (participant), P361 (part of), P828/P1542 (cause/effect),
+P61/P575 (discovery), sitelinks, image (P18), Commons category.</li>
+</ul>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">SRC-4</span><span class="req-title">Wikipedia fine-detail extraction</span><span class="badge v2">V2</span></div>
+<p>LLM extraction jobs turn Wikipedia sections into structured sub-events (JFK timeline at minute
+precision, D-Day landings by hour). Each extracted record retains the source paragraph reference, gets
+<code>value_type=estimated</code>-equivalent status and a confidence score, and is <em>never</em> treated
+as automatically true. MVP only stores Wikipedia links; the extraction pipeline is V2 and feeds
+buckets T11&ndash;T13.</p>
+</div>
+
+<h2>Data scale plan</h2>
+<div class="req"><div class="req-head"><span class="req-id">SRC-5</span><span class="req-title">Hot / warm / cold tiers</span><span class="badge mvp">MVP</span></div>
+<table>
+<tr><th>Tier</th><th>Store</th><th>Contents</th><th>Scale</th></tr>
+<tr><td>HOT</td><td>PostgreSQL/PostGIS</td><td>Curated entities powering interactive map/timeline/search</td><td>MVP 1&ndash;5M entities, 20&ndash;50M claims/relationships, ~20&ndash;100 GB with indexes</td></tr>
+<tr><td>WARM</td><td>Parquet on S3</td><td>Full candidate sets: all papers, patents, measurements, less-important entities; promoted to HOT on demand/by ranking</td><td>100M+ rows, grows freely</td></tr>
+<tr><td>COLD</td><td>S3 raw dumps</td><td>Original Wikidata/OHM/OpenAlex/patent dumps, versioned</td><td>TB-scale, cheap</td></tr>
+</table>
+<p>MVP HOT targets by type (approximate): events 500k&ndash;1M · people 500k · places/states/cities 200k ·
+species 300k · inventions/technologies 50k · books/media/games 500k · vehicles/products 100k · selected
+papers 100k · selected patents 100k · other 500k. Detailed polygons/tiles live outside the DB size
+budget (tile store).</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">SRC-6</span><span class="req-title">Papers, patents, books: metadata only</span><span class="badge mvp">MVP (seed)</span></div>
+<pre>paper  { doi, title, authors, publication_date, venue,
+         abstract_if_permitted, citation_count, topics, related_entities }
+patent { patent_id, office, filed, published, granted, assignee,
+         inventors, citations, related_entities }
+book   { openlibrary/wikidata id, title, author, first_published, editions }</pre>
+<p>Full text is out of scope permanently (changes the project completely). MVP seeds ~100k landmark
+papers/patents chosen by citation count + links to HOT entities; the rest stays WARM.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">SRC-7</span><span class="req-title">Media curation</span><span class="badge mvp">MVP</span></div>
+<p>Commons: pick per-entity hero image from P18 + category heuristics; store license/author/attribution
+per file. YouTube: an offline curation job (search + metadata + manual allowlist for the top ~2k entities)
+produces ranked <code>media_ref</code> rows; the client embeds the player. No live YouTube search in the
+view path.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">SRC-8</span><span class="req-title">Time series and deep-time data</span><span class="badge mvp">MVP (seed)</span> </div>
+<p>Curated small series (world population, CO₂, life expectancy, transistor count, record speeds/heights)
+enter <code>property_value</code> directly. Large/dense series go to Parquet with a manifest entity in
+the DB. Deep-time content (geological periods, paleogeography, evolution milestones, future projections)
+is a hand-curated seed dataset (~2&ndash;5k entities) assembled from Wikidata + NASA + literature, because
+Wikidata alone is thin there. This seed set is what makes Big Bang &rarr; future browsing work at all and
+is a Phase-0 deliverable (<a href="10-roadmap.html">ROAD-1</a>).</p>
+</div>
+
+<h2>Validation gates (fail loud)</h2>
+<ul>
+<li>Dates: entity lifetimes must be internally consistent (birth &lt; death; part_of child within parent
+range ± tolerance) - violations go to the reject table.</li>
+<li>Coordinates: located-in country vs. coordinates cross-check ("battle in Germany, coords in Brazil" &rarr; reject/flag).</li>
+<li>Outliers: property values &gt;5σ from type cohort flagged (T. rex at 800 t).</li>
+<li>Duplicates: same wikidata_id twice is fatal; near-name+near-time+near-place pairs flagged for review.</li>
+<li>Every gate emits counts to the import report; a &gt;2% reject-rate jump between dump versions fails the run for human review.</li>
+</ul>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 03 Data Sources &amp; Ingestion</footer>
+</body>
+</html>

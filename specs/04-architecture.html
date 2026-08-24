@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>04 System Architecture · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 04 Architecture</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a class="current" href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>04 · System Architecture</h1>
+<p class="lead">Deliberately boring: Go + PostgreSQL/PostGIS + S3 + CloudFront + vector tiles.
+Historical content is read-heavy, immutable, and cacheable; exploit that everywhere.</p>
+
+<h2>Topology</h2>
+<div class="req"><div class="req-head"><span class="req-id">ARCH-1</span><span class="req-title">MVP deployment</span><span class="badge mvp">MVP</span></div>
+<pre>                        CloudFront (CDN)
+                             │
+        ┌───────────┬────────┴─────────┬──────────────┐
+        │           │                  │              │
+  React static   /api/*          /tiles/*        media thumbs
+  app (S3)          │                  │         (external URLs)
+                 Go API          tile server /
+                 (ECS or         pregenerated
+                  Lambda)        tiles on S3
+                    │                  │
+                    └──────┬───────────┘
+                           │
+                  PostgreSQL + PostGIS (RDS)
+                           │
+                 ┌─────────┴─────────┐
+                 S3                importer (Go batch)
+            dumps + Parquet      Wikidata / OHM / Commons</pre>
+<p>Stack: CloudFront + S3 + ALB/API Gateway + ECS (or Lambda) + RDS PostgreSQL with PostGIS.
+Infrastructure as Terraform. Single region.</p>
+<p><strong>Explicit non-deployments</strong> (each requires a measured justification to add later):
+Kubernetes, Kafka/queues, Neo4j/graph DB, multiple databases, Elasticsearch (until search outgrows
+Postgres, see <a href="08-search-ai.html">SRCH-2</a>), embeddings infra, microservices. One Go binary
+for the API, one for the importer.</p>
+</div>
+
+<h2>Caching: the economic core</h2>
+<div class="req"><div class="req-head"><span class="req-id">ARCH-2</span><span class="req-title">95%+ of browsing served from CDN</span><span class="badge mvp">MVP</span></div>
+<p>Ancient Rome will not change tomorrow. The 100,000th viewer of "Roman Empire, 117 CE" must cost
+approximately nothing.</p>
+<ul>
+<li>All GET API responses carry <code>Cache-Control: public</code> with long TTLs +
+<code>ETag</code> derived from dataset version. Viewport queries are cacheable because their inputs are
+quantized (<a href="05-api.html">API-1</a> snaps time ranges and bboxes to a grid).</li>
+<li>Tiles, timeline chunks, entity summaries, thumbnails: cached at edge, invalidated only by dataset
+version bump (path-versioned: <code>/v/2026-08/...</code> so invalidation is a pointer flip, not a purge).</li>
+<li>Dynamic compute is reserved for: search-as-you-type, logged-in features, AI.</li>
+<li>Target: CDN hit rate &gt;95% for anonymous browsing. Measured from day one; a dashboard widget, not
+an aspiration.</li>
+</ul>
+</div>
+
+<h2>Geometry delivery</h2>
+<div class="req"><div class="req-head"><span class="req-id">ARCH-3</span><span class="req-title">Vector tiles, never GeoJSON floods</span><span class="badge mvp">MVP</span></div>
+<p>Historical geometry ships as Mapbox Vector Tiles: <code>/tiles/{layer}/{z}/{x}/{y}?time=117</code>.
+Never send the Roman Empire's polygon coordinates through the REST API on every map move.</p>
+<ul>
+<li><strong>Time quantization:</strong> tiles are generated per time-step, not per year. Steps follow
+data density: e.g. century steps before 1000 CE, decade steps 1000&ndash;1900, year steps after 1900.
+The tile URL time parameter snaps to the nearest step, keeping the tile set finite and cacheable.</li>
+<li>MVP pregenerates tiles for the border/territory layer from OHM data at agreed steps; a dynamic
+tile server (PostGIS <code>ST_AsMVT</code>) covers long-tail layers, fronted by the CDN.</li>
+<li>Basemap: MapLibre-compatible open vector basemap (e.g. OpenMapTiles-based, self-hosted or
+provider) - not Google Maps; we need full control over historical overlays.</li>
+<li>Deep-time paleogeography basemaps are separate raster/vector tile sets keyed by geological time
+(<a href="06-frontend.html">FE-5</a>).</li>
+</ul>
+</div>
+
+<h2>Precomputation jobs</h2>
+<div class="req"><div class="req-head"><span class="req-id">ARCH-4</span><span class="req-title">Offline jobs make reads cheap</span><span class="badge mvp">MVP</span></div>
+<p>Rendering must never rank a million events live. Batch jobs (Go, run on import and on demand):</p>
+<table>
+<tr><th>Job</th><th>Output</th><th>Spec</th></tr>
+<tr><td>Importance ranking</td><td><code>entity.importance</code> vector (global/regional/category/time)</td><td><a href="07-semantic-zoom.html">ZOOM-2</a></td></tr>
+<tr><td>Bucket assignment</td><td><code>bucket_min/bucket_max</code> per entity</td><td><a href="07-semantic-zoom.html">ZOOM-3</a></td></tr>
+<tr><td>Timeline chunk build</td><td>Pre-baked JSON chunks per (bucket, time-window, category) for the anonymous fast path</td><td><a href="05-api.html">API-1</a></td></tr>
+<tr><td>Tile generation</td><td>MVT sets per layer/time-step</td><td>ARCH-3</td></tr>
+<tr><td>Search index build</td><td>tsvector/trigram columns; later OpenSearch feed</td><td><a href="08-search-ai.html">SRCH-1</a></td></tr>
+<tr><td>Snapshot build</td><td>"World at date" summaries for popular dates/SEO pages</td><td><a href="01-product-vision.html">VIS-5</a></td></tr>
+</table>
+</div>
+
+<h2>Cost model</h2>
+<div class="req"><div class="req-head"><span class="req-id">ARCH-5</span><span class="req-title">Budget envelope and alarms</span><span class="badge mvp">MVP</span></div>
+<table>
+<tr><th>Scale</th><th>MAU</th><th>Est. infra/month</th></tr>
+<tr><td>Prototype</td><td>&lt;10k</td><td>$50&ndash;300</td></tr>
+<tr><td>Small public</td><td>100k</td><td>$300&ndash;1,000</td></tr>
+<tr><td>Growing</td><td>1M</td><td>$1k&ndash;4k (CDN $500&ndash;1.5k, RDS $300&ndash;1k, compute $100&ndash;500, S3 $50&ndash;300, search $100&ndash;500, misc $200&ndash;800)</td></tr>
+<tr><td>Large</td><td>10M</td><td>$5k&ndash;20k (consider CloudFront flat-rate plans: $1k/mo for 500M req + 50TB tier)</td></tr>
+</table>
+<ul>
+<li>Database size is <em>not</em> the cost problem; traffic, AI, data processing, and people are.</li>
+<li>AI spend is fenced by policy (<a href="08-search-ai.html">SRCH-4</a>): naive LLM-per-interaction at
+1M MAU would cost ~$100k/mo and is forbidden.</li>
+<li>Billing alarms at 2x expected per service; CDN hit rate and origin egress on the main dashboard.</li>
+</ul>
+</div>
+
+<h2>Operational requirements</h2>
+<div class="req"><div class="req-head"><span class="req-id">ARCH-6</span><span class="req-title">Ops baseline</span><span class="badge mvp">MVP</span></div>
+<ul>
+<li>Backups: automated RDS snapshots + weekly logical dump to S3; restore path tested before launch.</li>
+<li>Observability: structured logs, RED metrics per endpoint, slow-query log; p95 targets in <a href="05-api.html">API-5</a>.</li>
+<li>Deploys: CI-built images, staging environment, migrations via versioned files (golang-migrate or equivalent), reversible.</li>
+<li>The dataset version (dump + pipeline git SHA) is exposed at <code>/api/version</code> and stamped into every page footer.</li>
+<li>Security: no PII in MVP beyond optional accounts (V2); secrets in SSM/Secrets Manager; WAF via CloudFront.</li>
+</ul>
+</div>
+
+<h2>Browser-side analytics</h2>
+<div class="req"><div class="req-head"><span class="req-id">ARCH-7</span><span class="req-title">DuckDB-Wasm for heavy comparisons</span><span class="badge later">LATER</span></div>
+<p>For Pro chart features ("compare speed and mass of 50 theropods"), Parquet property files on the CDN
++ DuckDB-Wasm in the browser avoids API load. Explicitly not started before the chart view exists; noted
+here so the Parquet WARM layout (<a href="03-data-sources.html">SRC-5</a>) stays column-friendly.</p>
+</div>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 04 System Architecture</footer>
+</body>
+</html>

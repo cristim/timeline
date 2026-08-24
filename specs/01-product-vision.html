@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>01 Product Vision · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 01 Product Vision</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a class="current" href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>01 · Product Vision</h1>
+<p class="lead">What we are building, why it can win against existing products, and what we refuse to build.</p>
+
+<h2>Product definition</h2>
+<div class="req"><div class="req-head"><span class="req-id">VIS-1</span><span class="req-title">A visual database of everything across time</span><span class="badge mvp">MVP</span></div>
+<p>The product is <em>not</em> "an interactive history timeline" (a crowded space). It is a
+<strong>time + space knowledge graph</strong> rendered through one interface: a zoomable timeline that is
+always visible, a synchronized map, and an inspector. It spans from the Big Bang, through natural history
+and all of human history, to the present and on into scientific projections of the future
+(red-giant Sun, stellar era end, heat death), covering a usable range of more than 100 orders of
+magnitude of time.</p>
+<p>A user can travel: Big Bang &rarr; formation of Earth &rarr; dinosaurs &rarr; Roman Empire &rarr; steam
+engine &rarr; WWII &rarr; Moon landing &rarr; current events &rarr; future of Earth &rarr; death of the Sun,
+without leaving the application, and at any point switch from "what happened?" to "where?", "why?",
+"what existed?", "how big?", or "what happens next?".</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">VIS-2</span><span class="req-title">Four linked dimensions</span><span class="badge mvp">MVP</span></div>
+<p>Every feature maps onto one of four dimensions over the same entity graph:</p>
+<ul>
+<li><strong>TIME</strong> - when? (zoomable timeline, temporal buckets)</li>
+<li><strong>SPACE</strong> - where? (map, historical geometry, semantic geographic zoom)</li>
+<li><strong>KNOWLEDGE GRAPH</strong> - how is it related? (caused, enabled, part_of, influenced)</li>
+<li><strong>PROPERTIES</strong> - how big / fast / heavy / populous? (measured values with units, dates, uncertainty)</li>
+</ul>
+<p>Map and timeline are two views of the same graph, never two separate features.</p>
+</div>
+
+<h2>Competitive landscape</h2>
+<p>Summary of the full competitor research. Nobody wins all three axes of TIME &times; SPACE &times; KNOWLEDGE:</p>
+<table>
+<tr><th>Product</th><th>Strong at</th><th>Limitation</th><th>Overlap threat</th><th>What to borrow</th></tr>
+<tr><td>Wikitime (wikitime.live)</td><td>Map + timeline + connections + local history + importance filters, ~6,000 years, 40+ storylines</td><td>Human history only; no deep time; major events focus</td><td><strong>High</strong> - closest overall</td><td>Benchmark for base UX; Connections Explorer</td></tr>
+<tr><td>Chronas (chronas.org)</td><td>Map colored by ruler/culture/religion/population; 50M+ data points; community editing; media</td><td>~4,000 years; map-centric model</td><td>High for map</td><td>Entity editing, relationships, ratings, revision history</td></tr>
+<tr><td>ChronoAtlas (chronoatlas.nl)</td><td>Historical borders 4000 BCE&ndash;now, trade routes, battles, georeferenced map scans, NL questions</td><td>Timeline is just a date selector; no science; curated only</td><td>High for maps</td><td>Layer UX, historical map scans</td></tr>
+<tr><td>Chronos Atlas (chronosatlas.org)</td><td>285k+ archaeology sites, peer review, contributor reputation, 3D/LiDAR</td><td>Archaeology-scoped</td><td>Medium</td><td>Contribution workflow: review tiers, duplicate detection, AI-assisted moderation</td></tr>
+<tr><td>Age of Events</td><td>Wikidata + OHM + NASA; 10k+ battles, 5k+ states</td><td>Starts ~3000 BCE; map-organized</td><td>High</td><td>Proof the source combination works</td></tr>
+<tr><td>Timeline History (timelinehistory.net)</td><td>148,756 Wikidata CC0 events, 3001 BCE&ndash;2026, broad categories</td><td>No deep relationships, no deep time</td><td>High on content breadth</td><td>Proof that automated Wikidata ingestion yields a large usable DB</td></tr>
+<tr><td>Histography (histography.io)</td><td>Big Bang &rarr; modern, gorgeous extreme-scale timeline from Wikipedia</td><td>No map, no graph, ends ~2015</td><td>High for timeline concept only</td><td>Deep-time compression UX</td></tr>
+<tr><td>Histropedia</td><td>Wikidata SPARQL &rarr; timeline with Wikipedia/Commons/YouTube embedded</td><td>No map or geography</td><td>Medium (ingestion/media side)</td><td>Media integration pattern; user-created timelines</td></tr>
+<tr><td>OpenHistoricalMap</td><td>Time-aware community geography, CC0 default, APIs + bulk dumps, time slider</td><td>Geography only</td><td>Low - it is <em>infrastructure</em> for us</td><td>Data itself; visual map-editing contribution model</td></tr>
+</table>
+
+<div class="warn-box"><strong>Go/no-go principle:</strong> if we would only build
+"map + timeline + battles + empires + Wikipedia", we should not build at all - that space is taken.
+The product is only worth building with the differentiators below. This is enforced by the Phase-0 gate
+in <a href="10-roadmap.html">10 Roadmap</a>.</div>
+
+<h2>Differentiators</h2>
+
+<div class="req"><div class="req-head"><span class="req-id">VIS-3</span><span class="req-title">Combined semantic zoom over time AND geography</span><span class="badge mvp">MVP</span></div>
+<p>The protected core concept. Not "zoom the timeline" but: <em>the information hierarchy changes as the
+user changes both time scale and geographic scale</em>. Europe+1500&ndash;1600 must not show Japanese
+village events; Kyoto+1500&ndash;1600 must show rich local detail; 14 billion visible years shows ~20
+cosmic events, one visible day shows individual sub-events. No competitor fully implements the combined
+version. Detailed in <a href="07-semantic-zoom.html">07</a>.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">VIS-4</span><span class="req-title">Entities beyond events, claims instead of truths</span><span class="badge mvp">MVP</span></div>
+<p>The base object is anything with a time and optionally a place: species, cars, aircraft, computers,
+games, books, papers, patents, ideas, standards, records. Facts are stored as competing sourced claims
+with uncertainty (see <a href="02-domain-model.html">02</a>). This single model carries history, science,
+products, and the future without per-category schemas, and is what makes arbitrary comparison
+(T. rex vs. elephant, Apollo Guidance Computer vs. iPhone, Roman Empire vs. British Empire) possible.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">VIS-5</span><span class="req-title">"World at this date" snapshot</span><span class="badge mvp">MVP</span> <span class="badge v2">full dashboard V2</span></div>
+<p>Selecting any date builds a snapshot: political map, rulers, active wars, population, technology
+available (telephone ✓, powered airplane ✗), scientific knowledge state, culture, records at that time
+(fastest car/aircraft, tallest building, largest city). Dragging the date animates everything. MVP ships
+the map+timeline snapshot; the full dashboard (tech/science checklists, records) is V2. This is likely
+the killer interaction.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">VIS-6</span><span class="req-title">Knowledge date (second slider)</span><span class="badge v2">V2</span></div>
+<p>The most original feature: separate <strong>world date</strong> from <strong>knowledge-as-of date</strong>.
+Set world date to 66 Ma and knowledge date to 1850, 1900, 1950, 2026, and watch dinosaurs as each era
+understood them. Same for age of Earth, the universe, continents, diseases. Requires claims to carry
+publication dates from MVP onward (see <a href="02-domain-model.html">DM-5</a>) even though the UI ships in V2.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">VIS-7</span><span class="req-title">Technology and causality graphs</span><span class="badge v2">V2</span></div>
+<p>"What enabled this?" (iPhone &larr; touchscreen &larr; microprocessor &larr; transistor &larr; quantum
+physics) and "What did this lead to?" (transistor &rarr; ICs &rarr; CPUs &rarr; Internet &rarr; AI), rendered
+as an interactive graph view. Relationship types exist in the MVP data model; the dedicated graph view and
+curated dependency data are V2.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">VIS-8</span><span class="req-title">Explicit future timeline</span><span class="badge mvp">MVP (seed set)</span></div>
+<p>The timeline continues past NOW into projections, visually distinct (see
+<a href="06-frontend.html">FE-7</a>). Every future item carries model + source + confidence + time range.
+MVP includes a small hand-curated set (~100 items: climate projections, astronomy, cosmology) to prove
+the mechanic.</p>
+</div>
+
+<h2>Feature families and scope tags</h2>
+<table>
+<tr><th>Family</th><th>Scope</th><th>Notes</th></tr>
+<tr><td>Timeline + map + inspector, semantic zoom, search, entity pages with Wikipedia/Commons/YouTube links</td><td><span class="badge mvp">MVP</span></td><td>The core loop</td></tr>
+<tr><td>"World at date" snapshot (map-level), comparisons of 2 entities, shareable URLs, importance filtering, category filtering</td><td><span class="badge mvp">MVP</span></td><td></td></tr>
+<tr><td>Charts of property time series, records-over-time, scale comparison view, graph view, knowledge-date slider, full date dashboard, curated story paths</td><td><span class="badge v2">V2</span></td><td>Each is additive over the MVP model</td></tr>
+<tr><td>Contributions/crowdsourcing, bulk institutional imports, reputation, embeddable widget, education tier, personal timelines</td><td><span class="badge v2">V2</span>/<span class="badge later">LATER</span></td><td>See <a href="09-contributions.html">09</a></td></tr>
+<tr><td>Counterfactual/AI-simulation mode, VR/AR, native mobile apps, historical travel street-level mode</td><td><span class="badge later">LATER</span></td><td>Do not design for these now</td></tr>
+</table>
+
+<h2>Non-goals</h2>
+<ul>
+<li>No hosting of video or full-resolution media; reference YouTube/Commons (licensing + cost).</li>
+<li>No full text of scientific papers; metadata + links only (see <a href="03-data-sources.html">SRC-6</a>).</li>
+<li>No paywalled browsing. Free exploration is the distribution engine (SEO long-tail pages: <code>/time/1945/berlin</code>, <code>/dinosaurs/cretaceous</code>).</li>
+<li>No "everyone edits the database" wiki model; contributions are claims through review (see <a href="09-contributions.html">09</a>).</li>
+<li>No pretending soft concepts have hard borders: fuzzy cultural/linguistic areas must render differently from treaty borders.</li>
+</ul>
+
+<h2>Business model (context, not build scope)</h2>
+<p>Freemium: free timeline/map/search/entity browsing with limited AI; Pro (€8&ndash;12/mo) adds unlimited
+comparisons, charts, collections, exports, more AI, private timelines. Later: education tier (classrooms,
+assignments; school pricing €1k&ndash;5k/yr), API/data tiers, museum installations, publisher embeds,
+restrained advertising. Target revenue mix at maturity: consumer ~30%, education ~25%, API/data ~15%,
+institutions ~10%, ads ~10%, embeds/sponsorship ~10%. Infrastructure is cheap relative to scale
+(read-heavy, immutable, CDN-cacheable); the real costs are people, data quality, and AI serving
+(<a href="04-architecture.html">04</a>, <a href="08-search-ai.html">08</a>).</p>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 01 Product Vision</footer>
+</body>
+</html>

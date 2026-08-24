@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>02 Domain Model · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 02 Domain Model</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a class="current" href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>02 · Domain Model</h1>
+<p class="lead">One universal model carries history, science, products, culture, and the future:
+entities, claims, properties, relationships, geometry, sources. No per-category schemas.</p>
+
+<h2>Core concepts</h2>
+<div class="req"><div class="req-head"><span class="req-id">DM-1</span><span class="req-title">The universal entity</span><span class="badge mvp">MVP</span></div>
+<p>Anything that has a time, a place, measurable properties, or relationships to other things can be an
+entity. The complete conceptual reduction:</p>
+<pre>ENTITY
+  ├── existed during TIME        (temporal claim, DM-4)
+  ├── existed at PLACE           (geometry, DM-7)
+  ├── has PROPERTY               (property value, DM-6)
+  ├── has CLAIM                  (sourced statement, DM-5)
+  ├── related to ENTITY          (relationship, DM-8)
+  └── supported by SOURCE        (provenance, DM-9)</pre>
+<p>Entity types are an extensible enum, not table-per-type. Initial set: <code>event, person, species,
+object, place, organization, state, civilization, idea, theory, discovery, invention, patent, paper,
+book, artwork, film, game, product, technology, standard, law, religion, language, disease, chemical,
+material, structure, astronomical_object, natural_event, future_event, record, time_series</code>.
+Unknown types must be an ingestion error, not silently coerced (fail loud).</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">DM-2</span><span class="req-title">Relational schema, not a graph database</span><span class="badge mvp">MVP</span></div>
+<p>PostgreSQL + PostGIS. Graph traversals are modeled with indexed relational tables; a graph DB is
+considered only if traversal load ever dominates (it will not for MVP). Core tables:</p>
+<pre>entity
+  id              bigint PK
+  slug            text UNIQUE            -- URL identity: 'tyrannosaurus-rex'
+  type            entity_type NOT NULL
+  name            text NOT NULL
+  description     text                   -- our own short text, not copied Wikipedia prose
+  start_time      timeline_time          -- denormalized best-consensus (see DM-4)
+  end_time        timeline_time
+  time_precision  time_precision
+  temporal_status temporal_status        -- observed .. speculative (DM-4)
+  categories      category[]             -- topic facets for filtering
+  importance      jsonb                  -- precomputed vector (see 07 ZOOM-2)
+  bucket_min      smallint               -- first time bucket where it renders (T0..T13)
+  bucket_max      smallint
+  wikidata_id     text                   -- Qxxxx when applicable
+  wikipedia_url   text
+  created_at / updated_at
+
+relationship
+  id, source_entity, relationship_type, target_entity,
+  valid_from, valid_until, source_id, confidence
+
+claim            -- DM-5
+property_value   -- DM-6
+geometry_record  -- DM-7
+source           -- DM-9
+media_ref        -- DM-10
+slug_alias       -- DM-2a: (old_slug PK, entity_id FK)</pre>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">DM-2a</span><span class="req-title">Slug policy</span><span class="badge mvp">MVP</span></div>
+<p>Slugs are the public, permanent identity of an entity (<a href="05-api.html">API-5</a>). Rules:</p>
+<ul>
+<li><strong>Generation:</strong> lowercase ASCII kebab-case derived from the English name:
+Unicode-transliterate, strip punctuation, collapse whitespace/hyphens, trim to 80 chars.
+<code>Tyrannosaurus rex → tyrannosaurus-rex</code>.</li>
+<li><strong>Collision resolution, deterministic:</strong> first claimant (highest importance in the
+import batch) keeps the bare slug; others append, in order of preference: start year
+(<code>battle-of-lechfeld-955</code>), then entity type (<code>mercury-planet</code> vs
+<code>mercury-element</code>), then as final fallback the Wikidata id (<code>-q308</code>). Same dump +
+same code must yield the same slugs (required for reproducible imports, SRC-3).</li>
+<li><strong>Permanence:</strong> a published slug is never reassigned to a different entity, ever.
+Renames mint a new slug and insert the old one into <code>slug_alias</code>; aliased slugs answer with
+HTTP 301 to the canonical URL. Deleting an entity retires its slug permanently (alias to nothing is a
+410, not a reuse).</li>
+</ul>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">DM-3</span><span class="req-title">Event hierarchy</span><span class="badge mvp">MVP</span></div>
+<p>Events nest via <code>part_of</code> relationships: WWII &rarr; European theatre &rarr; Eastern Front
+&rarr; Battle of Stalingrad &rarr; individual assaults. Zoom level determines which level of the tree
+renders (see <a href="07-semantic-zoom.html">07</a>). The hierarchy is plain relationships, not a
+separate tree table.</p>
+</div>
+
+<h2>Time</h2>
+<div class="req"><div class="req-head"><span class="req-id">DM-4</span><span class="req-title">Temporal model: arbitrary precision + uncertainty status</span><span class="badge mvp">MVP</span></div>
+<p>The timeline spans &gt;100 orders of magnitude, far outside <code>timestamptz</code> range. Represent
+time as a custom composite:</p>
+<pre>timeline_time {
+    -- seconds relative to epoch 1970, stored as UNCONSTRAINED numeric.
+    -- numeric(40,6) would top out near 1e34 s (~3e26 years): too small for
+    -- the ~3e107 s heat-death horizon. Unconstrained numeric has no such cap.
+    t          numeric
+}
+
+time_precision: billion_year | million_year | millennium | century |
+                decade | year | month | day | hour | minute | second
+
+temporal_status:
+  observed         -- Apollo 11 landing, measured
+  documented       -- contemporary records
+  estimated        -- T. rex 68-66 Ma; reconstructed dates
+  projected        -- Sun red giant ~5 Ga (model, high confidence)
+  model_dependent  -- heat death (depends on cosmological model)
+  speculative      -- human Mars settlement
+  legendary        -- founding of Rome 753 BCE (traditional date)
+  disputed         -- competing scholarship</pre>
+<p>Every temporal statement is a <code>TemporalClaim { time, uncertainty_range, status, confidence,
+sources[] }</code>. The denormalized <code>entity.start_time/end_time</code> is the current synthesis
+for fast queries; the claims remain the ground truth. Rendering rules per status are in
+<a href="06-frontend.html">FE-7</a>.</p>
+<div class="warn-box">Wikidata stores at most day precision. Sub-day sequences (JFK motorcade minute by
+minute, D-Day hours) come from Wikipedia/LLM extraction with retained source paragraph + confidence
+(see <a href="03-data-sources.html">SRC-4</a>). The schema must accept second precision from day one.</div>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">DM-5</span><span class="req-title">Claims, not truths</span><span class="badge mvp">MVP</span></div>
+<p>The single most important design decision. Contributors and importers submit <em>claims</em>;
+conflicting claims coexist; the display shows the synthesis with its spread, never a fake exact value
+("Rome, 100 CE: estimated 500k&ndash;1M", not "873,422").</p>
+<pre>claim
+  id            bigint PK
+  entity_id     bigint FK
+  property      text          -- 'max_speed', 'population', 'date_of_battle'
+  value         jsonb         -- typed value, range, or geometry ref
+  unit          text          -- UCUM code where applicable
+  min / max     numeric       -- uncertainty range
+  value_type    enum: measured | estimated | reconstructed | projected
+  method        text          -- 'biomechanical simulation'
+  source_id     bigint FK     -- required (DM-9)
+  published_at  date          -- when this claim was made: REQUIRED, powers
+                              -- the knowledge-date slider (VIS-6)
+  confidence    real          -- 0..1
+  superseded_by bigint        -- nullable; claims are never deleted
+  status        enum: active | disputed | retracted</pre>
+<p>Example: T. rex <code>max_speed</code> has one claim of 18&ndash;25 km/h (paper A, 2017, biomechanical
+simulation) and one of 20&ndash;30 km/h (paper B, 2024); the entity surface shows "likely 18&ndash;30 km/h,
+2 estimates". A claim being wrong is handled by <code>superseded_by</code>/<code>retracted</code>, never
+by deletion: the history of knowledge is itself product content.</p>
+</div>
+
+<h2>Properties and measurements</h2>
+<div class="req"><div class="req-head"><span class="req-id">DM-6</span><span class="req-title">Property values with units, validity dates, uncertainty</span><span class="badge mvp">MVP</span></div>
+<p>Properties are the comparison engine (T. rex vs. elephant; Concorde vs. SR-71). Never a bare number:</p>
+<pre>property_value
+  entity_id, property, value, unit,
+  min, max,
+  valid_from, valid_until,     -- a country's population is time-dependent
+  value_type,                  -- measured vs estimated changes rendering
+  source_id, method, confidence</pre>
+<p>Property names come from a registry table (<code>property_def: name, datatype, canonical_unit,
+description</code>); unknown property names are an ingestion error. Unit conversion happens at read time
+from canonical units. Time-series data (world population, CO₂, transistor counts) uses the same table
+with dense <code>valid_from</code> points, or Parquet side-files for large series
+(<a href="03-data-sources.html">SRC-8</a>).</p>
+</div>
+
+<h2>Geometry</h2>
+<div class="req"><div class="req-head"><span class="req-id">DM-7</span><span class="req-title">Time-aware geometry with explicit representation type</span><span class="badge mvp">MVP</span></div>
+<pre>geometry_record
+  id, entity_id
+  geom            geometry(GEOMETRY, 4326)   -- point/line/polygon/multi*
+  valid_from, valid_until                    -- timeline_time
+  representation  enum:
+      exact              -- surveyed/treaty borders, buildings, railways
+      administrative     -- official but idealized
+      estimated          -- scholarly reconstruction
+      fuzzy              -- languages, cultures, religions, influence
+      point_distribution -- philosophy schools, fossil finds: points, not areas
+  confidence      real
+  source_id       bigint FK
+  reconstruction  text      -- label when multiple competing reconstructions exist</pre>
+<ul>
+<li>An entity may have many geometry records over time (Roman Empire borders per period) and several
+competing <code>reconstruction</code>s for the same period (disputed borders); the map can switch between them.</li>
+<li><code>fuzzy</code> and <code>point_distribution</code> must render visibly differently from
+<code>exact</code> (heat/intensity, dotted edges): never imply that "Occitan-speaking area, 1300" is a
+treaty border. A language layer stores <code>LanguageRegion { language, geom, valid_from, valid_to,
+confidence, sources }</code>, not "France &rarr; French".</li>
+<li>GiST index on <code>geom</code>; btree on <code>(valid_from, valid_until)</code>; combined queries are
+the hot path (<a href="05-api.html">API-1</a>).</li>
+<li>Deep-time paleogeography (Pangaea, coastlines) is a separate basemap tile set selected by time range,
+not per-entity geometry (<a href="06-frontend.html">FE-5</a>).</li>
+</ul>
+</div>
+
+<h2>Relationships</h2>
+<div class="req"><div class="req-head"><span class="req-id">DM-8</span><span class="req-title">Typed relationship vocabulary</span><span class="badge mvp">MVP</span></div>
+<p>Closed, extensible enum; unknown types are ingestion errors. Initial vocabulary:</p>
+<pre>part_of          caused_by        resulted_in      invented_by
+based_on         built_upon       replaced         influenced
+influenced_by    occurred_at      participant      contemporary_with
+spread_to        disproved_by     confirmed_by     discovered_by
+used_by          created_by       preceded         succeeded
+supports         parent_taxon     depicts          about</pre>
+<p>Relationships may carry <code>valid_from/valid_until</code>, <code>source_id</code>, and
+<code>confidence</code>. The V2 graph view (<a href="01-product-vision.html">VIS-7</a>) and
+"what enabled this?" queries traverse these; MVP populates them from Wikidata properties
+(P361 part of, P828 has cause, P1542 has effect, P710 participant, P61 discoverer, etc.).</p>
+</div>
+
+<h2>Provenance and media</h2>
+<div class="req"><div class="req-head"><span class="req-id">DM-9</span><span class="req-title">Source records; provenance is never discarded</span><span class="badge mvp">MVP</span></div>
+<pre>source
+  id, kind        enum: wikidata | wikipedia | ohm | commons | youtube |
+                        openalex | crossref | patent_office | dataset |
+                        book | primary_document | user | organization
+  external_id     text       -- Qxxxx, DOI, patent no, OHM id, video id
+  url, title, author
+  license         text       -- SPDX-like: 'CC0-1.0', 'CC-BY-SA-4.0'
+  attribution     text       -- ready-to-render attribution string
+  retrieved_at    timestamptz</pre>
+<p>Every claim, geometry record, property value, and media reference has a <code>source_id</code>.
+License drives automatic attribution rendering and lets the pipeline exclude records whose terms we
+do not accept (<a href="03-data-sources.html">SRC-2</a>).</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">DM-10</span><span class="req-title">Media by reference only</span><span class="badge mvp">MVP</span></div>
+<pre>media_ref
+  entity_id, kind  enum: image | video | audio | map_scan | document
+  commons_id / youtube_id / external_url
+  thumbnail_url, license, author, attribution, source_url
+  quality_score, language, duration_s
+  audience         enum: general | kids | academic | quick   -- V2 voting refines</pre>
+<p>We store identifiers and metadata; bytes stay at Wikimedia/YouTube. Videos are curated/ranked per
+entity, not live-searched at view time.</p>
+</div>
+
+<h2>Worked example</h2>
+<pre>Battle of Waterloo (entity: event)
+  slug: battle-of-waterloo, wikidata: Q48314
+  temporal: 1815-06-18, precision=day, status=documented
+  part_of -> Napoleonic Wars -> War of the Seventh Coalition
+  participant -> France, United Kingdom, Prussia, Napoleon, Wellington
+  geometry: battlefield polygon (representation=estimated, source=OHM)
+  claims:
+    troops_france = 73,000   (source: X, confidence 0.7)
+    troops_france = 77,500   (source: Y, confidence 0.6)   -- coexists
+  media: Commons paintings (license per file), 3 ranked YouTube docs
+  importance: global 0.97 -> renders from bucket T7 (millennium view) down</pre>
+
+<h2>Explicitly out of the schema (YAGNI)</h2>
+<ul>
+<li>No multilingual content tables in MVP (English first; <code>name_i18n jsonb</code> reserved, unused).</li>
+<li>No embeddings/vector columns until <a href="08-search-ai.html">08</a> shows a need.</li>
+<li>No user/reputation tables until <a href="09-contributions.html">09</a> ships; but nothing in this
+schema may assume single-writer truth (claims model guarantees that).</li>
+</ul>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 02 Domain Model</footer>
+</body>
+</html>

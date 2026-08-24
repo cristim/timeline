@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>09 Contributions &amp; Community · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 09 Contributions</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a class="current" href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>09 · Contributions &amp; Community</h1>
+<p class="lead">Model: GitHub + Wikipedia + OpenStreetMap, not "everyone edits the database."
+Users submit claims, corrections, sources, and datasets; validators check them; trusted contributors
+review; every change has provenance. All of this is post-MVP, but the claims model
+(<a href="02-domain-model.html">DM-5</a>) exists from day one precisely so this can bolt on without
+a rewrite.</p>
+
+<div class="note"><strong>Scope note:</strong> nothing in this document blocks MVP. The MVP obligations
+are only: claims with sources and published_at (DM-5), no single-writer truth assumptions, git-like
+audit fields on mutations, and the open-data decision (CONTRIB-8).</div>
+
+<h2>Contribution model</h2>
+<div class="req"><div class="req-head"><span class="req-id">CONTRIB-1</span><span class="req-title">Users contribute claims, not truth</span><span class="badge v2">V2</span></div>
+<p>A submission is a claim with source, method, and uncertainty; it coexists with competing claims rather
+than overwriting a field. Works identically for science (T. rex speed estimates per paper) and history
+(population of Rome per source). Edit wars become parallel sourced claims plus a synthesis, and genuine
+scholarly disagreement (Hannibal's route, causes of Rome's fall) is stored as alternative interpretations
+with evidence, each with supporters and sources. Disputed borders store multiple reconstructions the map
+can switch between (<a href="02-domain-model.html">DM-7</a>).</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">CONTRIB-2</span><span class="req-title">Contribution types and review routes</span><span class="badge v2">V2</span></div>
+<table>
+<tr><th>Contribution</th><th>Difficulty</th><th>Review route</th></tr>
+<tr><td>Fix a date / add coordinates / add a source / add a patent link</td><td>Easy</td><td>Automated validation + source check; machine-verifiable sources (DOI metadata, patent office records, election results) auto-accept</td></tr>
+<tr><td>Add event/person, add measurement, add relationship, challenge a claim, add uncertainty</td><td>Medium</td><td>Community review, source required</td></tr>
+<tr><td>Draw historical geometry, add georeferenced map scan, import a dataset</td><td>Hard</td><td>Domain/map reviewers; license + georeference checks; maintainer approval for datasets</td></tr>
+<tr><td>Rank importance (pairwise votes), rate media, translate, microtasks</td><td>Easy</td><td>Aggregation, no per-item review</td></tr>
+</table>
+<p>Contribution UI is embedded in normal browsing (small "add source / suggest correction / add media"
+actions on every entity, click-a-date-to-propose), plus a map editing mode for local history
+(select "Berlin 1925" &rarr; add building/road/business/photo with source, OSM-style). No giant
+"EDIT DATABASE" button.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">CONTRIB-3</span><span class="req-title">Automated validator pipeline</span><span class="badge v2">V2</span></div>
+<pre>submission → schema validation → source validation → duplicate detection
+           → consistency checks (dates, geography, outliers)
+           → AI anomaly assist (assistant, never the authority)
+           → routed to human review queue by type + domain</pre>
+<p>Reuses the ingestion validation gates (<a href="03-data-sources.html">03</a>): "Napoleon born 1969"
+and "battle in Germany, coords in Brazil" never reach a human.</p>
+</div>
+
+<h2>Trust</h2>
+<div class="req"><div class="req-head"><span class="req-id">CONTRIB-4</span><span class="req-title">Domain-specific reputation</span><span class="badge v2">V2</span></div>
+<p>Reputation is a vector, not a scalar: 5,000 great WWII edits confer no paleontology authority.
+Reviews of a claim are weighted by the reviewer's reputation in that claim's domain. Verified experts
+(e.g. a university paleontologist) can receive domain roles without cross-domain authority.
+Contributor ladder: visitor &rarr; contributor &rarr; trusted &rarr; reviewer &rarr; domain reviewer
+&rarr; maintainer; privileges accrue slowly (propose &rarr; approve simple &rarr; review disputed
+&rarr; schema/source issues).</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">CONTRIB-5</span><span class="req-title">Transparency: history, revert, credit, follow</span><span class="badge v2">V2</span></div>
+<p>Every entity has public git-like history (what changed, why, source, contributor, diff view) and cheap
+revert. Contributors get visible credit per entity ("History · Contributors · Sources") and profiles with
+acceptance stats and specialties; dataset contributions keep attribution ("Roman roads of Dacia - C.M.,
+2026"). Users can follow entities/topics and are notified of proposed changes, creating distributed
+volunteer review. Badges represent verified work (1,000 verified locations), never engagement.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">CONTRIB-6</span><span class="req-title">Microtasks and crowd ranking</span><span class="badge v2">V2</span></div>
+<p>Game-like small tasks: "was this event in Paris or Versailles?", "same person?", "best image?",
+"drop a pin". Importance ranking uses pairwise comparisons ("which is more historically important?")
+aggregated Elo-style, contextual by scope (global / to aviation / to Germany), feeding
+<a href="07-semantic-zoom.html">ZOOM-2</a>. Uncertainty is voted on by qualified contributors as
+"which estimates are credible", never "what is the true number".</p>
+</div>
+
+<h2>Institutions</h2>
+<div class="req"><div class="req-head"><span class="req-id">CONTRIB-7</span><span class="req-title">Bulk imports and organization accounts</span><span class="badge v2">V2</span></div>
+<p>The main growth channel: a researcher uploads 47k archaeological sites as CSV/GeoJSON/Parquet, maps
+their columns to our schema in a preview UI (new entities / likely duplicates / invalid rows), and a
+maintainer approves the batch. Verified organization accounts (museums, universities, archives,
+patent offices) publish datasets under their identity with license metadata. Incentives: museums get
+"see this object at Museum X" backlinks; researchers claim their papers and link them to the claims they
+support; classrooms contribute through a teacher-reviewed sandbox. One good dataset outweighs years of
+manual edits.</p>
+</div>
+
+<h2>The open-data decision</h2>
+<div class="req"><div class="req-head"><span class="req-id">CONTRIB-8</span><span class="req-title">Community data is open</span><span class="badge mvp">MVP (decision)</span></div>
+<p>Decided now, before any contributor exists: the community-contributed knowledge graph (or a very
+large core of it) is open under a clear license. Nobody spends weekends enriching a proprietary database.
+The company monetizes the application, hosting, AI, education, collaboration, analysis, and API capacity
+- not ownership of contributed facts. Long-term structural option: open data foundation + commercial app
+company. This commitment appears in the public data policy from first launch.</p>
+</div>
+
+<h2>The flywheel (context)</h2>
+<pre>more data → better pages → more search/social traffic → more users
+   → more contributors → more corrections + local/specialist data → better data ⟲
+
+museum contributes collection → objects appear across the timeline
+   → museum gets visitors/referrals → museum keeps data updated ⟲</pre>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 09 Contributions &amp; Community</footer>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 Roadmap &amp; Milestones · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 10 Roadmap</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a class="current" href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>10 · Roadmap &amp; Milestones</h1>
+<p class="lead">The biggest product risk is not whether PostgreSQL can store 100 million facts (it can);
+it is whether a person looking at the map and timeline can make sense of them. So the first milestone is
+a fun-test, not an ingestion system.</p>
+
+<h2>Phase 0: Interaction prototype (the go/no-go gate)</h2>
+<div class="req"><div class="req-head"><span class="req-id">ROAD-1</span><span class="req-title">Prototype with 10k–50k hand-selected entities</span></div>
+<p><strong>Question to answer: is zooming through all of this actually fun and understandable?</strong></p>
+<ul>
+<li>Dataset: 10k&ndash;50k entities imported/curated across the full range: Big Bang, geology, dinosaurs,
+civilizations, major wars, science, inventions, cars, aircraft, books, games, current events, future
+projections. Includes the deep-time seed set (<a href="03-data-sources.html">SRC-8</a>).</li>
+<li>Build only: timeline interaction (<a href="06-frontend.html">FE-2</a>) + map synchronization
+(FE-3) + semantic zoom over static precomputed buckets (<a href="07-semantic-zoom.html">ZOOM-3/4</a>)
++ minimal inspector (FE-6). Serving can be static JSON on a CDN; no accounts, no search backend, no
+tiles pipeline (borders may be a single canned layer).</li>
+<li>Demo script = the golden views in <a href="07-semantic-zoom.html">ZOOM-5</a>, executed with real
+hands on real hardware, including a tablet.</li>
+</ul>
+<p><strong>Exit criteria (all required to proceed):</strong></p>
+<ul class="checklist">
+<li>A first-time user can travel Big Bang &rarr; WWII &rarr; today &rarr; far future without instruction and
+narrate what they are seeing.</li>
+<li>Zoom/pan holds 60 fps with 2,000 on-screen objects on a mid-range laptop.</li>
+<li>The golden views read correctly (right things appear/disappear at each level).</li>
+<li>At least 3 of 5 outside testers keep exploring past 10 minutes unprompted (the fun test).</li>
+</ul>
+<p>Before writing prototype code: spend a day inside Wikitime, ChronoAtlas, Chronos Atlas,
+OpenHistoricalMap, Histography, Histropedia with a written test checklist, and run the Wikidata census
+below (ROAD-2). If the prototype fails the fun test after honest iteration, stop or re-scope; do not
+proceed to ingestion.</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">ROAD-2</span><span class="req-title">Wikidata census (parallel to prototype)</span></div>
+<p>Quantify the raw material before betting on it: process a Wikidata dump and report, per century and
+per type: how many battles, wars, political events, disasters, scientific events, people, species,
+products exist; how many have dates + coordinates + Wikipedia sitelinks; distribution of time precision.
+Output: a report that sets realistic MVP HOT-tier targets (<a href="03-data-sources.html">SRC-5</a>)
+and validates the importance signals (<a href="07-semantic-zoom.html">ZOOM-2</a>).</p>
+</div>
+
+<h2>Phase 1: MVP (first public release)</h2>
+<div class="req"><div class="req-head"><span class="req-id">ROAD-3</span><span class="req-title">MVP scope</span></div>
+<p>Everything tagged <span class="badge mvp">MVP</span> across specs 02&ndash;08. Summary build order
+(each step independently verifiable):</p>
+<table>
+<tr><th>#</th><th>Deliverable</th><th>Spec</th><th>Done when</th></tr>
+<tr><td>1</td><td>Schema + migrations + fixtures</td><td>DM-1..10</td><td>Schema tests pass; worked example (Waterloo, T. rex) loads and round-trips through the API types</td></tr>
+<tr><td>2</td><td>Importer: Wikidata pipeline</td><td>SRC-1..3</td><td>Reproducible run produces 1&ndash;5M entity HOT tier with import report; reject rates within gates</td></tr>
+<tr><td>3</td><td>Importance + bucket jobs</td><td>ZOOM-2..3</td><td>Ranked sample report reviewed; golden-view data tests pass</td></tr>
+<tr><td>4</td><td>Viewport + entity + compare + search APIs</td><td>API-1..5, SRCH-1</td><td>SLOs met under load test; contract tests green</td></tr>
+<tr><td>5</td><td>OHM geometry import + tile pipeline</td><td>SRC-1, ARCH-3</td><td>Borders layer renders through time steps; per-feature licenses honored</td></tr>
+<tr><td>6</td><td>Frontend: timeline + map + inspector + compare + URL state</td><td>FE-1..9, API-6</td><td>Golden views pass in the browser; perf budget met; attribution renders</td></tr>
+<tr><td>7</td><td>Media curation (Commons + YouTube seed)</td><td>SRC-7, DM-10</td><td>Top ~2k entities have hero image + ranked videos with license data</td></tr>
+<tr><td>8</td><td>Deploy: CDN, caching, SEO entity pages, ops baseline</td><td>ARCH-1..2, ARCH-6, API-6</td><td>CDN hit &gt;95% in synthetic browse; restore drill done; entity pages indexed</td></tr>
+</table>
+<p><strong>MVP verification gate:</strong> end-to-end walkthrough of ten scripted user journeys (search
+&rarr; entity &rarr; map focus &rarr; zoom out to deep time &rarr; compare &rarr; share URL &rarr; open shared
+URL cold) on desktop, tablet, and phone; plus the ZOOM-5 golden views on the production dataset.
+"Tests pass" alone does not close the phase.</p>
+</div>
+
+<h2>Phase 2: V2</h2>
+<div class="req"><div class="req-head"><span class="req-id">ROAD-4</span><span class="req-title">V2 candidates (order by measured user pull, not this list)</span></div>
+<table>
+<tr><th>Feature</th><th>Spec</th><th>Depends on</th></tr>
+<tr><td>"World at date" full dashboard + records-at-date</td><td>VIS-5</td><td>snapshot job, records data</td></tr>
+<tr><td>Charts view + property time series; Graph view (enabled-by / led-to); Scale view</td><td>FE-8, VIS-7</td><td>relationship curation, series data</td></tr>
+<tr><td>Knowledge-date slider</td><td>VIS-6</td><td>claims published_at coverage</td></tr>
+<tr><td>NL questions + template queries</td><td>SRCH-2..3</td><td>cost fence SRCH-4</td></tr>
+<tr><td>More map layers (religion, trade, languages, demographics); deep-time basemaps</td><td>FE-4..5</td><td>per-layer data sourcing</td></tr>
+<tr><td>Wikipedia fine-detail extraction (T11&ndash;T13 density)</td><td>SRC-4</td><td>extraction QA loop</td></tr>
+<tr><td>Accounts, Pro tier, saved views, generated SEO intersection pages</td><td>SRCH-5</td><td>MVP traffic data</td></tr>
+<tr><td>Contributions v1: corrections + sources + microtasks with validators</td><td>CONTRIB-1..3</td><td>accounts</td></tr>
+</table>
+</div>
+
+<h2>Later (direction only)</h2>
+<p>Full contribution ecosystem (reputation, bulk institutional imports, map editing, open-data
+foundation split), education tier, embeddable widget, museum installations, personal timelines,
+historical travel street-level mode, counterfactual AI mode (with extreme HISTORY vs. SIMULATION visual
+separation), native apps, DuckDB-Wasm analytics. None of these may complicate MVP code.</p>
+
+<h2>Standing risks</h2>
+<table>
+<tr><th>Risk</th><th>Mitigation</th></tr>
+<tr><td>Semantic zoom isn't fun / legible</td><td>Phase-0 gate before any large build (ROAD-1)</td></tr>
+<tr><td>Wikidata density/quality below assumption</td><td>Census before commitment (ROAD-2); curated seed sets fill deep time and future</td></tr>
+<tr><td>Competitor (Wikitime) expands scope</td><td>Speed on differentiators they lack: deep time, claims/uncertainty, products/science, knowledge-date</td></tr>
+<tr><td>License contamination (BY-SA prose, per-feature OHM licenses, Commons per-file)</td><td>Provenance on every record (SRC-2); license-driven exclusion; legal review before commercial launch</td></tr>
+<tr><td>AI cost blowout</td><td>SRCH-4 fence, budget alarms, degrade-to-templates</td></tr>
+<tr><td>Data-quality treadmill at scale</td><td>Claims model + validators + (later) community; editorial budget acknowledged as a real cost center</td></tr>
+</table>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 10 Roadmap &amp; Milestones</footer>
+</body>
+</html>

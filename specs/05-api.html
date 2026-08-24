@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>05 API · Everything Timeline</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 05 API</span></header>
+<nav class="toc">
+  <a href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a class="current" href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>05 · API</h1>
+<p class="lead">The viewport query is the product's most important interface - arguably more important
+than the UI itself. Everything is JSON over HTTPS, versioned under <code>/api/v1</code>, aggressively
+cacheable.</p>
+
+<h2>The viewport query</h2>
+<div class="req"><div class="req-head"><span class="req-id">API-1</span><span class="req-title">GET /api/v1/viewport</span><span class="badge mvp">MVP</span></div>
+<pre>GET /api/v1/viewport
+    ?t0=-0631152000            &amp; t1=-0442800000     -- timeline_time (seconds, scientific
+                                                       notation allowed: t0=-2.08e17)
+    &amp; bbox=5.0,40.0,30.0,60.0                       -- lon/lat, optional (absent = whole world)
+    &amp; tb=T9                                          -- time bucket in view (T0..T13)
+    &amp; z=6                                            -- map zoom, optional
+    &amp; cat=war,politics                               -- category filter, optional
+    &amp; limit=300                                      -- server clamps to <= 500</pre>
+<p>Returns the 100&ndash;500 most renderable objects for that view - never the full dataset:</p>
+<pre>{
+  "dataset": "2026-08",
+  "items": [
+    {
+      "id": 48314, "slug": "battle-of-waterloo", "type": "event",
+      "name": "Battle of Waterloo",
+      "t0": "1815-06-18", "t1": "1815-06-18", "precision": "day",
+      "status": "documented",
+      "point": [4.41, 50.68],          // render anchor; full geometry via tiles
+      "categories": ["war"],
+      "importance": 0.97,
+      "media_thumb": "https://...",
+      "child_count": 6                  // sub-events available at deeper buckets
+    }, ...
+  ],
+  "clusters": [ ... ]                   // optional server-side clusters when limit hit
+}</pre>
+<p>Server-side semantics (ranking function itself is <a href="07-semantic-zoom.html">ZOOM-4</a>):</p>
+<pre>WHERE entity time range overlaps [t0,t1]
+  AND (bbox IS NULL OR geometry && bbox)
+  AND tb BETWEEN bucket_min AND bucket_max
+  AND categories && cat
+ORDER BY relevance(importance, viewport) DESC
+LIMIT clamp(limit)</pre>
+<ul>
+<li><strong>Quantization for cacheability:</strong> the server snaps <code>t0/t1</code> to the bucket's
+grid and <code>bbox</code> to the map-tile grid before querying, and echoes the snapped values. Distinct
+anonymous URLs collapse onto a finite cacheable set (<a href="04-architecture.html">ARCH-2</a>).</li>
+<li>Invalid parameters (unknown bucket, malformed bbox, t1&lt;t0) return 400 with a machine-readable
+error code - no silent clamping of nonsense.</li>
+<li>p95 &lt; 150 ms at origin for HOT queries (API-5).</li>
+</ul>
+</div>
+
+<h2>Entity API</h2>
+<div class="req"><div class="req-head"><span class="req-id">API-2</span><span class="req-title">GET /api/v1/entity/{slug}</span><span class="badge mvp">MVP</span></div>
+<pre>GET /api/v1/entity/tyrannosaurus-rex
+{
+  "id": ..., "slug": "tyrannosaurus-rex", "type": "species",
+  "name": "Tyrannosaurus rex",
+  "description": "...",
+  "temporal": { "t0": "-68e6y", "t1": "-66e6y", "precision": "million_year",
+                "status": "estimated" },
+  "properties": [
+    { "property": "mass", "synthesis": { "min": 8000, "max": 10200, "unit": "kg" },
+      "claims": [
+        { "value": {"min":8000,"max":9500}, "unit":"kg", "value_type":"estimated",
+          "method":"volumetric model", "published_at":"2011",
+          "source": { "kind":"paper", "title":"...", "url":"..." }, "confidence":0.7 },
+        ...
+      ] }
+  ],
+  "relationships": [
+    { "type": "parent_taxon", "target": {"slug":"tyrannosauridae", ...} },
+    { "type": "contemporary_with", "target": {"slug":"triceratops", ...} }
+  ],
+  "geometry_summary": { "kind": "point_distribution", "tile_layer": "fossils" },
+  "media": [ {kind, thumbnail_url, attribution, ...} ],
+  "links": { "wikipedia": "...", "wikidata": "Q14332" },
+  "sources": [ ... ]
+}</pre>
+<p>Sub-resources (each independently cacheable):
+<code>/entity/{slug}/claims?property=mass</code> (full claim history incl. superseded - powers
+"estimates over time"), <code>/entity/{slug}/related?type=caused_by</code>,
+<code>/entity/{slug}/contemporaries?limit=50</code> ("what existed at the same time"),
+<code>/entity/{slug}/children</code> (part_of tree).</p>
+</div>
+
+<div class="req"><div class="req-head"><span class="req-id">API-3</span><span class="req-title">Comparison endpoint</span><span class="badge mvp">MVP</span></div>
+<pre>GET /api/v1/compare?entities=tyrannosaurus-rex,african-elephant
+  → aligned property table: for each shared property_def, both syntheses,
+    units converted to canonical, value_type flags (measured vs estimated),
+    plus temporal overlap ("did these coexist?" with the overlap computation)</pre>
+<p>MVP: 2 entities; V2: n entities + chart series.</p>
+</div>
+
+<h2>Tiles and search</h2>
+<div class="req"><div class="req-head"><span class="req-id">API-4</span><span class="req-title">Tile and search endpoints</span><span class="badge mvp">MVP</span></div>
+<pre>GET /tiles/{layer}/{z}/{x}/{y}.mvt?time={snapped}   -- ARCH-3; layers MVP:
+     borders, cities, events, fossils; V2: routes, language, religion...
+
+GET /api/v1/search?q=waterloo&amp;limit=10
+  → [{ slug, name, type, t0, t1, thumb, score }]     -- SRCH-1; <50ms p95
+GET /api/v1/search?q=...&amp;mode=question               -- V2 NL question, SRCH-3</pre>
+</div>
+
+<h2>Cross-cutting contract</h2>
+<div class="req"><div class="req-head"><span class="req-id">API-5</span><span class="req-title">Conventions and SLOs</span><span class="badge mvp">MVP</span></div>
+<ul>
+<li>All responses: <code>dataset</code> version field; <code>ETag</code>; <code>Cache-Control</code>
+per endpoint class (viewport/entity: 1h + revalidate; tiles/chunks: immutable, path-versioned).</li>
+<li>Errors: RFC 7807 problem+json with stable <code>code</code> strings; no 200-with-error-body.</li>
+<li>Time values on the wire: ISO-8601 where in range; otherwise <code>{"y": -6.6e7}</code> year offsets;
+one serializer/deserializer shared through generated types.</li>
+<li>Rate limiting on dynamic endpoints (search, future AI/contributions), not on cacheable GETs.</li>
+<li>SLOs at origin: viewport p95 &lt; 150 ms; entity p95 &lt; 100 ms; search p95 &lt; 50 ms; tiles p95 &lt; 80 ms.</li>
+<li>Public API productization (keys, tiers, bulk export) is <span class="badge later">LATER</span>; but
+nothing in v1 may leak internal IDs as the only identity - slugs are the public identity.</li>
+</ul>
+</div>
+
+<h2>Shareable URL scheme (frontend routes, server-rendered shells for SEO)</h2>
+<div class="req"><div class="req-head"><span class="req-id">API-6</span><span class="req-title">Every view state has a URL</span><span class="badge mvp">MVP</span></div>
+<pre>/time/1945-04-30/map/berlin?layers=war,politics      -- date + place view
+/time/-66000000/world                                 -- deep time
+/entity/tyrannosaurus-rex                             -- entity page
+/entity/trex?compare=african-elephant                 -- comparison
+/time/1900/records                                    -- V2: records at date
+/history/france/1800-1900                             -- V2: generated SEO pages
+/inventions/19th-century                              -- V2: generated SEO pages</pre>
+<p>Rules: URLs are the sharing/education/SEO engine. Canonical entity pages
+(<code>/entity/{slug}</code>) are server-rendered with meaningful HTML (title, description, key facts,
+attribution) for crawlers; the app hydrates on top. Generated intersection pages
+(time &times; place &times; category) are V2 and come from the snapshot build job
+(<a href="04-architecture.html">ARCH-4</a>).</p>
+</div>
+
+</main>
+<footer class="site">Everything Timeline spec pack · 05 API</footer>
+</body>
+</html>

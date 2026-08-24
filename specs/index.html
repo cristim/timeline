@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Everything Timeline · Specification Pack</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="site"><span class="crumb">Everything Timeline / Specs</span></header>
+<nav class="toc">
+  <a class="current" href="index.html">Index</a>
+  <a href="01-product-vision.html">01 Vision</a>
+  <a href="02-domain-model.html">02 Domain Model</a>
+  <a href="03-data-sources.html">03 Data Sources</a>
+  <a href="04-architecture.html">04 Architecture</a>
+  <a href="05-api.html">05 API</a>
+  <a href="06-frontend.html">06 Frontend</a>
+  <a href="07-semantic-zoom.html">07 Semantic Zoom</a>
+  <a href="08-search-ai.html">08 Search &amp; AI</a>
+  <a href="09-contributions.html">09 Contributions</a>
+  <a href="10-roadmap.html">10 Roadmap</a>
+  <a href="11-local-dev.html">11 Local Dev</a>
+</nav>
+<main>
+
+<h1>Everything Timeline</h1>
+<p class="lead">A visual, time-aware database of everything: an interactive timeline and map that spans
+from the Big Bang through human history to scientific projections of the far future, built on open data
+(Wikidata, OpenHistoricalMap, Wikimedia), a claims-based knowledge graph, and semantic zoom across both
+time and space.</p>
+
+<p>This spec pack is the implementation contract for the project. Each document carries stable
+requirement IDs (for example <code>DM-3</code>, <code>API-2</code>) that commits, issues, and PRs should
+reference. Scope tags mean:</p>
+
+<p>
+<span class="badge mvp">MVP</span> required for the first public release ·
+<span class="badge v2">V2</span> planned next, design for it now, build later ·
+<span class="badge later">LATER</span> direction only, do not let it complicate MVP code
+</p>
+
+<h2>Reading order</h2>
+<table>
+<tr><th>Doc</th><th>Contents</th><th>Primary audience</th></tr>
+<tr><td><a href="01-product-vision.html">01 Product Vision</a></td>
+    <td>What the product is, differentiators vs. Wikitime / Chronas / ChronoAtlas / Histography / Histropedia, killer features, what we explicitly do not build.</td>
+    <td>Everyone</td></tr>
+<tr><td><a href="02-domain-model.html">02 Domain Model</a></td>
+    <td>Universal entity model, claims instead of truths, temporal model with precision and uncertainty status, property values with units, geometry representation, relationship types.</td>
+    <td>Backend, data</td></tr>
+<tr><td><a href="03-data-sources.html">03 Data Sources &amp; Ingestion</a></td>
+    <td>Five source tiers, licensing rules per source, provenance requirements, import pipeline, hot/warm/cold data tiers.</td>
+    <td>Data, backend</td></tr>
+<tr><td><a href="04-architecture.html">04 System Architecture</a></td>
+    <td>Go API + PostgreSQL/PostGIS + vector tiles + CloudFront; caching strategy; precomputation jobs; cost model; what we deliberately do not deploy.</td>
+    <td>Backend, infra</td></tr>
+<tr><td><a href="05-api.html">05 API</a></td>
+    <td>Viewport query (the core endpoint), entity API, tile API, search API, shareable URL scheme.</td>
+    <td>Backend, frontend</td></tr>
+<tr><td><a href="06-frontend.html">06 Frontend &amp; UI</a></td>
+    <td>Three-area layout, Canvas timeline renderer, MapLibre map, inspector panel, view switcher, past/future visual language, responsive behavior.</td>
+    <td>Frontend</td></tr>
+<tr><td><a href="07-semantic-zoom.html">07 Semantic Zoom &amp; Ranking</a></td>
+    <td>The core product mechanic: precomputed importance scores, temporal buckets T0&ndash;T13, the ranking function, acceptance criteria.</td>
+    <td>Everyone</td></tr>
+<tr><td><a href="08-search-ai.html">08 Search &amp; AI</a></td>
+    <td>Entity search MVP, natural-language questions compiled to structured queries, AI cost-control policy.</td>
+    <td>Backend, frontend</td></tr>
+<tr><td><a href="09-contributions.html">09 Contributions &amp; Community</a></td>
+    <td>Claims-based crowdsourcing, validators, domain reputation, review pipeline, bulk institutional imports, open-data commitment. All post-MVP, but the data model must not preclude it.</td>
+    <td>Product, backend</td></tr>
+<tr><td><a href="10-roadmap.html">10 Roadmap &amp; Milestones</a></td>
+    <td>Phase 0 prototype, MVP, V2; the go/no-go gate; feature matrix with data source and effort per feature; verification criteria per phase.</td>
+    <td>Everyone</td></tr>
+<tr><td><a href="11-local-dev.html">11 Local Development Plan</a></td>
+    <td>Build-start plan: docker-compose stack, local data pipeline, Aurora/S3/CloudFront parity rules, milestones M0-M6.</td>
+    <td>Everyone</td></tr>
+</table>
+
+<h2>The idea in one paragraph</h2>
+<p>Existing products each get one axis right: Histography does deep time, Chronas / ChronoAtlas /
+OpenHistoricalMap do historical geography, Histropedia / Wikidata do knowledge breadth, Wikitime comes
+closest to combining map + timeline but limits itself to ~6,000 years of major human history. Nobody
+combines <strong>TIME &times; SPACE &times; KNOWLEDGE</strong> in one model. This product makes the basic
+object "anything with a time and optionally a place" (events, people, species, products, ideas, papers,
+patents, predictions), stores facts as sourced <em>claims</em> with uncertainty rather than single truths,
+and renders them through one interface where zooming in time and space simultaneously changes what is
+shown. The core technical bet is <em>ranking</em>: deciding which ~50 of 5 million things to show at any
+combination of time scale, geographic scale, and topic filter.</p>
+
+<h2>Glossary</h2>
+<table>
+<tr><th>Term</th><th>Meaning</th></tr>
+<tr><td>Entity</td><td>Anything with a time, a place, measurable properties, or relationships: event, person, species, state, invention, paper, product, idea, prediction. See <a href="02-domain-model.html">02</a>.</td></tr>
+<tr><td>Claim</td><td>A sourced statement about an entity ("T. rex max speed 20&ndash;30 km/h per Smith 2024"). Multiple conflicting claims coexist; the system never crowdsources a fake exact number.</td></tr>
+<tr><td>Temporal status</td><td>One of <code>observed / documented / estimated / projected / model_dependent / speculative</code>. Controls rendering: the Battle of Waterloo and the heat death of the universe must never look like the same kind of fact.</td></tr>
+<tr><td>Semantic zoom</td><td>Changing the <em>information hierarchy</em>, not just the scale, as the user zooms time and geography together.</td></tr>
+<tr><td>Time bucket (T0&ndash;T13)</td><td>Precomputed zoom levels for time, from "whole universe" (T0) down to "hour" (T13). Analogue of map tile zoom levels. See <a href="07-semantic-zoom.html">07</a>.</td></tr>
+<tr><td>Importance vector</td><td>Precomputed per-entity scores: global, regional, per-category, per-time-bucket. Drives what renders at each zoom.</td></tr>
+<tr><td>Viewport query</td><td>The core API call: time range + bounding box + zoom levels + categories &rarr; the 100&ndash;500 most renderable objects. See <a href="05-api.html">05</a>.</td></tr>
+<tr><td>Knowledge date</td><td>A second, optional time axis: "show this as it was understood in year Y." V2 differentiator. See <a href="01-product-vision.html">01</a>.</td></tr>
+<tr><td>Hot / warm / cold</td><td>Storage tiers: curated interactive DB (PostgreSQL) / bulk queryable data (Parquet on S3) / original source dumps. See <a href="03-data-sources.html">03</a>.</td></tr>
+</table>
+
+<h2>Global constraints</h2>
+<ul>
+<li><strong>Web-first.</strong> Every view has a URL that encodes its state. Desktop/tablet layout first; phone gets a stacked layout. No desktop app in scope.</li>
+<li><strong>Boring architecture.</strong> Go, PostgreSQL/PostGIS, S3, CloudFront, React, MapLibre. No Kubernetes, Kafka, graph DB, or embeddings-everywhere until a measured need exists.</li>
+<li><strong>Open data in, provenance kept.</strong> Every imported fact records source, source ID, license, and attribution. Media is referenced, never copied.</li>
+<li><strong>Free browsing forever.</strong> Monetization (Pro, education, API) charges for doing work with the data, never for looking at history.</li>
+<li><strong>Uncertainty is first-class.</strong> No fake precision: ranges, competing claims, and confidence render visibly differently from measured facts.</li>
+</ul>
+
+</main>
+<footer class="site">Everything Timeline spec pack · generated from the founding product discussion (2026-08).</footer>
+</body>
+</html>
