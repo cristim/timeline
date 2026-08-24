@@ -1,0 +1,223 @@
+// Package bake materializes the serving artifacts (ARCH-4): viewport chunks,
+// entity documents, aliases, and the dataset manifest. Everything it writes is
+// immutable under /v/<dataset>/ (ARCH-2).
+package bake
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"sort"
+
+	"wk/internal/model"
+	"wk/internal/rankzoom"
+)
+
+// Sink abstracts the artifact destination: S3/MinIO in real runs, memory in
+// tests. Put returns whether the object actually changed (incremental bake).
+type Sink interface {
+	Put(ctx context.Context, key string, body []byte, contentType string) (changed bool, err error)
+}
+
+type Stats struct {
+	Written   int
+	Unchanged int
+}
+
+func (s *Stats) add(changed bool) {
+	if changed {
+		s.Written++
+	} else {
+		s.Unchanged++
+	}
+}
+
+// ChunkItem is one renderable object inside a viewport chunk (API-1).
+type ChunkItem struct {
+	Slug       string    `json:"slug"`
+	Type       string    `json:"type"`
+	Name       string    `json:"name"`
+	T0         float64   `json:"t0"` // seconds since 1970 (API-5 wire codec)
+	T1         float64   `json:"t1"`
+	Precision  string    `json:"precision"`
+	Status     string    `json:"status"`
+	Point      []float64 `json:"point,omitempty"`
+	Categories []string  `json:"categories"`
+	Importance float64   `json:"importance"`
+	MediaThumb string    `json:"media_thumb,omitempty"`
+	ChildCount int       `json:"child_count,omitempty"`
+}
+
+type chunkFile struct {
+	Items []ChunkItem `json:"items"`
+}
+
+// Run bakes all artifacts for the dataset and returns the manifest to publish.
+func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities []*model.Entity) (*model.Manifest, *Stats, error) {
+	stats := &Stats{}
+
+	childCount := map[string]int{}
+	for _, e := range entities {
+		for _, r := range e.Rel {
+			if r.Type == "part_of" {
+				childCount[r.Target]++
+			}
+		}
+	}
+
+	buckets, err := bakeChunks(ctx, sink, dataset, entities, childCount, stats)
+	if err != nil {
+		return nil, stats, err
+	}
+	if err := bakeEntityDocs(ctx, sink, dataset, entities, stats); err != nil {
+		return nil, stats, err
+	}
+	if _, err := putJSON(ctx, sink, fmt.Sprintf("v/%s/aliases.json", dataset), map[string]string{}, stats); err != nil {
+		return nil, stats, err
+	}
+
+	cats := categorySet(entities)
+	m := &model.Manifest{
+		Dataset:     dataset,
+		SeedVersion: seedVersion,
+		Buckets:     buckets,
+		Categories:  cats,
+		Layers:      []string{},
+		Timesteps:   map[string][]int{},
+		Counts: map[string]int{
+			"entities": len(entities),
+		},
+	}
+	return m, stats, nil
+}
+
+// bakeChunks writes /v/<ds>/chunks/<tb>/<window>/world/<category>.json and
+// returns the bucket table with per-bucket non-empty window lists, which the
+// manifest ships so the client never fetches (or 404s on) an empty window.
+func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*model.Entity, childCount map[string]int, stats *Stats) ([]model.Bucket, error) {
+	type cell struct {
+		bucket int
+		window int64
+		cat    string // one category or "all"
+	}
+	cells := map[cell][]*model.Entity{}
+
+	for _, e := range entities {
+		for b := e.BucketMin; b <= e.BucketMax; b++ {
+			bk := model.Buckets[b]
+			w0, w1 := bk.WindowIndex(e.T0), bk.WindowIndex(e.T1)
+			if w1-w0 > rankzoom.MaxWindowsPerEntity { // guarded in Bucketize; belt and braces
+				return nil, fmt.Errorf("entity %q: window explosion at %s", e.Slug, bk.ID)
+			}
+			for w := w0; w <= w1; w++ {
+				for _, c := range e.Categories {
+					cells[cell{b, w, c}] = append(cells[cell{b, w, c}], e)
+				}
+				cells[cell{b, w, "all"}] = append(cells[cell{b, w, "all"}], e)
+			}
+		}
+	}
+
+	windowSets := make([]map[int64]bool, len(model.Buckets))
+	for i := range windowSets {
+		windowSets[i] = map[int64]bool{}
+	}
+
+	keys := make([]cell, 0, len(cells))
+	for c := range cells {
+		keys = append(keys, c)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.bucket != b.bucket {
+			return a.bucket < b.bucket
+		}
+		if a.window != b.window {
+			return a.window < b.window
+		}
+		return a.cat < b.cat
+	})
+
+	for _, c := range keys {
+		items := rankCell(cells[c], c.cat == "all", childCount)
+		key := fmt.Sprintf("v/%s/chunks/%s/%d/world/%s.json",
+			dataset, model.Buckets[c.bucket].ID, c.window, c.cat)
+		if _, err := putJSON(ctx, sink, key, chunkFile{Items: items}, stats); err != nil {
+			return nil, err
+		}
+		windowSets[c.bucket][c.window] = true
+	}
+
+	out := make([]model.Bucket, len(model.Buckets))
+	for i, b := range model.Buckets {
+		ws := make([]int64, 0, len(windowSets[i]))
+		for w := range windowSets[i] {
+			ws = append(ws, w)
+		}
+		slices.Sort(ws)
+		b.Windows = ws
+		out[i] = b
+	}
+	return out, nil
+}
+
+// rankCell orders a cell's entities and applies the per-chunk cap and, for
+// "all" chunks, the diversity guard (ZOOM-4). Deterministic: importance desc,
+// slug asc.
+func rankCell(es []*model.Entity, diversity bool, childCount map[string]int) []ChunkItem {
+	sort.Slice(es, func(i, j int) bool {
+		if es[i].Importance != es[j].Importance {
+			return es[i].Importance > es[j].Importance
+		}
+		return es[i].Slug < es[j].Slug
+	})
+	perCat := map[string]int{}
+	items := make([]ChunkItem, 0, min(len(es), rankzoom.ChunkCap))
+	seen := map[string]bool{}
+	for _, e := range es {
+		if len(items) >= rankzoom.ChunkCap {
+			break
+		}
+		if seen[e.Slug] { // an entity can reach a cell via multiple categories
+			continue
+		}
+		if diversity {
+			over := true
+			for _, c := range e.Categories {
+				if perCat[c] < rankzoom.DiversityCap {
+					over = false
+					break
+				}
+			}
+			if over {
+				continue
+			}
+		}
+		seen[e.Slug] = true
+		for _, c := range e.Categories {
+			perCat[c]++
+		}
+		items = append(items, ChunkItem{
+			Slug: e.Slug, Type: e.Type, Name: e.Name,
+			T0: e.T0, T1: e.T1, Precision: e.Precision, Status: e.Status,
+			Point: e.Point, Categories: e.Categories, Importance: e.Importance,
+			MediaThumb: e.MediaThumb, ChildCount: childCount[e.SeedID],
+		})
+	}
+	return items
+}
+
+func categorySet(entities []*model.Entity) []string {
+	set := map[string]bool{}
+	for _, e := range entities {
+		for _, c := range e.Categories {
+			set[c] = true
+		}
+	}
+	cats := make([]string, 0, len(set))
+	for c := range set {
+		cats = append(cats, c)
+	}
+	sort.Strings(cats)
+	return cats
+}

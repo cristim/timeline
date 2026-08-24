@@ -1,0 +1,11 @@
+{
+  "files": {
+    "civilizations.ndjson": {"count": 48, "sha256": "fd3381ce1d0138813589b9886990fd66ebd340cc233faf65c8190143c0095f42"},
+    "culture.ndjson": {"count": 12, "sha256": "4638b0ccfb14cc8fdea9125227241e5f4454de52d6e8c84ec82eb9dae865e0bb"},
+    "future.ndjson": {"count": 5, "sha256": "581b4e34bb7e2324a4314565a03b6f1378e9f74a1e3d1da62b140f780ade5ef4"},
+    "life.ndjson": {"count": 24, "sha256": "38f4674d82e170c1cf8f92c9b0b972f4c9f591457e7951eda55c9f27bdaedebb"},
+    "science-tech.ndjson": {"count": 40, "sha256": "96a0046ac0821a04c5aa89da5938f9d8242e437d13c08f81e5ec1781260a3252"},
+    "universe.ndjson": {"count": 13, "sha256": "cd3cf54db97c9f1f8c23c725c8c390ec25946d59e6295f98838263e4308abad2"}
+  },
+  "seed_version": "seed-5d37f439"
+}

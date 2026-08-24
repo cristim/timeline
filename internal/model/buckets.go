@@ -17,24 +17,30 @@ const (
 type Bucket struct {
 	ID      string  `json:"id"`
 	WindowS float64 `json:"window_s"` // 0 = single window spanning all time
+	// Windows lists the non-empty window indexes for this bucket in the baked
+	// dataset (set by bake, shipped in the manifest). The client renders any
+	// other window as empty locally - so no empty chunk files exist and a 404
+	// on a listed window is a bake bug (API-1). Indexes stay < 2^53, safe as
+	// JSON numbers.
+	Windows []int64 `json:"windows,omitempty"`
 }
 
 // Buckets is ordered coarse -> fine. Index in this slice is the bucket number.
 var Buckets = []Bucket{
-	{ID: "T0", WindowS: 0},                        // universe scale
-	{ID: "T1", WindowS: 0},                        // billion-year scale
-	{ID: "T2", WindowS: 0},                        // 100 My scale
-	{ID: "T3", WindowS: 1e7 * SecondsPerYear},     // 10 My windows
-	{ID: "T4", WindowS: 1e6 * SecondsPerYear},     // 1 My
-	{ID: "T5", WindowS: 1e5 * SecondsPerYear},     // 100 ky
-	{ID: "T6", WindowS: 1e4 * SecondsPerYear},     // 10 ky
-	{ID: "T7", WindowS: 1e3 * SecondsPerYear},     // millennium
-	{ID: "T8", WindowS: 100 * SecondsPerYear},     // century
-	{ID: "T9", WindowS: 10 * SecondsPerYear},      // decade
-	{ID: "T10", WindowS: 1 * SecondsPerYear},      // year
-	{ID: "T11", WindowS: SecondsPerYear / 12},     // month
-	{ID: "T12", WindowS: 86_400},                  // day
-	{ID: "T13", WindowS: 3_600},                   // hour
+	{ID: "T0", WindowS: 0},                    // universe scale
+	{ID: "T1", WindowS: 0},                    // billion-year scale
+	{ID: "T2", WindowS: 0},                    // 100 My scale
+	{ID: "T3", WindowS: 1e7 * SecondsPerYear}, // 10 My windows
+	{ID: "T4", WindowS: 1e6 * SecondsPerYear}, // 1 My
+	{ID: "T5", WindowS: 1e5 * SecondsPerYear}, // 100 ky
+	{ID: "T6", WindowS: 1e4 * SecondsPerYear}, // 10 ky
+	{ID: "T7", WindowS: 1e3 * SecondsPerYear}, // millennium
+	{ID: "T8", WindowS: 100 * SecondsPerYear}, // century
+	{ID: "T9", WindowS: 10 * SecondsPerYear},  // decade
+	{ID: "T10", WindowS: 1 * SecondsPerYear},  // year
+	{ID: "T11", WindowS: SecondsPerYear / 12}, // month
+	{ID: "T12", WindowS: 86_400},              // day
+	{ID: "T13", WindowS: 3_600},               // hour
 }
 
 // WindowIndex returns the chunk window index for a time t (seconds since 1970)
