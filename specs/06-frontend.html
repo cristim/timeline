@@ -65,7 +65,7 @@ zooms in; the zoom is <em>continuous</em>, while data loading follows discrete b
 <li>Scale legend adapts: "13.8 Ga … NOW" at T0, "1939 … 1945" at T10, "00:00 … 24:00" at T13.</li>
 <li>Entities render as: point markers (moments), spans (durations), band lanes grouped by category;
 labels use collision avoidance with importance priority.</li>
-<li>Renders from viewport-query data (<a href="05-api.html">API-1</a>) with prefetch of adjacent
+<li>Renders from viewport chunk data (<a href="05-api.html">API-1</a>) with prefetch of adjacent
 time-windows and adjacent buckets, so zooming rarely shows an empty lane.</li>
 <li>Performance budget: first interactive &lt; 3s on mid-range laptop; zoom/pan at 60 fps with 2,000
 on-screen objects; memory &lt; 300 MB.</li>

@@ -25,7 +25,7 @@
 <main>
 
 <h1>10 · Roadmap &amp; Milestones</h1>
-<p class="lead">The biggest product risk is not whether PostgreSQL can store 100 million facts (it can);
+<p class="lead">The biggest product risk is not whether object storage can hold 100 million facts (it can);
 it is whether a person looking at the map and timeline can make sense of them. So the first milestone is
 a fun-test, not an ingestion system.</p>
 
@@ -71,14 +71,14 @@ and validates the importance signals (<a href="07-semantic-zoom.html">ZOOM-2</a>
 (each step independently verifiable):</p>
 <table>
 <tr><th>#</th><th>Deliverable</th><th>Spec</th><th>Done when</th></tr>
-<tr><td>1</td><td>Schema + migrations + fixtures</td><td>DM-1..10</td><td>Schema tests pass; worked example (Waterloo, T. rex) loads and round-trips through the API types</td></tr>
-<tr><td>2</td><td>Importer: Wikidata pipeline</td><td>SRC-1..3</td><td>Reproducible run produces 1&ndash;5M entity HOT tier with import report; reject rates within gates</td></tr>
-<tr><td>3</td><td>Importance + bucket jobs</td><td>ZOOM-2..3</td><td>Ranked sample report reviewed; golden-view data tests pass</td></tr>
-<tr><td>4</td><td>Viewport + entity + compare + search APIs</td><td>API-1..5, SRCH-1</td><td>SLOs met under load test; contract tests green</td></tr>
-<tr><td>5</td><td>OHM geometry import + tile pipeline</td><td>SRC-1, ARCH-3</td><td>Borders layer renders through time steps; per-feature licenses honored</td></tr>
-<tr><td>6</td><td>Frontend: timeline + map + inspector + compare + URL state</td><td>FE-1..9, API-6</td><td>Golden views pass in the browser; perf budget met; attribution renders</td></tr>
+<tr><td>1</td><td>Logical model + baker skeleton + fixtures</td><td>DM-1..10</td><td>Model tests pass; worked example (Waterloo, T. rex) round-trips seed NDJSON → Parquet → entity doc</td></tr>
+<tr><td>2</td><td>Baker: Wikidata ingest to Parquet model</td><td>SRC-1..3</td><td>Reproducible run produces the 1&ndash;5M entity model with import report; reject rates within gates</td></tr>
+<tr><td>3</td><td>Rank + bucketize stages</td><td>ZOOM-2..3</td><td>Ranked sample report reviewed; golden-view checks pass on baked chunks</td></tr>
+<tr><td>4</td><td>Bake stages: chunks + entity docs + search shards + manifest</td><td>API-0..5, SRCH-1, ARCH-4</td><td>Artifact budgets met; key-scheme drift tests green; failing golden view blocks publish</td></tr>
+<tr><td>5</td><td>OHM geometry ingest + PMTiles stage</td><td>SRC-1, ARCH-3</td><td>Borders layer renders through time-steps via range requests; per-feature licenses honored</td></tr>
+<tr><td>6</td><td>Frontend: timeline + map + inspector + compare + URL state</td><td>FE-1..9, API-6</td><td>Golden views pass in the browser against artifacts only; perf budget met; attribution renders</td></tr>
 <tr><td>7</td><td>Media curation (Commons + YouTube seed)</td><td>SRC-7, DM-10</td><td>Top ~2k entities have hero image + ranked videos with license data</td></tr>
-<tr><td>8</td><td>Deploy: CDN, caching, SEO entity pages, ops baseline</td><td>ARCH-1..2, ARCH-6, API-6</td><td>CDN hit &gt;95% in synthetic browse; restore drill done; entity pages indexed</td></tr>
+<tr><td>8</td><td>Deploy: S3 + CloudFront, SSG entity pages, ops baseline</td><td>ARCH-1..2, ARCH-6, API-6</td><td>Same bake published to real S3; manifest flip + rollback drill done; entity pages indexed</td></tr>
 </table>
 <p><strong>MVP verification gate:</strong> end-to-end walkthrough of ten scripted user journeys (search
 &rarr; entity &rarr; map focus &rarr; zoom out to deep time &rarr; compare &rarr; share URL &rarr; open shared

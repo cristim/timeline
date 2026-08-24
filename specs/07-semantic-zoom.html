@@ -97,7 +97,7 @@ loads the adjacent bucket's data (prefetched, crossfaded - <a href="06-frontend.
 </div>
 
 <h2>The ranking function</h2>
-<div class="req"><div class="req-head"><span class="req-id">ZOOM-4</span><span class="req-title">relevance() for the viewport query</span><span class="badge mvp">MVP</span></div>
+<div class="req"><div class="req-head"><span class="req-id">ZOOM-4</span><span class="req-title">relevance() for chunk baking</span><span class="badge mvp">MVP</span></div>
 <pre>relevance(entity, view) =
     base importance for view scope
         world view:            importance.global
@@ -109,10 +109,12 @@ loads the adjacent bucket's data (prefetched, crossfaded - <a href="06-frontend.
                       floor so context bands don't vanish)
   * quality factor   (importance.quality, floor 0.5)</pre>
 <ul>
-<li>Pure SQL over precomputed columns + a small Go re-rank of the candidate set (fetch 3x limit,
-re-rank, cut). No live scoring of the full corpus, ever.</li>
-<li>Deterministic: same inputs &rarr; same list, stable ordering (ties broken by id) - required for CDN
-cacheability and testability.</li>
+<li>Runs entirely at <strong>bake time</strong> (the "bake chunks" stage,
+<a href="04-architecture.html">ARCH-4</a>): DuckDB SQL over the Parquet model + a Go re-rank per
+chunk, writing the top-N per (bucket × window × tile × category). Nothing scores at view time; the
+client only unions chunks and applies the importance slider locally.</li>
+<li>Deterministic: same inputs &rarr; same chunk contents, stable ordering (ties broken by slug) -
+required for reproducible bakes and content-hash incrementality (ARCH-4).</li>
 <li>Diversity guard: at most K items per category per screen at coarse buckets (config), so 1942 doesn't
 render as 300 battles and nothing else.</li>
 </ul>
@@ -132,9 +134,11 @@ Cambrian explosion, dinosaurs, extinction, humans, NOW, red-giant future - betwe
 <li>Berlin + T10 at 1942: local Berlin events present that the Europe view did not show.</li>
 <li>Kyoto + 1500&ndash;1600 at T9: Japanese history dense; European events only global-tier.</li>
 <li>Category filter "science" at T8, 1850&ndash;1950: relativity, quantum theory, penicillin, DNA precursors; no battles.</li>
-<li>Every view returns ≤ limit items and &lt; 150 ms at origin.</li>
+<li>Every view resolves from ≤ 15 chunk fetches, each ≤ 64 KB gz (API-5 budgets).</li>
 </ul>
-<p>These views double as the Phase-0 demo script (<a href="10-roadmap.html">ROAD-1</a>).</p>
+<p>The suite runs inside the <code>bake</code> stage against the baked chunks and blocks
+<code>publish</code> on failure (ARCH-6). These views double as the Phase-0 demo script
+(<a href="10-roadmap.html">ROAD-1</a>).</p>
 </div>
 
 <div class="note"><strong>Design guard:</strong> resist making ranking "smart" early. A transparent,

@@ -53,7 +53,7 @@ reference. Scope tags mean:</p>
     <td>Five source tiers, licensing rules per source, provenance requirements, import pipeline, hot/warm/cold data tiers.</td>
     <td>Data, backend</td></tr>
 <tr><td><a href="04-architecture.html">04 System Architecture</a></td>
-    <td>Go API + PostgreSQL/PostGIS + vector tiles + CloudFront; caching strategy; precomputation jobs; cost model; what we deliberately do not deploy.</td>
+    <td>Static-first, database-free: baker (Go + embedded DuckDB) → versioned artifacts on S3; PMTiles; immutable caching; bake pipeline; cost model; the database contingency.</td>
     <td>Backend, infra</td></tr>
 <tr><td><a href="05-api.html">05 API</a></td>
     <td>Viewport query (the core endpoint), entity API, tile API, search API, shareable URL scheme.</td>
@@ -74,7 +74,7 @@ reference. Scope tags mean:</p>
     <td>Phase 0 prototype, MVP, V2; the go/no-go gate; feature matrix with data source and effort per feature; verification criteria per phase.</td>
     <td>Everyone</td></tr>
 <tr><td><a href="11-local-dev.html">11 Local Development Plan</a></td>
-    <td>Build-start plan: docker-compose stack, local data pipeline, Aurora/S3/CloudFront parity rules, milestones M0-M6.</td>
+    <td>Build-start plan: docker-compose stack (MinIO + Caddy gateway), local bake pipeline, S3/CloudFront parity rules, milestones M0-M6.</td>
     <td>Everyone</td></tr>
 </table>
 
@@ -98,15 +98,15 @@ combination of time scale, geographic scale, and topic filter.</p>
 <tr><td>Semantic zoom</td><td>Changing the <em>information hierarchy</em>, not just the scale, as the user zooms time and geography together.</td></tr>
 <tr><td>Time bucket (T0&ndash;T13)</td><td>Precomputed zoom levels for time, from "whole universe" (T0) down to "hour" (T13). Analogue of map tile zoom levels. See <a href="07-semantic-zoom.html">07</a>.</td></tr>
 <tr><td>Importance vector</td><td>Precomputed per-entity scores: global, regional, per-category, per-time-bucket. Drives what renders at each zoom.</td></tr>
-<tr><td>Viewport query</td><td>The core API call: time range + bounding box + zoom levels + categories &rarr; the 100&ndash;500 most renderable objects. See <a href="05-api.html">05</a>.</td></tr>
+<tr><td>Viewport chunks</td><td>The core read contract: the client computes static chunk keys from time bucket + window + map tile + category and unions the fetched chunks - no query server. See <a href="05-api.html">05</a>.</td></tr>
 <tr><td>Knowledge date</td><td>A second, optional time axis: "show this as it was understood in year Y." V2 differentiator. See <a href="01-product-vision.html">01</a>.</td></tr>
-<tr><td>Hot / warm / cold</td><td>Storage tiers: curated interactive DB (PostgreSQL) / bulk queryable data (Parquet on S3) / original source dumps. See <a href="03-data-sources.html">03</a>.</td></tr>
+<tr><td>Hot / warm / cold</td><td>Storage tiers: baked serving artifacts (chunks, entity docs, PMTiles) / Parquet model + candidate sets on S3 / original source dumps. See <a href="03-data-sources.html">03</a>.</td></tr>
 </table>
 
 <h2>Global constraints</h2>
 <ul>
 <li><strong>Web-first.</strong> Every view has a URL that encodes its state. Desktop/tablet layout first; phone gets a stacked layout. No desktop app in scope.</li>
-<li><strong>Boring architecture.</strong> Go, PostgreSQL/PostGIS, S3, CloudFront, React, MapLibre. No Kubernetes, Kafka, graph DB, or embeddings-everywhere until a measured need exists.</li>
+<li><strong>Boring, database-free architecture.</strong> A Go baker (embedded DuckDB, tippecanoe) bakes versioned static artifacts to S3; React + MapLibre query them client-side. No database server, no API server, no Kubernetes, no Kafka - see <a href="04-architecture.html">ARCH-8</a> for the only sanctioned exception.</li>
 <li><strong>Open data in, provenance kept.</strong> Every imported fact records source, source ID, license, and attribution. Media is referenced, never copied.</li>
 <li><strong>Free browsing forever.</strong> Monetization (Pro, education, API) charges for doing work with the data, never for looking at history.</li>
 <li><strong>Uncertainty is first-class.</strong> No fake precision: ranges, competing claims, and confidence render visibly differently from measured facts.</li>

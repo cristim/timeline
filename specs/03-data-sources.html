@@ -56,23 +56,26 @@ is a hard ingestion error, not a default to "assume fine".</p>
 <pre>S3 (raw dumps: wikidata json.bz2, OHM pbf, commons metadata)
    │  versioned, immutable - COLD tier
    ▼
-importer (Go, batch jobs, idempotent, resumable)
+baker ingest stages (Go + embedded DuckDB, batch, idempotent, resumable)
    ├── parse + filter        (entity type allowlist, quality gates)
-   ├── normalize             (to DM-* schema; unit + calendar normalization)
+   ├── normalize             (to DM-* logical schema; unit + calendar normalization)
    ├── entity resolution     (wikidata_id is the join key; OHM wikidata tags)
    ├── validate              (schema, coordinate sanity, date sanity - fail loud,
-   │                          write rejects to a reject table with reason)
+   │                          write rejects to reject Parquet with reason)
    ├── classify              (category facets from instance_of/subclass trees)
    ├── rank                  (importance vector - see 07 ZOOM-2)
-   └── load                  (PostgreSQL COPY into staging, atomic swap)
+   └── write                 (versioned Parquet model tables in wk-warm)
    ▼
-WARM tier: full filtered datasets as Parquet on S3 (papers, patents, all candidates)
-HOT  tier: curated 1-5M entities in PostgreSQL</pre>
+WARM tier: Parquet model + full candidate sets (papers, patents) in wk-warm
+HOT  tier: baked serving artifacts in wk-artifacts (chunks, entity docs,
+           PMTiles, search shards - see ARCH-4), published atomically via
+           the dataset manifest</pre>
 <ul>
-<li>Imports are reproducible: same dump + same code &rarr; same DB. Every run records dump version and
-counts (parsed / accepted / rejected per reason).</li>
-<li>Re-import is a full staging rebuild + swap, not incremental mutation, until user contributions exist
-(then: contributions live in overlay tables that survive swaps).</li>
+<li>Bakes are reproducible: same dump + same code &rarr; byte-identical artifacts (modulo
+compression). Every run records dump version and counts (parsed / accepted / rejected per reason).</li>
+<li>A re-bake is a new dataset version + manifest repoint, never in-place mutation. When user
+contributions exist later, they are an additional input NDJSON stream to the bake
+(<a href="04-architecture.html">ARCH-8</a>), not writes to a live store.</li>
 <li>Wikidata extraction pulls at minimum: labels, descriptions, instance_of/subclass_of, P580/P582/P585
 (times), P625 (coords), P276 (location), P710 (participant), P361 (part of), P828/P1542 (cause/effect),
 P61/P575 (discovery), sitelinks, image (P18), Commons category.</li>
@@ -91,14 +94,14 @@ buckets T11&ndash;T13.</p>
 <div class="req"><div class="req-head"><span class="req-id">SRC-5</span><span class="req-title">Hot / warm / cold tiers</span><span class="badge mvp">MVP</span></div>
 <table>
 <tr><th>Tier</th><th>Store</th><th>Contents</th><th>Scale</th></tr>
-<tr><td>HOT</td><td>PostgreSQL/PostGIS</td><td>Curated entities powering interactive map/timeline/search</td><td>MVP 1&ndash;5M entities, 20&ndash;50M claims/relationships, ~20&ndash;100 GB with indexes</td></tr>
-<tr><td>WARM</td><td>Parquet on S3</td><td>Full candidate sets: all papers, patents, measurements, less-important entities; promoted to HOT on demand/by ranking</td><td>100M+ rows, grows freely</td></tr>
+<tr><td>HOT</td><td>Baked artifacts on object storage (<code>wk-artifacts</code>)</td><td>Chunks, entity docs, PMTiles, search shards powering the interactive app</td><td>MVP 1&ndash;5M entities, 20&ndash;50M claims/relationships; tens of GB of objects</td></tr>
+<tr><td>WARM</td><td>Parquet on S3 (<code>wk-warm</code>)</td><td>The normalized model tables plus full candidate sets: all papers, patents, measurements, less-important entities; promoted into the bake by ranking</td><td>100M+ rows, grows freely</td></tr>
 <tr><td>COLD</td><td>S3 raw dumps</td><td>Original Wikidata/OHM/OpenAlex/patent dumps, versioned</td><td>TB-scale, cheap</td></tr>
 </table>
 <p>MVP HOT targets by type (approximate): events 500k&ndash;1M · people 500k · places/states/cities 200k ·
 species 300k · inventions/technologies 50k · books/media/games 500k · vehicles/products 100k · selected
-papers 100k · selected patents 100k · other 500k. Detailed polygons/tiles live outside the DB size
-budget (tile store).</p>
+papers 100k · selected patents 100k · other 500k. Detailed polygons live in the PMTiles layer
+artifacts, outside the chunk/doc budget.</p>
 </div>
 
 <div class="req"><div class="req-head"><span class="req-id">SRC-6</span><span class="req-title">Papers, patents, books: metadata only</span><span class="badge mvp">MVP (seed)</span></div>

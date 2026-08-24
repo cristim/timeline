@@ -30,18 +30,25 @@ the LLM's job is translating language into structured queries and explaining res
 every interaction.</p>
 
 <h2>Entity search</h2>
-<div class="req"><div class="req-head"><span class="req-id">SRCH-1</span><span class="req-title">MVP search: PostgreSQL full-text + trigram</span><span class="badge mvp">MVP</span></div>
+<div class="req"><div class="req-head"><span class="req-id">SRCH-1</span><span class="req-title">MVP search: static prefix shards, client-side matching</span><span class="badge mvp">MVP</span></div>
 <ul>
 <li>Typical queries: "T rex", "Battle of Berlin", "Roman Empire", "invention of radio". Instant
-search-as-you-type over entity names + aliases + short descriptions.</li>
-<li>Implementation: <code>tsvector</code> + <code>pg_trgm</code> GIN indexes; ranking blends text score
-with <code>importance.global</code> so "Rome" surfaces the empire before minor namesakes.</li>
-<li>Aliases table populated from Wikidata labels/aliases (multilingual aliases accepted even though the
-UI is English-only, so "Rom", "Roma" resolve).</li>
+search-as-you-type over entity names + aliases + short descriptions - with <strong>no search
+server</strong>: the bake produces prefix-sharded index files
+(<code>/v/&lt;dataset&gt;/search/&lt;prefix&gt;.json</code>, ARCH-4) and the client fetches the shard for
+the normalized first 2 characters (3+ for hot prefixes) and matches locally
+(minisearch-style scoring).</li>
+<li>Shard entries: <code>{slug, name, aliases, type, t0, t1, importance, thumb}</code>. Ranking blends
+text match with <code>importance.global</code> so "Rome" surfaces the empire before minor namesakes.
+Shards are importance-capped to the API-5 size budget; long-tail entities remain reachable by exact
+slug/alias.</li>
+<li>Aliases come from Wikidata labels/aliases (multilingual aliases included even though the UI is
+English-only, so "Rom", "Roma" resolve).</li>
 <li>Result action: selecting a result focuses timeline + map + inspector on the entity (not a page
-navigation).</li>
-<li>p95 &lt; 50 ms at origin. Move to OpenSearch/Meilisearch only when measured quality/latency demands
-it (<span class="badge later">LATER</span>).</li>
+navigation). Fetched shards are memory-cached; typing within a prefix costs zero network.</li>
+<li>Escape hatch: if static shards hit a measurable quality/recall ceiling at millions of entities,
+a search service is the first sanctioned server per <a href="04-architecture.html">ARCH-8</a>
+(<span class="badge later">LATER</span>).</li>
 </ul>
 </div>
 
@@ -56,9 +63,12 @@ it (<span class="badge later">LATER</span>).</li>
 "Fastest {product_type} in {year}?"
     → property_value max_speed where valid_from <= year
 "Inventions from {country} between {y1} and {y2}"
-"What existed together?" / contemporaries    → API-2 sub-resource</pre>
+"What existed together?" / contemporaries    → precomputed in entity docs (API-2)</pre>
 <p>The search box detects template matches (rule-based parse first); each template renders as a real
-view with a shareable URL. This is also the SEO page generator's vocabulary.</p>
+view with a shareable URL. Execution stays client-side where the artifacts allow (chunks, entity
+docs, DuckDB-Wasm over Parquet per ARCH-7); templates that exceed those artifacts are baked as
+additional snapshot pages rather than answered by a server. This vocabulary is also the SEO page
+generator's.</p>
 </div>
 
 <div class="req"><div class="req-head"><span class="req-id">SRCH-3</span><span class="req-title">Natural-language questions ("Ask")</span><span class="badge v2">V2</span></div>
@@ -71,7 +81,9 @@ view with a shareable URL. This is also the SEO page generator's vocabulary.</p>
      with entity links; every numeric statement must cite a claim id
    → large model reserved for multi-hop questions that fail the above</pre>
 <p>Answers must be grounded: the model never asserts facts that are not in the retrieved result set.
-"Ask about current view" passes the viewport state as context.</p>
+"Ask about current view" passes the viewport state as context. Note: "Ask" is the first feature that
+requires any server-side compute at all - it ships as an isolated V2 endpoint under the ARCH-8
+contingency, leaving the static core untouched.</p>
 </div>
 
 <h2>Cost policy</h2>

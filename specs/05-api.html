@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>05 API · Everything Timeline</title>
+<title>05 Read Contract · Everything Timeline</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 05 API</span></header>
+<header class="site"><span class="crumb"><a href="index.html">Everything Timeline / Specs</a> / 05 Read Contract</span></header>
 <nav class="toc">
   <a href="index.html">Index</a>
   <a href="01-product-vision.html">01 Vision</a>
@@ -24,61 +24,73 @@
 </nav>
 <main>
 
-<h1>05 · API</h1>
-<p class="lead">The viewport query is the product's most important interface - arguably more important
-than the UI itself. Everything is JSON over HTTPS, versioned under <code>/api/v1</code>, aggressively
-cacheable.</p>
+<h1>05 · Read Contract</h1>
+<p class="lead">There is no query server: "the API" is a contract of static artifact URLs under
+<code>/v/&lt;dataset&gt;/</code> plus the client-side rules for computing them
+(<a href="04-architecture.html">ARCH-1</a>). The viewport chunk-key scheme is the product's most
+important interface - arguably more important than the UI itself. Everything is immutable and
+CDN-cached forever (ARCH-2).</p>
 
-<h2>The viewport query</h2>
-<div class="req"><div class="req-head"><span class="req-id">API-1</span><span class="req-title">GET /api/v1/viewport</span><span class="badge mvp">MVP</span></div>
-<pre>GET /api/v1/viewport
-    ?t0=-0631152000            &amp; t1=-0442800000     -- timeline_time (seconds, scientific
-                                                       notation allowed: t0=-2.08e17)
-    &amp; bbox=5.0,40.0,30.0,60.0                       -- lon/lat, optional (absent = whole world)
-    &amp; tb=T9                                          -- time bucket in view (T0..T13)
-    &amp; z=6                                            -- map zoom, optional
-    &amp; cat=war,politics                               -- category filter, optional
-    &amp; limit=300                                      -- server clamps to <= 500</pre>
-<p>Returns the 100&ndash;500 most renderable objects for that view - never the full dataset:</p>
+<h2>Bootstrap</h2>
+<div class="req"><div class="req-head"><span class="req-id">API-0</span><span class="req-title">GET /manifest.json</span><span class="badge mvp">MVP</span></div>
+<pre>GET /manifest.json               -- the ONLY mutable object
+{
+  "dataset": "2026-08",          -- everything else lives under /v/2026-08/...
+  "buckets":  { "T9": { "window_s": ..., "grid_epoch": ... }, ... },
+  "timesteps": { "borders": [ ... ] },     -- snapped tile time-steps (ARCH-3)
+  "categories": [ "war", "politics", ... ],
+  "layers": [ ... ], "counts": { ... }, "seed_version": "...", "checksums": "..."
+}</pre>
+<p>The client loads this once; every subsequent key is computed locally from it. A dataset release is
+a manifest repoint (ARCH-2); rollback likewise.</p>
+</div>
+
+<h2>The viewport chunks</h2>
+<div class="req"><div class="req-head"><span class="req-id">API-1</span><span class="req-title">Client-computed chunk keys</span><span class="badge mvp">MVP</span></div>
+<pre>/v/&lt;dataset&gt;/chunks/&lt;tb&gt;/&lt;window&gt;/&lt;tile&gt;/&lt;category&gt;.json
+
+  tb        time bucket in view (T0..T13, ZOOM-3)
+  window    time window index: floor(t / bucket_window_seconds), from the
+            manifest grid - the client snaps its continuous view to it
+  tile      map tile address z/x/y at the bucket's configured zoom,
+            or "world" for global views
+  category  ONE category, or "all" (top tier across categories)</pre>
+<p>The client derives every key itself: snap the visible time range to window indexes, snap the bbox
+to tile addresses, fetch the needed <code>(window × tile)</code> chunks for each selected category,
+union, dedupe by slug, apply the importance slider locally, render. That is the entire "query
+engine". Chunk content (ranking baked per <a href="07-semantic-zoom.html">ZOOM-4</a>):</p>
 <pre>{
-  "dataset": "2026-08",
   "items": [
     {
-      "id": 48314, "slug": "battle-of-waterloo", "type": "event",
+      "slug": "battle-of-waterloo", "type": "event",
       "name": "Battle of Waterloo",
       "t0": "1815-06-18", "t1": "1815-06-18", "precision": "day",
       "status": "documented",
-      "point": [4.41, 50.68],          // render anchor; full geometry via tiles
+      "point": [4.41, 50.68],          // render anchor; full geometry via PMTiles
       "categories": ["war"],
       "importance": 0.97,
       "media_thumb": "https://...",
-      "child_count": 6                  // sub-events available at deeper buckets
+      "child_count": 6                  // sub-events exist at deeper buckets
     }, ...
-  ],
-  "clusters": [ ... ]                   // optional server-side clusters when limit hit
+  ]
 }</pre>
-<p>Server-side semantics (ranking function itself is <a href="07-semantic-zoom.html">ZOOM-4</a>):</p>
-<pre>WHERE entity time range overlaps [t0,t1]
-  AND (bbox IS NULL OR geometry && bbox)
-  AND tb BETWEEN bucket_min AND bucket_max
-  AND categories && cat
-ORDER BY relevance(importance, viewport) DESC
-LIMIT clamp(limit)</pre>
 <ul>
-<li><strong>Quantization for cacheability:</strong> the server snaps <code>t0/t1</code> to the bucket's
-grid and <code>bbox</code> to the map-tile grid before querying, and echoes the snapped values. Distinct
-anonymous URLs collapse onto a finite cacheable set (<a href="04-architecture.html">ARCH-2</a>).</li>
-<li>Invalid parameters (unknown bucket, malformed bbox, t1&lt;t0) return 400 with a machine-readable
-error code - no silent clamping of nonsense.</li>
-<li>p95 &lt; 150 ms at origin for HOT queries (API-5).</li>
+<li><strong>Bounded by construction:</strong> each chunk holds at most N items (per-bucket cap from
+ZOOM-4, including the diversity guard); entities spanning windows are duplicated into every window
+they overlap (ARCH-4). A view unions a handful of chunks, never the dataset.</li>
+<li><strong>Empty is a file:</strong> windows/tiles with no qualifying entities bake as an empty
+<code>{"items":[]}</code> chunk. A 404 on a manifest-valid key is a bake bug, not a normal condition;
+the client reports it.</li>
+<li>Size budget: p95 chunk ≤ 64 KB gzipped; fetch p95 &lt; 30 ms through the local gateway
+(<a href="11-local-dev.html">DEV-6 M2</a>).</li>
 </ul>
 </div>
 
-<h2>Entity API</h2>
-<div class="req"><div class="req-head"><span class="req-id">API-2</span><span class="req-title">GET /api/v1/entity/{slug}</span><span class="badge mvp">MVP</span></div>
-<pre>GET /api/v1/entity/tyrannosaurus-rex
+<h2>Entity documents</h2>
+<div class="req"><div class="req-head"><span class="req-id">API-2</span><span class="req-title">/v/&lt;dataset&gt;/entity/&lt;slug&gt;.json</span><span class="badge mvp">MVP</span></div>
+<pre>GET /v/2026-08/entity/tyrannosaurus-rex.json
 {
-  "id": ..., "slug": "tyrannosaurus-rex", "type": "species",
+  "slug": "tyrannosaurus-rex", "type": "species",
   "name": "Tyrannosaurus rex",
   "description": "...",
   "temporal": { "t0": "-68e6y", "t1": "-66e6y", "precision": "million_year",
@@ -89,59 +101,64 @@ error code - no silent clamping of nonsense.</li>
         { "value": {"min":8000,"max":9500}, "unit":"kg", "value_type":"estimated",
           "method":"volumetric model", "published_at":"2011",
           "source": { "kind":"paper", "title":"...", "url":"..." }, "confidence":0.7 },
-        ...
-      ] }
+        ...                              // full claim history incl. superseded -
+      ] }                                // powers "estimates over time" (FE-6)
   ],
   "relationships": [
-    { "type": "parent_taxon", "target": {"slug":"tyrannosauridae", ...} },
-    { "type": "contemporary_with", "target": {"slug":"triceratops", ...} }
+    { "type": "parent_taxon", "target": {"slug":"tyrannosauridae", "name":"..."} },
+    { "type": "contemporary_with", "target": {"slug":"triceratops", "name":"..."} }
   ],
-  "geometry_summary": { "kind": "point_distribution", "tile_layer": "fossils" },
+  "contemporaries": [ ... top 50, precomputed ... ],
+  "children": [ ... part_of tree, one level ... ],
+  "geometry_summary": { "kind": "point_distribution", "layer": "fossils" },
   "media": [ {kind, thumbnail_url, attribution, ...} ],
   "links": { "wikipedia": "...", "wikidata": "Q14332" },
   "sources": [ ... ]
 }</pre>
-<p>Sub-resources (each independently cacheable):
-<code>/entity/{slug}/claims?property=mass</code> (full claim history incl. superseded - powers
-"estimates over time"), <code>/entity/{slug}/related?type=caused_by</code>,
-<code>/entity/{slug}/contemporaries?limit=50</code> ("what existed at the same time"),
-<code>/entity/{slug}/children</code> (part_of tree).</p>
+<p>One self-contained document per entity - claims, precomputed contemporaries, and the immediate
+part_of tree are inlined rather than sub-resources, because there is no server to compose them.
+Slug aliases resolve via <code>/v/&lt;dataset&gt;/aliases.json</code> (DM-2a) client-side; the future
+CDN can additionally emit real 301s from it.</p>
 </div>
 
-<div class="req"><div class="req-head"><span class="req-id">API-3</span><span class="req-title">Comparison endpoint</span><span class="badge mvp">MVP</span></div>
-<pre>GET /api/v1/compare?entities=tyrannosaurus-rex,african-elephant
-  → aligned property table: for each shared property_def, both syntheses,
-    units converted to canonical, value_type flags (measured vs estimated),
-    plus temporal overlap ("did these coexist?" with the overlap computation)</pre>
-<p>MVP: 2 entities; V2: n entities + chart series.</p>
+<div class="req"><div class="req-head"><span class="req-id">API-3</span><span class="req-title">Comparison</span><span class="badge mvp">MVP</span></div>
+<p>Compare is a pure client computation over two entity documents: align shared properties from the
+<code>property_def</code> registry (shipped in the manifest), convert units to canonical, flag
+measured vs. estimated, compute temporal overlap ("did these coexist?"). No endpoint exists. MVP: 2
+entities; V2: n entities + chart series via the Parquet/DuckDB-Wasm path (ARCH-7).</p>
 </div>
 
-<h2>Tiles and search</h2>
-<div class="req"><div class="req-head"><span class="req-id">API-4</span><span class="req-title">Tile and search endpoints</span><span class="badge mvp">MVP</span></div>
-<pre>GET /tiles/{layer}/{z}/{x}/{y}.mvt?time={snapped}   -- ARCH-3; layers MVP:
-     borders, cities, events, fossils; V2: routes, language, religion...
+<h2>Tiles and search artifacts</h2>
+<div class="req"><div class="req-head"><span class="req-id">API-4</span><span class="req-title">PMTiles and search shards</span><span class="badge mvp">MVP</span></div>
+<pre>/v/&lt;dataset&gt;/layers/&lt;layer&gt;/&lt;timestep&gt;.pmtiles   -- ARCH-3; client snaps the
+     time cursor to the manifest's timestep list; MapLibre pmtiles protocol
+     range-reads only the viewport's bytes. MVP layers: borders, cities,
+     events, fossils; V2: routes, language, religion...
 
-GET /api/v1/search?q=waterloo&amp;limit=10
-  → [{ slug, name, type, t0, t1, thumb, score }]     -- SRCH-1; <50ms p95
-GET /api/v1/search?q=...&amp;mode=question               -- V2 NL question, SRCH-3</pre>
+/v/&lt;dataset&gt;/search/&lt;shard&gt;.json                  -- SRCH-1 prefix shards;
+     client-side matching, no search server</pre>
 </div>
 
 <h2>Cross-cutting contract</h2>
-<div class="req"><div class="req-head"><span class="req-id">API-5</span><span class="req-title">Conventions and SLOs</span><span class="badge mvp">MVP</span></div>
+<div class="req"><div class="req-head"><span class="req-id">API-5</span><span class="req-title">Conventions and budgets</span><span class="badge mvp">MVP</span></div>
 <ul>
-<li>All responses: <code>dataset</code> version field; <code>ETag</code>; <code>Cache-Control</code>
-per endpoint class (viewport/entity: 1h + revalidate; tiles/chunks: immutable, path-versioned).</li>
-<li>Errors: RFC 7807 problem+json with stable <code>code</code> strings; no 200-with-error-body.</li>
-<li>Time values on the wire: ISO-8601 where in range; otherwise <code>{"y": -6.6e7}</code> year offsets;
-one serializer/deserializer shared through generated types.</li>
-<li>Rate limiting on dynamic endpoints (search, future AI/contributions), not on cacheable GETs.</li>
-<li>SLOs at origin: viewport p95 &lt; 150 ms; entity p95 &lt; 100 ms; search p95 &lt; 50 ms; tiles p95 &lt; 80 ms.</li>
-<li>Public API productization (keys, tiers, bulk export) is <span class="badge later">LATER</span>; but
-nothing in v1 may leak internal IDs as the only identity - slugs are the public identity.</li>
+<li>All artifacts under <code>/v/&lt;dataset&gt;/</code>: immutable,
+<code>Cache-Control: public, max-age=31536000, immutable</code>. <code>/manifest.json</code>:
+<code>max-age=60, must-revalidate</code>. Set by the gateway/CDN (DEV-1), identical in dev and cloud.</li>
+<li>Time values on the wire: ISO-8601 where in range; otherwise <code>{"y": -6.6e7}</code> year
+offsets; one serializer/deserializer shared between baker (Go) and client (TS) via generated types.</li>
+<li>Key computation is a shared, tested library: the same quantization code (or a transpiled/
+golden-tested twin) runs in the baker when writing keys and in the client when computing them - a
+drift between the two is the failure mode of this architecture, so it gets its own test suite.</li>
+<li>Slugs are the public identity; internal ids never appear in artifacts (DM-2a).</li>
+<li>Budgets: chunk ≤ 64 KB gz p95; entity doc ≤ 128 KB gz p95; search shard ≤ 256 KB gz;
+first meaningful view ≤ 15 artifact fetches.</li>
+<li>Public data productization (bulk export, API keys) is <span class="badge later">LATER</span> -
+trivially, since the artifacts and Parquet are already downloadable objects.</li>
 </ul>
 </div>
 
-<h2>Shareable URL scheme (frontend routes, server-rendered shells for SEO)</h2>
+<h2>Shareable URL scheme (app routes, static HTML shells for SEO)</h2>
 <div class="req"><div class="req-head"><span class="req-id">API-6</span><span class="req-title">Every view state has a URL</span><span class="badge mvp">MVP</span></div>
 <pre>/time/1945-04-30/map/berlin?layers=war,politics      -- date + place view
 /time/-66000000/world                                 -- deep time
@@ -151,13 +168,13 @@ nothing in v1 may leak internal IDs as the only identity - slugs are the public 
 /history/france/1800-1900                             -- V2: generated SEO pages
 /inventions/19th-century                              -- V2: generated SEO pages</pre>
 <p>Rules: URLs are the sharing/education/SEO engine. Canonical entity pages
-(<code>/entity/{slug}</code>) are server-rendered with meaningful HTML (title, description, key facts,
-attribution) for crawlers; the app hydrates on top. Generated intersection pages
-(time &times; place &times; category) are V2 and come from the snapshot build job
+(<code>/entity/{slug}</code>) are baked as static HTML (title, description, key facts, attribution)
+at bake time - SSG, not SSR - and the app hydrates on top. Generated intersection pages
+(time &times; place &times; category) are V2 outputs of the snapshot bake stage
 (<a href="04-architecture.html">ARCH-4</a>).</p>
 </div>
 
 </main>
-<footer class="site">Everything Timeline spec pack · 05 API</footer>
+<footer class="site">Everything Timeline spec pack · 05 Read Contract</footer>
 </body>
 </html>

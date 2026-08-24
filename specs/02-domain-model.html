@@ -46,9 +46,12 @@ material, structure, astronomical_object, natural_event, future_event, record, t
 Unknown types must be an ingestion error, not silently coerced (fail loud).</p>
 </div>
 
-<div class="req"><div class="req-head"><span class="req-id">DM-2</span><span class="req-title">Relational schema, not a graph database</span><span class="badge mvp">MVP</span></div>
-<p>PostgreSQL + PostGIS. Graph traversals are modeled with indexed relational tables; a graph DB is
-considered only if traversal load ever dominates (it will not for MVP). Core tables:</p>
+<div class="req"><div class="req-head"><span class="req-id">DM-2</span><span class="req-title">Relational logical model, materialized as Parquet</span><span class="badge mvp">MVP</span></div>
+<p>This is a <em>logical</em> relational model - there is no database server
+(<a href="04-architecture.html">ARCH-1</a>). The baker materializes these tables as Parquet in
+<code>wk-warm</code> and queries them with embedded DuckDB; the serving artifacts (chunks, entity
+docs) are baked projections of them. Graph traversals are modeled relationally; a graph engine is
+considered only if bake-time traversal ever dominates (it will not for MVP). Core tables:</p>
 <pre>entity
   id              bigint PK
   slug            text UNIQUE            -- URL identity: 'tyrannosaurus-rex'
@@ -199,8 +202,9 @@ competing <code>reconstruction</code>s for the same period (disputed borders); t
 <code>exact</code> (heat/intensity, dotted edges): never imply that "Occitan-speaking area, 1300" is a
 treaty border. A language layer stores <code>LanguageRegion { language, geom, valid_from, valid_to,
 confidence, sources }</code>, not "France &rarr; French".</li>
-<li>GiST index on <code>geom</code>; btree on <code>(valid_from, valid_until)</code>; combined queries are
-the hot path (<a href="05-api.html">API-1</a>).</li>
+<li>All geometry selection (time-step filtering, simplification per zoom) happens at bake time
+(tippecanoe/DuckDB-spatial into PMTiles, <a href="04-architecture.html">ARCH-3</a>); no serving-side
+spatial index exists or is needed.</li>
 <li>Deep-time paleogeography (Pangaea, coastlines) is a separate basemap tile set selected by time range,
 not per-entity geometry (<a href="06-frontend.html">FE-5</a>).</li>
 </ul>
