@@ -1,0 +1,15 @@
+# local working data (dumps, MinIO volume, staging) - never committed.
+# data/* + negation (not bare data/) so the seed set stays versioned:
+# git cannot re-include children of a fully excluded directory.
+data/*
+!data/seed/
+
+# environment
+.env
+.env.local
+
+# build artifacts
+node_modules/
+dist/
+*.log
+.DS_Store
