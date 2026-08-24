@@ -1,0 +1,52 @@
+services:
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-wkadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-wk-dev-minio}
+    ports: ["9000:9000", "9001:9001"]
+    volumes: ["./data/minio:/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >-
+      /bin/sh -c "mc alias set wk http://minio:9000 ${AWS_ACCESS_KEY_ID:-wkadmin} ${AWS_SECRET_ACCESS_KEY:-wk-dev-minio} &&
+                  mc mb -p wk/wk-dumps wk/wk-warm wk/wk-artifacts &&
+                  mc anonymous set download wk/wk-artifacts"
+
+  gateway:
+    image: caddy:2
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]
+    ports: ["8080:8080"]
+    depends_on: [minio]
+
+  web:
+    build: ./web
+    ports: ["5173:5173"]
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    environment:
+      VITE_DATA_URL: ${VITE_DATA_URL:-http://localhost:8080}
+
+  baker:
+    build: .
+    profiles: ["jobs"]
+    volumes: ["./data/seed:/seed:ro"]
+    environment:
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-wkadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-wk-dev-minio}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      DATASET_VERSION: ${DATASET_VERSION:-dev}
+      SEED_DIR: /seed

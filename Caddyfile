@@ -1,0 +1,24 @@
+# Dev gateway: CloudFront stand-in (DEV-1). One entrypoint, same URL contract
+# and cache headers as the cloud CDN (ARCH-2, API-5).
+:8080 {
+	encode gzip
+
+	@manifest path /manifest.json
+	handle @manifest {
+		rewrite * /wk-artifacts{path}
+		reverse_proxy minio:9000
+		header Cache-Control "public, max-age=60, must-revalidate"
+	}
+
+	@artifacts path /v/*
+	handle @artifacts {
+		rewrite * /wk-artifacts{path}
+		reverse_proxy minio:9000
+		header Cache-Control "public, max-age=31536000, immutable"
+	}
+
+	# everything else: the web app (vite dev server, incl. HMR websocket)
+	handle {
+		reverse_proxy web:5173
+	}
+}
