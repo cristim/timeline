@@ -19,12 +19,17 @@ import (
 func runBake(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("bake", flag.ContinueOnError)
 	seedDir := fs.String("seed", "", "path to the NDJSON seed directory")
+	goldensPath := fs.String("goldens", "data/goldens.json", "golden-view expectations (ZOOM-5); failing views block publish")
 	allowRejects := fs.Bool("allow-rejects", false, "bake even if seed lines were rejected (report still written)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *seedDir == "" {
 		return fmt.Errorf("--seed <dir> is required")
+	}
+	goldens, err := bake.LoadGoldens(*goldensPath)
+	if err != nil {
+		return err
 	}
 
 	res, err := ingest.LoadSeed(*seedDir)
@@ -57,10 +62,11 @@ func runBake(ctx context.Context, args []string) error {
 	}
 
 	sink := blob.BucketSink{Client: cli, Bucket: artifactsBucket()}
-	manifest, stats, err := bake.Run(ctx, sink, datasetVersion(), res.SeedVersion, res.Entities)
+	manifest, stats, err := bake.Run(ctx, sink, datasetVersion(), res.SeedVersion, res.Entities, goldens)
 	if err != nil {
 		return err
 	}
+	fmt.Printf("golden views: %d passed\n", len(goldens.Views))
 	manifest.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 	fmt.Printf("bake: %d artifacts written, %d unchanged\n", stats.Written, stats.Unchanged)
 

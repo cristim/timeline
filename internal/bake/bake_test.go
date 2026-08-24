@@ -80,7 +80,7 @@ func TestBucketizeSemanticZoom(t *testing.T) {
 func TestBakeChunksAndDocs(t *testing.T) {
 	es := testEntities(t)
 	sink := newMemSink()
-	m, stats, err := Run(context.Background(), sink, "test", "seed-x", es)
+	m, stats, err := Run(context.Background(), sink, "test", "seed-x", es, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestBakeChunksAndDocs(t *testing.T) {
 	}
 
 	// Idempotency: a second run writes nothing.
-	_, stats2, err := Run(context.Background(), sink, "test", "seed-x", es)
+	_, stats2, err := Run(context.Background(), sink, "test", "seed-x", es, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

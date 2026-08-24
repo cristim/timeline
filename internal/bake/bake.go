@@ -53,7 +53,10 @@ type chunkFile struct {
 }
 
 // Run bakes all artifacts for the dataset and returns the manifest to publish.
-func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities []*model.Entity) (*model.Manifest, *Stats, error) {
+// A non-nil goldens file is evaluated against the baked chunks; any failure
+// aborts before the manifest exists, so a failing golden view cannot publish
+// (ZOOM-5).
+func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities []*model.Entity, goldens *GoldenFile) (*model.Manifest, *Stats, error) {
 	stats := &Stats{}
 
 	childCount := map[string]int{}
@@ -65,25 +68,42 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 		}
 	}
 
-	buckets, err := bakeChunks(ctx, sink, dataset, entities, childCount, stats)
+	goldenKeys, err := goldenKeySet(goldens)
 	if err != nil {
 		return nil, stats, err
 	}
+	buckets, captured, err := bakeChunks(ctx, sink, dataset, entities, childCount, goldenKeys, stats)
+	if err != nil {
+		return nil, stats, err
+	}
+	goldenStatus := ""
+	if goldens != nil {
+		if fails := Evaluate(goldens, seedVersion, captured); len(fails) > 0 {
+			return nil, stats, fmt.Errorf("%s", formatFails(fails))
+		}
+		goldenStatus = "pass"
+	}
+
 	if err := bakeEntityDocs(ctx, sink, dataset, entities, stats); err != nil {
+		return nil, stats, err
+	}
+	shards, err := bakeSearch(ctx, sink, dataset, entities, stats)
+	if err != nil {
 		return nil, stats, err
 	}
 	if _, err := putJSON(ctx, sink, fmt.Sprintf("v/%s/aliases.json", dataset), map[string]string{}, stats); err != nil {
 		return nil, stats, err
 	}
 
-	cats := categorySet(entities)
 	m := &model.Manifest{
-		Dataset:     dataset,
-		SeedVersion: seedVersion,
-		Buckets:     buckets,
-		Categories:  cats,
-		Layers:      []string{},
-		Timesteps:   map[string][]int{},
+		Dataset:      dataset,
+		SeedVersion:  seedVersion,
+		Buckets:      buckets,
+		Categories:   categorySet(entities),
+		Layers:       []string{},
+		Timesteps:    map[string][]int{},
+		SearchShards: shards,
+		GoldenViews:  goldenStatus,
 		Counts: map[string]int{
 			"entities": len(entities),
 		},
@@ -92,9 +112,10 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 }
 
 // bakeChunks writes /v/<ds>/chunks/<tb>/<window>/world/<category>.json and
-// returns the bucket table with per-bucket non-empty window lists, which the
-// manifest ships so the client never fetches (or 404s on) an empty window.
-func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*model.Entity, childCount map[string]int, stats *Stats) ([]model.Bucket, error) {
+// returns the bucket table with per-bucket non-empty window lists (shipped in
+// the manifest so the client never fetches, or 404s on, an empty window), plus
+// the chunks named by goldenKeys for evaluation.
+func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*model.Entity, childCount map[string]int, goldenKeys map[string]bool, stats *Stats) ([]model.Bucket, map[string]chunkFile, error) {
 	type cell struct {
 		bucket int
 		window int64
@@ -107,7 +128,7 @@ func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*mode
 			bk := model.Buckets[b]
 			w0, w1 := bk.WindowIndex(e.T0), bk.WindowIndex(e.T1)
 			if w1-w0 > rankzoom.MaxWindowsPerEntity { // guarded in Bucketize; belt and braces
-				return nil, fmt.Errorf("entity %q: window explosion at %s", e.Slug, bk.ID)
+				return nil, nil, fmt.Errorf("entity %q: window explosion at %s", e.Slug, bk.ID)
 			}
 			for w := w0; w <= w1; w++ {
 				for _, c := range e.Categories {
@@ -138,12 +159,16 @@ func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*mode
 		return a.cat < b.cat
 	})
 
+	captured := map[string]chunkFile{}
 	for _, c := range keys {
 		items := rankCell(cells[c], c.cat == "all", childCount)
-		key := fmt.Sprintf("v/%s/chunks/%s/%d/world/%s.json",
-			dataset, model.Buckets[c.bucket].ID, c.window, c.cat)
-		if _, err := putJSON(ctx, sink, key, chunkFile{Items: items}, stats); err != nil {
-			return nil, err
+		relKey := fmt.Sprintf("chunks/%s/%d/world/%s.json",
+			model.Buckets[c.bucket].ID, c.window, c.cat)
+		if _, err := putJSON(ctx, sink, fmt.Sprintf("v/%s/%s", dataset, relKey), chunkFile{Items: items}, stats); err != nil {
+			return nil, nil, err
+		}
+		if goldenKeys[relKey] {
+			captured[relKey] = chunkFile{Items: items}
 		}
 		windowSets[c.bucket][c.window] = true
 	}
@@ -158,7 +183,7 @@ func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*mode
 		b.Windows = ws
 		out[i] = b
 	}
-	return out, nil
+	return out, captured, nil
 }
 
 // rankCell orders a cell's entities and applies the per-chunk cap and, for

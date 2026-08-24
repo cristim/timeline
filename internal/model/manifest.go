@@ -11,5 +11,8 @@ type Manifest struct {
 	Layers      []string         `json:"layers"`
 	Timesteps   map[string][]int `json:"timesteps"`
 	Counts      map[string]int   `json:"counts"`
-	GoldenViews string           `json:"golden_views,omitempty"` // "pass" required to publish (ZOOM-5)
+	// SearchShards lists the baked search shard names (API-4); the client
+	// only fetches shards that exist.
+	SearchShards []string `json:"search_shards"`
+	GoldenViews  string   `json:"golden_views,omitempty"` // "pass" required to publish (ZOOM-5)
 }
