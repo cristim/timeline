@@ -60,6 +60,14 @@ objects, not a process.</li>
 any database server (PostgreSQL included), Kubernetes, Kafka/queues, graph DBs, Elasticsearch,
 application servers on the anonymous read path, embeddings infra, microservices.</li>
 <li>The one place a database is <em>allowed</em> to return is ARCH-8.</li>
+<li><strong>Host-agnostic by construction:</strong> the serving contract is only "static hosting +
+object storage with HTTP range requests + CORS". CloudFront+S3 is one instantiation; Cloudflare is
+another: Pages (or Workers static assets) hosts the app shell, and the artifact buckets live in
+<strong>R2 behind the Cloudflare CDN</strong>. R2 is S3-compatible, so the baker's S3 client and the
+MinIO dev setup cover it unchanged via <code>S3_ENDPOINT</code>; R2's zero-egress pricing improves
+ARCH-5 further. Artifacts must <em>not</em> live inside a Pages deployment itself: Pages' per-file
+(~25 MiB) and file-count (~20k) limits rule out PMTiles archives, Parquet, and per-slug docs at MVP
+scale - Pages serves the shell, R2 serves the data.</li>
 </ul>
 </div>
 
