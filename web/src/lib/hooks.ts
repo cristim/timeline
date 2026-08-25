@@ -45,11 +45,10 @@ export function useViewportItems(
     if (!manifest) return "";
     const bucket = manifest.buckets[bucketIdx];
     const pad = bucket.window_s || 0;
-    const windows = windowsInRange(bucket, t0 - pad, t1 + pad);
     const categories = cats.length ? cats : ["all"];
     const out: string[] = [];
-    for (const w of windows) {
-      for (const c of categories) {
+    for (const c of categories) {
+      for (const w of windowsInRange(bucket, c, t0 - pad, t1 + pad)) {
         out.push(chunkKey(bucket, w, c));
       }
     }

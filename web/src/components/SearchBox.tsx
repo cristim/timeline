@@ -23,7 +23,15 @@ export function SearchBox({ manifest, onPick }: Props) {
   const [results, setResults] = useState<SearchEntry[]>([]);
   const [open, setOpen] = useState(false);
   const [cursor, setCursor] = useState(0);
+  // Ref shadows the cursor so ArrowDown+Enter within one frame (before a
+  // re-render) still picks the highlighted result.
+  const cursorRef = useRef(0);
+  const resultsRef = useRef<SearchEntry[]>([]);
   const boxRef = useRef<HTMLDivElement>(null);
+  const moveCursor = (next: (c: number) => number) => {
+    cursorRef.current = next(cursorRef.current);
+    setCursor(cursorRef.current);
+  };
 
   useEffect(() => {
     const tokens = fold(q).filter((t) => t.length >= 2);
@@ -51,8 +59,9 @@ export function SearchBox({ manifest, onPick }: Props) {
           })
           .sort((a, b) => b.importance - a.importance)
           .slice(0, 8);
+        resultsRef.current = matches;
         setResults(matches);
-        setCursor(0);
+        moveCursor(() => 0);
       })
       .catch((err: unknown) => console.error("search failed:", err));
     return () => {
@@ -85,9 +94,10 @@ export function SearchBox({ manifest, onPick }: Props) {
         }}
         onFocus={() => setOpen(true)}
         onKeyDown={(e) => {
-          if (e.key === "ArrowDown") setCursor((c) => Math.min(c + 1, results.length - 1));
-          else if (e.key === "ArrowUp") setCursor((c) => Math.max(c - 1, 0));
-          else if (e.key === "Enter" && results[cursor]) pick(results[cursor]);
+          if (e.key === "ArrowDown") moveCursor((c) => Math.min(c + 1, resultsRef.current.length - 1));
+          else if (e.key === "ArrowUp") moveCursor((c) => Math.max(c - 1, 0));
+          else if (e.key === "Enter" && resultsRef.current[cursorRef.current])
+            pick(resultsRef.current[cursorRef.current]);
           else if (e.key === "Escape") setOpen(false);
         }}
       />

@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"wk/internal/blob"
 	"wk/internal/model"
@@ -20,8 +19,6 @@ func main() {
 	ctx := context.Background()
 	var err error
 	switch os.Args[1] {
-	case "publish":
-		err = runPublish(ctx)
 	case "bake":
 		err = runBake(ctx, os.Args[2:])
 	default:
@@ -37,7 +34,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: baker <command>
   bake --seed <dir>   run the full bake pipeline from the NDJSON seed set
-  publish             publish an empty-but-valid manifest (M0 scaffold check)`)
+                      (validates, ranks, bakes artifacts, publishes manifest)`)
 }
 
 func artifactsBucket() string { return envOr("BUCKET_ARTIFACTS", "wk-artifacts") }
@@ -49,25 +46,6 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
-}
-
-// runPublish writes a minimal valid manifest: the M0 scaffold proof that the
-// baker -> MinIO -> gateway -> client path works end to end.
-func runPublish(ctx context.Context) error {
-	cli, err := blob.New(ctx)
-	if err != nil {
-		return err
-	}
-	m := model.Manifest{
-		Dataset:     datasetVersion(),
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Buckets:     model.Buckets,
-		Categories:  []string{},
-		Layers:      []string{},
-		Timesteps:   map[string][]int{},
-		Counts:      map[string]int{},
-	}
-	return publishManifest(ctx, cli, m)
 }
 
 // publishManifest writes the immutable per-dataset copy first, then atomically

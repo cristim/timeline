@@ -43,12 +43,21 @@ export function chunkKey(bucket: Bucket, window: number, category: string): stri
   return `chunks/${bucket.id}/${window}/world/${category}.json`;
 }
 
-/** The non-empty windows of `bucket` overlapping [t0,t1] (manifest-driven). */
-export function windowsInRange(bucket: Bucket, t0: number, t1: number): number[] {
+/**
+ * The non-empty windows of `bucket` for one category overlapping [t0,t1]
+ * (manifest-driven, API-1): only listed (window, category) pairs were baked.
+ */
+export function windowsInRange(
+  bucket: Bucket,
+  category: string,
+  t0: number,
+  t1: number,
+): number[] {
+  const windows = bucket.windows?.[category] ?? [];
   if (bucket.window_s === 0) {
-    return bucket.windows?.length ? [0] : [];
+    return windows.length ? [0] : [];
   }
   const w0 = windowIndex(bucket, t0);
   const w1 = windowIndex(bucket, t1);
-  return (bucket.windows ?? []).filter((w) => w >= w0 && w <= w1);
+  return windows.filter((w) => w >= w0 && w <= w1);
 }

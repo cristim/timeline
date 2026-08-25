@@ -139,9 +139,9 @@ func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*mode
 		}
 	}
 
-	windowSets := make([]map[int64]bool, len(model.Buckets))
+	windowSets := make([]map[string]map[int64]bool, len(model.Buckets))
 	for i := range windowSets {
-		windowSets[i] = map[int64]bool{}
+		windowSets[i] = map[string]map[int64]bool{}
 	}
 
 	keys := make([]cell, 0, len(cells))
@@ -170,17 +170,23 @@ func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*mode
 		if goldenKeys[relKey] {
 			captured[relKey] = chunkFile{Items: items}
 		}
-		windowSets[c.bucket][c.window] = true
+		if windowSets[c.bucket][c.cat] == nil {
+			windowSets[c.bucket][c.cat] = map[int64]bool{}
+		}
+		windowSets[c.bucket][c.cat][c.window] = true
 	}
 
 	out := make([]model.Bucket, len(model.Buckets))
 	for i, b := range model.Buckets {
-		ws := make([]int64, 0, len(windowSets[i]))
-		for w := range windowSets[i] {
-			ws = append(ws, w)
+		b.Windows = map[string][]int64{}
+		for cat, set := range windowSets[i] {
+			ws := make([]int64, 0, len(set))
+			for w := range set {
+				ws = append(ws, w)
+			}
+			slices.Sort(ws)
+			b.Windows[cat] = ws
 		}
-		slices.Sort(ws)
-		b.Windows = ws
 		out[i] = b
 	}
 	return out, captured, nil

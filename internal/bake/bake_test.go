@@ -127,9 +127,21 @@ func TestBakeChunksAndDocs(t *testing.T) {
 		t.Errorf("ww2 children = %+v", doc.Children)
 	}
 
-	// Manifest window lists only contain baked windows.
-	if len(m.Buckets[0].Windows) != 1 || m.Buckets[0].Windows[0] != 0 {
-		t.Errorf("T0 windows = %v", m.Buckets[0].Windows)
+	// Manifest window lists are per category and only contain baked windows.
+	if ws := m.Buckets[0].Windows["all"]; len(ws) != 1 || ws[0] != 0 {
+		t.Errorf("T0 all-windows = %v", m.Buckets[0].Windows)
+	}
+	if ws := m.Buckets[0].Windows["war"]; len(ws) != 1 || ws[0] != 0 {
+		t.Errorf("T0 war-windows = %v", m.Buckets[0].Windows)
+	}
+	// A category with no entities in a window must not list that window:
+	// the client would 404 on it (the browser-found filtering bug).
+	w1942 := model.Buckets[10].WindowIndex(model.YearToSeconds(1942.7))
+	if !slices.Contains(m.Buckets[10].Windows["war"], w1942) {
+		t.Errorf("T10 war windows missing 1942: %v", m.Buckets[10].Windows["war"])
+	}
+	if slices.Contains(m.Buckets[10].Windows["universe"], w1942) {
+		t.Errorf("T10 universe windows should not contain 1942: %v", m.Buckets[10].Windows["universe"])
 	}
 
 	// Idempotency: a second run writes nothing.

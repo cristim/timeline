@@ -17,12 +17,15 @@ const (
 type Bucket struct {
 	ID      string  `json:"id"`
 	WindowS float64 `json:"window_s"` // 0 = single window spanning all time
-	// Windows lists the non-empty window indexes for this bucket in the baked
-	// dataset (set by bake, shipped in the manifest). The client renders any
-	// other window as empty locally - so no empty chunk files exist and a 404
-	// on a listed window is a bake bug (API-1). Indexes stay < 2^53, safe as
-	// JSON numbers.
-	Windows []int64 `json:"windows,omitempty"`
+	// Windows lists the non-empty window indexes in the baked dataset, per
+	// category ("all" plus each real category). Set by bake, shipped in the
+	// manifest. The client only fetches (window, category) pairs listed here
+	// and renders everything else as empty locally - so no empty chunk files
+	// exist and a 404 on a listed key is a bake bug (API-1). Per-category
+	// lists matter: a window can hold war events but no science ones, and a
+	// category-blind list would send the client to keys that were never
+	// baked. Indexes stay < 2^53, safe as JSON numbers.
+	Windows map[string][]int64 `json:"windows,omitempty"`
 }
 
 // Buckets is ordered coarse -> fine. Index in this slice is the bucket number.

@@ -15,15 +15,21 @@ export function App() {
   const { manifest, error } = useManifest();
   const [view, setView] = useState<ViewState>(() => parseView(window.location.search));
 
-  // URL sync (API-6): debounced replaceState; back/forward restores.
+  // URL sync (API-6): selection changes push a history entry (back/forward
+  // walks selections, FE-9); pan/zoom/filter changes replace in place.
   const urlTimer = useRef<number | undefined>(undefined);
+  const lastPushedSel = useRef(view.selected);
   useEffect(() => {
     window.clearTimeout(urlTimer.current);
     urlTimer.current = window.setTimeout(() => {
       const url = serializeView(view);
-      if (url !== window.location.search) {
+      if (url === window.location.search) return;
+      if (view.selected !== lastPushedSel.current) {
+        history.pushState(null, "", url);
+      } else {
         history.replaceState(null, "", url);
       }
+      lastPushedSel.current = view.selected;
     }, 250);
     return () => window.clearTimeout(urlTimer.current);
   }, [view]);

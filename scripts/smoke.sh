@@ -1,18 +1,21 @@
 #!/bin/sh
-# M0 smoke check (DEV-6): buckets exist, manifest publishes, gateway serves it
-# with the contract cache headers, artifacts get immutable headers, web is up.
+# Smoke check (DEV-6): the seed bakes and publishes, the gateway serves the
+# manifest with the contract cache headers, artifacts get immutable headers,
+# and the web app is up. Bake (not a bare publish) is the only way a manifest
+# comes to exist - a manifest without baked artifacts behind it is a bug.
 set -eu
 
 GATEWAY="${GATEWAY:-http://localhost:8080}"
 
 fail() { echo "SMOKE FAIL: $1" >&2; exit 1; }
 
-echo "1/5 publish manifest via baker..."
-make -s publish >/dev/null || fail "baker publish"
+echo "1/5 bake + publish via baker..."
+make -s bake >/dev/null || fail "baker bake"
 
 echo "2/5 manifest served through gateway..."
 body=$(curl -sf "$GATEWAY/manifest.json") || fail "GET /manifest.json"
 echo "$body" | grep -q '"dataset"' || fail "manifest missing dataset field"
+echo "$body" | grep -q '"seed_version"' || fail "manifest missing seed_version (stale scaffold manifest?)"
 
 echo "3/5 manifest cache headers..."
 h=$(curl -sfI "$GATEWAY/manifest.json") || fail "HEAD /manifest.json"

@@ -91,6 +91,10 @@ export function MapView({ items, selected, onSelect }: Props) {
       readyRef.current = true;
     });
     mapRef.current = map;
+    if (import.meta.env.DEV) {
+      // e2e test hook (dev server only; stripped from prod builds)
+      (window as unknown as Record<string, unknown>).__wkmap = map;
+    }
     return () => {
       readyRef.current = false;
       map.remove();

@@ -179,6 +179,11 @@ export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) 
       }
     }
 
+    if (import.meta.env.DEV) {
+      // e2e test hook (dev server only)
+      (window as unknown as Record<string, unknown>).__wkhits = hits.current;
+    }
+
     // ── beyond-range future gutter ─────────────────────
     if (offRight.length) {
       ctx.fillStyle = "#6fd4d0";
@@ -220,6 +225,9 @@ export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) 
       const factor = Math.exp(e.deltaY * 0.0015);
       const newSpan = Math.min(T_MAX - T_MIN, Math.max(MIN_SPAN, span * factor));
       const [a, b] = clampRange(cursorT - frac * newSpan, cursorT + (1 - frac) * newSpan);
+      // Optimistically update the ref: multiple wheel events can land in one
+      // frame, and each must build on the previous one, not on stale props.
+      rangeRef.current = { t0: a, t1: b };
       onRangeRef.current(a, b);
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });

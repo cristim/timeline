@@ -3,7 +3,9 @@
 export interface Bucket {
   id: string;
   window_s: number; // 0 = single window spanning all time
-  windows?: number[]; // non-empty window indexes in the baked dataset
+  // Non-empty window indexes per category ("all" + each real category).
+  // Only listed (window, category) pairs exist as chunk files (API-1).
+  windows?: Record<string, number[]>;
 }
 
 export interface Manifest {
