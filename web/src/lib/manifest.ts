@@ -3,6 +3,7 @@
 export interface Bucket {
   id: string;
   window_s: number; // 0 = single window spanning all time
+  windows?: number[]; // non-empty window indexes in the baked dataset
 }
 
 export interface Manifest {
@@ -14,6 +15,7 @@ export interface Manifest {
   layers: string[];
   timesteps: Record<string, number[]>;
   counts: Record<string, number>;
+  search_shards: string[];
   golden_views?: string;
 }
 

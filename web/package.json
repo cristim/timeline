@@ -10,6 +10,8 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@types/geojson": "^7946.0.16",
+    "maplibre-gl": "^6.6.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
