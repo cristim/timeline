@@ -1,11 +1,11 @@
-# Everything Timeline
+# Timeline
 
 A zoomable timeline and map of everything: from the Big Bang, through natural
 history and every era of human history, to the present and on to the projected
 far future - in one continuous interface. Zoom the map past the globe and keep
 going: solar system, Milky Way, observable universe.
 
-**Live demo:** https://cristim.github.io/everything-timeline/
+**Live demo:** https://cristim.github.io/timeline/
 
 There is no database and no API server. A batch "baker" turns curated and open
 data into static JSON artifacts (viewport chunks, entity documents, search

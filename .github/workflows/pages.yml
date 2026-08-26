@@ -29,7 +29,7 @@ jobs:
       - name: Build web app
         working-directory: web
         env:
-          VITE_BASE: /everything-timeline/
+          VITE_BASE: /timeline/
         run: |
           npm ci
           npm run build
@@ -44,8 +44,8 @@ jobs:
         working-directory: web
         env:
           E2E_STATIC: "1"
-          E2E_BASE_URL: http://localhost:4173/everything-timeline/
-          VITE_BASE: /everything-timeline/
+          E2E_BASE_URL: http://localhost:4173/timeline/
+          VITE_BASE: /timeline/
         run: npx playwright test
       - uses: actions/configure-pages@v5
         with:

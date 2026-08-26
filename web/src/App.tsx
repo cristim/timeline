@@ -179,7 +179,7 @@ export function App() {
           onClick={() => setView({ ...DEFAULT_VIEW })}
           title="Reset to the whole-universe view"
         >
-          Everything <em>Timeline</em>
+          <em>Timeline</em>
         </button>
         <SearchBox manifest={manifest} onPick={onSearchPick} />
         <div className="cat-chips">

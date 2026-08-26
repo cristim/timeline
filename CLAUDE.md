@@ -1,4 +1,4 @@
-# Everything Timeline - project rules
+# Timeline - project rules
 
 Read `specs/index.html` (spec pack) before non-trivial work; requirement IDs
 (DM-*, API-*, ZOOM-*, FE-*, DEV-*) are the contract. `known-issues.md` lists

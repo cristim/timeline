@@ -1,4 +1,4 @@
-# Everything Timeline - local dev (spec 11, DEV-1..6).
+# Timeline - local dev (spec 11, DEV-1..6).
 # Native baker runs (go run) target the compose MinIO for a tight loop;
 # `make bake-docker` runs the same job through the baker image for parity.
 
@@ -46,9 +46,9 @@ e2e:
 
 # Same suite against the built static artifact (what GitHub Pages serves).
 e2e-static:
-	cd web && VITE_BASE=/everything-timeline/ npm run build
+	cd web && VITE_BASE=/timeline/ npm run build
 	go run ./cmd/baker bake --seed data/seed --out web/dist
-	cd web && E2E_STATIC=1 E2E_BASE_URL=http://localhost:4173/everything-timeline/ npx playwright test
+	cd web && E2E_STATIC=1 E2E_BASE_URL=http://localhost:4173/timeline/ npx playwright test
 
 smoke:
 	./scripts/smoke.sh
