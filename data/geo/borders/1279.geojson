@@ -1,0 +1,36 @@
+{
+  "type": "FeatureCollection",
+  "properties": {
+    "year": 1279,
+    "t_from": 1260,
+    "t_to": 1300,
+    "label": "Mongol Empire at its greatest extent, c. 1279",
+    "source": "Outline traced by eye from Atwood 2004, Encyclopedia of Mongolia and the Mongol Empire, Facts on File. Approximate: the four khanates as one extent, tributary steppe included, not survey data."
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Mongol Empire",
+        "entity": "mongol-empire",
+        "representation": "estimated"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [30, 56], [28, 50], [30, 48], [32, 46.5],
+            [38, 45], [35, 42], [34, 39], [36, 38.5],
+            [38, 37], [43, 34], [47, 31], [50, 30],
+            [55, 27], [57, 27], [61, 29.5], [68, 33],
+            [73, 35], [78, 33], [85, 29], [92, 27.5],
+            [97, 26], [100, 22], [108, 21.5], [115, 23],
+            [122, 31], [127, 40], [131, 45], [125, 50],
+            [115, 52], [100, 55], [85, 55], [70, 56],
+            [55, 58], [40, 57], [30, 56]
+          ]
+        ]
+      }
+    }
+  ]
+}

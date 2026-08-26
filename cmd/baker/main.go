@@ -40,7 +40,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage: baker <command>
   bake --seed <dir> [--warm]   full bake: validate, rank, bake artifacts,
                                publish manifest; --warm merges the wk-warm
-                               Wikidata event set
+                               Wikidata event set; --geo <dir> points at the
+                               curated geometry (default data/geo)
   fetch-wikidata               pull the bounded Wikidata event slice into
                                wk-dumps (raw) + wk-warm (normalized)
   census [--seed <dir>]        per-era/type counts + coverage report (ROAD-2)`)

@@ -1,0 +1,121 @@
+{
+  "type": "FeatureCollection",
+  "properties": {
+    "entity": "eastern-front",
+    "source": "Front traces read by eye from the campaign maps in Glantz & House 1995, When Titans Clashed: How the Red Army Stopped Hitler, University Press of Kansas. Approximate: ten sample points per date, north to south, no salients or pockets."
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "valid_from": "1941-06-22",
+        "label": "Start line: the Soviet western border",
+        "representation": "estimated"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [29.5, 68.5], [31.5, 62.5], [27, 59.8], [22, 57],
+          [21, 55.8], [23, 54.2], [23.7, 52.2], [23, 50],
+          [26.5, 47.5], [28.5, 45.5]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "valid_from": "1941-12-05",
+        "label": "Barbarossa culminates outside Moscow",
+        "representation": "estimated"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [32, 67], [32.5, 61.5], [31, 59.8], [32.5, 57.5],
+          [36.5, 56.5], [37.3, 55.2], [37.5, 52.5], [37, 49.5],
+          [39.5, 47.5], [38.5, 46]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "valid_from": "1942-11-19",
+        "label": "German high-water mark: Stalingrad and the Caucasus",
+        "representation": "estimated"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [32, 67], [32.5, 61.5], [31, 59.8], [32, 57],
+          [34.5, 55.8], [35, 53], [38.5, 51.5], [42.5, 49.5],
+          [44.5, 48.7], [44, 43.5]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "valid_from": "1943-08-23",
+        "label": "After Kursk: Kharkov retaken",
+        "representation": "estimated"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [32, 67], [32.5, 61.5], [31, 59.8], [31.5, 57],
+          [33, 55], [33.5, 52.5], [35, 50], [36.5, 49],
+          [38.5, 47.8], [38, 46]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "valid_from": "1944-01-01",
+        "label": "The Dnieper crossed",
+        "representation": "estimated"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [31, 67.5], [32, 61.5], [30, 59.5], [29.5, 56.5],
+          [30.5, 54.5], [30, 52], [28.5, 50.5], [28.5, 48.5],
+          [33, 47.5], [33.5, 46]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "valid_from": "1944-08-01",
+        "label": "After Bagration: the Vistula reached",
+        "representation": "estimated"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [29, 68], [31, 62], [27, 59], [25.5, 57],
+          [23, 55], [22.5, 53.5], [21.5, 52.3], [22, 50],
+          [25.5, 47.8], [28.5, 46]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "valid_from": "1945-05-08",
+        "label": "Surrender: the Elbe and the Adriatic",
+        "representation": "estimated"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [11, 54], [11.5, 53], [11.5, 52], [12, 51],
+          [13, 50], [14.5, 49], [16, 48.2], [15.5, 46.5],
+          [14.5, 45.5], [13.5, 45.4]
+        ]
+      }
+    }
+  ]
+}

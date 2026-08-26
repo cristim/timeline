@@ -169,7 +169,7 @@ func Validate(se *model.SeedEntity) (*model.Entity, string) {
 		}
 	}
 	if se.Point != nil {
-		if len(se.Point) != 2 || se.Point[0] < -180 || se.Point[0] > 180 || se.Point[1] < -90 || se.Point[1] > 90 {
+		if len(se.Point) != 2 || !model.ValidLonLat(se.Point[0], se.Point[1]) {
 			return nil, fmt.Sprintf("point %v not a valid [lon,lat]", se.Point)
 		}
 	}

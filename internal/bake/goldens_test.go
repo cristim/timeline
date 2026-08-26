@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"wk/internal/model"
 )
 
 func goldensFor(views ...GoldenView) *GoldenFile {
@@ -20,7 +22,7 @@ func TestGoldenGateBlocksPublish(t *testing.T) {
 		Name: "impossible", Bucket: "T0", Category: "all",
 		Include: []string{"entity-that-does-not-exist"},
 	})
-	m, _, err := Run(context.Background(), sink, "test", "seed-x", es, bad)
+	m, _, err := Run(context.Background(), sink, "test", "seed-x", es, &model.GeoSet{}, bad)
 	if err == nil || m != nil {
 		t.Fatalf("failing golden view must abort the bake, got m=%v err=%v", m, err)
 	}
@@ -33,7 +35,7 @@ func TestGoldenGateBlocksPublish(t *testing.T) {
 		Name: "t0", Bucket: "T0", Category: "all",
 		Include: []string{"big-bang"}, Exclude: []string{"obscure-skirmish"},
 	})
-	m, _, err = Run(context.Background(), sink, "test", "seed-x", es, good)
+	m, _, err = Run(context.Background(), sink, "test", "seed-x", es, &model.GeoSet{}, good)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +48,7 @@ func TestGoldenSeedVersionPin(t *testing.T) {
 	es := testEntities(t)
 	stale := goldensFor(GoldenView{Name: "t0", Bucket: "T0", Category: "all"})
 	stale.SeedVersion = "seed-older"
-	_, _, err := Run(context.Background(), newMemSink(), "test", "seed-x", es, stale)
+	_, _, err := Run(context.Background(), newMemSink(), "test", "seed-x", es, &model.GeoSet{}, stale)
 	if err == nil || !strings.Contains(err.Error(), "seed-older") {
 		t.Fatalf("stale golden pin must fail with an explicit message, got %v", err)
 	}

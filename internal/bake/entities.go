@@ -30,6 +30,25 @@ type EntityDoc struct {
 	Children    []RefDoc      `json:"children,omitempty"`
 	Links       LinksDoc      `json:"links"`
 	MediaThumb  string        `json:"media_thumb,omitempty"`
+	// Geometry holds the entity's time-sliced geometry records (DM-7): for a
+	// war, its dated front positions, which the client animates against the
+	// time cursor. Absent for the entities that have none, which is most.
+	Geometry []GeometryDoc `json:"geometry,omitempty"`
+}
+
+// GeometryDoc is one DM-7 geometry record: a shape that was true from
+// ValidFrom until the next record supersedes it.
+type GeometryDoc struct {
+	ValidFrom      float64  `json:"valid_from"`
+	Label          string   `json:"label,omitempty"`
+	Representation string   `json:"representation"`
+	Source         string   `json:"source"`
+	Geometry       LineGeom `json:"geometry"`
+}
+
+type LineGeom struct {
+	Type        string       `json:"type"` // GeoJSON LineString
+	Coordinates [][2]float64 `json:"coordinates"`
 }
 
 type TemporalDoc struct {
@@ -93,7 +112,7 @@ var inverseRel = map[string]string{
 	"supports":          "confirmed_by",
 }
 
-func bakeEntityDocs(w *writer, dataset string, entities []*model.Entity) error {
+func bakeEntityDocs(w *writer, dataset string, entities []*model.Entity, geo *model.GeoSet) error {
 	bySeedID := map[string]*model.Entity{}
 	for _, e := range entities {
 		bySeedID[e.SeedID] = e
@@ -124,12 +143,30 @@ func bakeEntityDocs(w *writer, dataset string, entities []*model.Entity) error {
 			Links:      LinksDoc{Wikipedia: e.Wikipedia, Wikidata: e.Wikidata},
 			MediaThumb: e.MediaThumb,
 		}
+		doc.Geometry = geometryDocs(geo.Fronts[e.SeedID])
 		key := fmt.Sprintf("v/%s/entity/%s.json", dataset, e.Slug)
 		if err := w.putJSON(key, doc); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func geometryDocs(positions []model.FrontPosition) []GeometryDoc {
+	if len(positions) == 0 {
+		return nil
+	}
+	out := make([]GeometryDoc, 0, len(positions))
+	for _, p := range positions {
+		out = append(out, GeometryDoc{
+			ValidFrom:      p.ValidFrom,
+			Label:          p.Label,
+			Representation: p.Representation,
+			Source:         p.Source,
+			Geometry:       LineGeom{Type: "LineString", Coordinates: p.Coordinates},
+		})
+	}
+	return out
 }
 
 func buildProperties(e *model.Entity) []PropertyDoc {

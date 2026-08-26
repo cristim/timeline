@@ -85,7 +85,7 @@ func TestBucketizeSemanticZoom(t *testing.T) {
 func TestBakeChunksAndDocs(t *testing.T) {
 	es := testEntities(t)
 	sink := newMemSink()
-	m, stats, err := Run(context.Background(), sink, "test", "seed-x", es, nil)
+	m, stats, err := Run(context.Background(), sink, "test", "seed-x", es, testGeo(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,12 +150,110 @@ func TestBakeChunksAndDocs(t *testing.T) {
 	}
 
 	// Idempotency: a second run writes nothing.
-	_, stats2, err := Run(context.Background(), sink, "test", "seed-x", es, nil)
+	_, stats2, err := Run(context.Background(), sink, "test", "seed-x", es, testGeo(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stats2.Written != 0 {
 		t.Errorf("re-bake wrote %d artifacts, want 0", stats2.Written)
+	}
+}
+
+func testGeo() *model.GeoSet {
+	return &model.GeoSet{
+		Borders: []model.BorderLayer{{
+			Year: 1942, TFrom: 1939, TTo: 1945, Label: "Axis maximum", Source: "atlas",
+			Features: []model.BorderFeature{{
+				Name: "Axis", Entity: "ww2", Slug: "world-war-ii", Representation: "estimated",
+				Geometry: json.RawMessage(`{"type":"Polygon","coordinates":[[[0,50],[20,50],[20,60],[0,50]]]}`),
+			}},
+		}},
+		Fronts: map[string][]model.FrontPosition{
+			"stalingrad": {
+				{ValidFrom: model.YearToSeconds(1942.7), Label: "encirclement", Representation: "estimated",
+					Source: "atlas", Coordinates: [][2]float64{{44, 48}, {45, 49}}},
+				{ValidFrom: model.YearToSeconds(1943.0), Label: "surrender", Representation: "estimated",
+					Source: "atlas", Coordinates: [][2]float64{{44.5, 48.5}, {45.5, 49.5}}},
+			},
+		},
+	}
+}
+
+func TestBakeLayersAndGeometry(t *testing.T) {
+	es := testEntities(t)
+	sink := newMemSink()
+	m, _, err := Run(context.Background(), sink, "test", "seed-x", es, testGeo(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The time-step artifact is a GeoJSON FeatureCollection carrying its own
+	// coverage window, so the client can refuse to draw it at a date it does
+	// not speak for.
+	var layer struct {
+		Type       string `json:"type"`
+		Properties struct {
+			Year   int    `json:"year"`
+			TFrom  int    `json:"t_from"`
+			TTo    int    `json:"t_to"`
+			Label  string `json:"label"`
+			Source string `json:"source"`
+		} `json:"properties"`
+		Features []struct {
+			Properties struct{ Slug, Representation string } `json:"properties"`
+		} `json:"features"`
+	}
+	mustGet(t, sink, "v/test/"+LayerKey(BordersLayer, 1942), &layer)
+	if layer.Type != "FeatureCollection" {
+		t.Errorf("layer type = %q", layer.Type)
+	}
+	if layer.Properties.TFrom != 1939 || layer.Properties.TTo != 1945 {
+		t.Errorf("layer window = %d..%d, want 1939..1945", layer.Properties.TFrom, layer.Properties.TTo)
+	}
+	if len(layer.Features) != 1 || layer.Features[0].Properties.Slug != "world-war-ii" {
+		t.Errorf("layer features = %+v, want the seed id resolved to a slug", layer.Features)
+	}
+
+	// The index lets the client answer "is any era covering this date?" with
+	// one small fetch instead of one snapshot per guess.
+	var index layerIndex
+	mustGet(t, sink, "v/test/"+LayerIndexKey(BordersLayer), &index)
+	if len(index.Steps) != 1 || index.Steps[0].Year != 1942 {
+		t.Errorf("layer index = %+v", index.Steps)
+	}
+
+	if m.Layers[0] != BordersLayer || len(m.Timesteps[BordersLayer]) != 1 {
+		t.Errorf("manifest layers=%v timesteps=%v", m.Layers, m.Timesteps)
+	}
+
+	// Front positions ride on the owning entity's document (DM-7), and only
+	// on that one.
+	var doc EntityDoc
+	mustGet(t, sink, "v/test/entity/battle-of-stalingrad.json", &doc)
+	if len(doc.Geometry) != 2 {
+		t.Fatalf("stalingrad geometry records = %d, want 2", len(doc.Geometry))
+	}
+	if doc.Geometry[0].Geometry.Type != "LineString" || len(doc.Geometry[0].Geometry.Coordinates) != 2 {
+		t.Errorf("geometry record = %+v", doc.Geometry[0])
+	}
+	if doc.Geometry[0].Source == "" {
+		t.Error("geometry record must carry its source")
+	}
+	var ww2 EntityDoc
+	mustGet(t, sink, "v/test/entity/world-war-ii.json", &ww2)
+	if ww2.Geometry != nil {
+		t.Errorf("ww2 has no curated front, but got %d geometry records", len(ww2.Geometry))
+	}
+}
+
+// Without curated geometry the manifest keeps the shape M2 published.
+func TestBakeWithoutGeo(t *testing.T) {
+	m, _, err := Run(context.Background(), newMemSink(), "test", "seed-x", testEntities(t), &model.GeoSet{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Layers) != 0 || len(m.Timesteps) != 0 {
+		t.Errorf("layers=%v timesteps=%v, want both empty", m.Layers, m.Timesteps)
 	}
 }
 

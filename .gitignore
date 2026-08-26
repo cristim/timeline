@@ -3,6 +3,7 @@
 # git cannot re-include children of a fully excluded directory.
 data/*
 !data/seed/
+!data/geo/
 !data/goldens.json
 
 # environment

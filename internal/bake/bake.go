@@ -53,10 +53,11 @@ type chunkFile struct {
 }
 
 // Run bakes all artifacts for the dataset and returns the manifest to publish.
+// geo must be non-nil; an empty GeoSet bakes no layers.
 // A non-nil goldens file is evaluated against the baked chunks; any failure
 // aborts before the manifest exists, so a failing golden view cannot publish
 // (ZOOM-5).
-func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities []*model.Entity, goldens *GoldenFile) (*model.Manifest, *Stats, error) {
+func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities []*model.Entity, geo *model.GeoSet, goldens *GoldenFile) (*model.Manifest, *Stats, error) {
 	stats := &Stats{}
 
 	childCount := map[string]int{}
@@ -87,12 +88,22 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 		goldenStatus = "pass"
 	}
 
-	if err := bakeEntityDocs(w, dataset, entities); err != nil {
+	if err := bakeEntityDocs(w, dataset, entities, geo); err != nil {
 		return nil, stats, err
 	}
 	shards, err := bakeSearch(w, dataset, entities)
 	if err != nil {
 		return nil, stats, err
+	}
+	layers := []string{}
+	timesteps := map[string][]int{}
+	steps, err := bakeAreaLayer(w, dataset, BordersLayer, geo.Borders)
+	if err != nil {
+		return nil, stats, err
+	}
+	if len(steps) > 0 {
+		layers = append(layers, BordersLayer)
+		timesteps[BordersLayer] = steps
 	}
 	if err := w.putJSON(fmt.Sprintf("v/%s/aliases.json", dataset), map[string]string{}); err != nil {
 		return nil, stats, err
@@ -106,8 +117,8 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 		SeedVersion:  seedVersion,
 		Buckets:      buckets,
 		Categories:   categorySet(entities),
-		Layers:       []string{},
-		Timesteps:    map[string][]int{},
+		Layers:       layers,
+		Timesteps:    timesteps,
 		SearchShards: shards,
 		GoldenViews:  goldenStatus,
 		Counts: map[string]int{

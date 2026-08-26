@@ -1,0 +1,38 @@
+{
+  "type": "FeatureCollection",
+  "properties": {
+    "year": 1990,
+    "t_from": 1946,
+    "t_to": 1991,
+    "label": "Soviet Union at its final extent, c. 1990",
+    "source": "Outline traced by eye from Barraclough (ed.) 1978, The Times Atlas of World History, Times Books, updated to the 1990 union republics. Approximate: union borders only, Warsaw Pact allies not included."
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "name": "Soviet Union",
+        "entity": "soviet-union",
+        "representation": "estimated"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [20, 54.5], [23, 54], [23.5, 51.5], [26, 48],
+            [28.5, 45.5], [30, 45], [35, 45], [38, 44],
+            [41, 43], [46, 41], [48, 39], [55, 38],
+            [62, 36], [68, 37], [73, 40], [80, 45],
+            [85, 49], [98, 50], [108, 50], [120, 52],
+            [127, 50], [130, 42.5], [131, 43], [143, 47],
+            [156, 51], [163, 57], [180, 62], [180, 65],
+            [172, 66], [160, 70], [140, 72], [115, 74],
+            [95, 78], [75, 73], [60, 70], [41, 68],
+            [28.5, 69.8], [29.5, 66], [31.5, 62.5], [28.2, 59.5],
+            [24, 56.5], [20, 54.5]
+          ]
+        ]
+      }
+    }
+  ]
+}

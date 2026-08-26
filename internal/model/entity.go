@@ -35,6 +35,13 @@ var Categories = stringSet(
 
 var ValueTypes = stringSet("measured", "estimated", "reconstructed", "projected")
 
+// Representations is the DM-7 geometry vocabulary. The client renders each
+// differently (FE-3): exact solid, estimated dashed, fuzzy as a gradient,
+// point_distribution as dots. False precision is a bug.
+var Representations = stringSet(
+	"exact", "administrative", "estimated", "fuzzy", "point_distribution",
+)
+
 func stringSet(ss ...string) map[string]bool {
 	m := make(map[string]bool, len(ss))
 	for _, s := range ss {

@@ -19,6 +19,7 @@ import (
 func runBake(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("bake", flag.ContinueOnError)
 	seedDir := fs.String("seed", "", "path to the NDJSON seed directory")
+	geoDir := fs.String("geo", "data/geo", "curated geometry directory (border time-steps, front lines)")
 	outDir := fs.String("out", "", "write artifacts to this directory instead of S3 (GitHub Pages / static hosting)")
 	withWarm := fs.Bool("warm", false, "merge the wk-warm Wikidata event set from S3 (M5)")
 	warmFile := fs.String("warm-file", "", "merge a local warm-events NDJSON file (CI path, no S3 needed)")
@@ -100,12 +101,20 @@ func runBake(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Geometry resolves entity references against the ingested table, so it
+	// loads after the seed (and after any warm merge).
+	geo, err := ingest.LoadGeo(*geoDir, res.Entities)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("geo: %d border time-steps, %d front sequences\n", len(geo.Borders), len(geo.Fronts))
+
 	if err := rankzoom.Bucketize(res.Entities); err != nil {
 		return err
 	}
 
 	start := time.Now()
-	manifest, stats, err := bake.Run(ctx, sink, datasetVersion(), res.SeedVersion, res.Entities, goldens)
+	manifest, stats, err := bake.Run(ctx, sink, datasetVersion(), res.SeedVersion, res.Entities, geo, goldens)
 	if err != nil {
 		return err
 	}
