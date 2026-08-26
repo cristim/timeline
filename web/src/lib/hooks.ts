@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { bucketForSpan, chunkKey, windowsInRange } from "./keyscheme";
-import { fetchChunk, fetchEntity, type ChunkItem, type EntityDoc } from "./data";
+import { bucketForSpan, chunkKey, nearestTimestep, secondsToYear, windowsInRange } from "./keyscheme";
+import {
+  fetchBorderLayer,
+  fetchChunk,
+  fetchEntity,
+  fetchLayerIndex,
+  type BorderLayerDoc,
+  type ChunkItem,
+  type EntityDoc,
+  type LayerIndexDoc,
+} from "./data";
 import { loadManifest, type Manifest } from "./manifest";
 
 export function useManifest(): { manifest: Manifest | null; error: string | null } {
@@ -82,6 +91,71 @@ export function useViewportItems(
   }, [manifest, keysStr, bucketIdx, minImportance]);
 
   return state;
+}
+
+/**
+ * The borders snapshot for the cursor time (FE-3: moving the timeline
+ * re-requests the time-dependent layers).
+ *
+ * The index is fetched once and answers "does any era cover this date?"; only
+ * then is a snapshot downloaded. Booting the whole-universe view therefore
+ * costs one small fetch and correctly shows nothing, instead of pulling down
+ * Roman Britain to render at 6 billion BCE.
+ */
+export function useEraLayer(
+  manifest: Manifest | null,
+  tc: number,
+  layer: string,
+): BorderLayerDoc | null {
+  const [index, setIndex] = useState<LayerIndexDoc | null>(null);
+  const [doc, setDoc] = useState<BorderLayerDoc | null>(null);
+
+  useEffect(() => {
+    if (!manifest || !manifest.layers.includes(layer)) {
+      setIndex(null);
+      return;
+    }
+    let live = true;
+    fetchLayerIndex(manifest, layer).then(
+      (d) => live && setIndex(d),
+      (e: unknown) => console.error("layer index load failed:", e),
+    );
+    return () => {
+      live = false;
+    };
+  }, [manifest, layer]);
+
+  const step = useMemo(() => {
+    if (!index) return null;
+    const year = nearestTimestep(
+      index.steps.map((s) => s.year),
+      secondsToYear(tc),
+    );
+    return index.steps.find((s) => s.year === year) ?? null;
+  }, [index, tc]);
+
+  const year = secondsToYear(tc);
+  const covered = step !== null && year >= step.t_from && year <= step.t_to;
+
+  useEffect(() => {
+    if (!manifest || !step || !covered) {
+      setDoc(null);
+      return;
+    }
+    let live = true;
+    fetchBorderLayer(manifest, layer, step.year).then(
+      (d) => live && setDoc(d),
+      (e: unknown) => {
+        console.error("border layer load failed:", e);
+        if (live) setDoc(null);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [manifest, layer, step, covered]);
+
+  return doc;
 }
 
 export function useEntity(manifest: Manifest | null, slug: string | null): EntityDoc | null {

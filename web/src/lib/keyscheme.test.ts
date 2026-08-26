@@ -2,7 +2,13 @@
 // generated from the Go implementation. A failure here means baker and client
 // would compute different chunk keys - the architecture's failure mode.
 import { describe, expect, it } from "vitest";
-import { windowIndex, bucketForSpan, SECONDS_PER_YEAR } from "./keyscheme";
+import {
+  windowIndex,
+  bucketForSpan,
+  layerKey,
+  nearestTimestep,
+  SECONDS_PER_YEAR,
+} from "./keyscheme";
 import type { Bucket } from "./manifest";
 import cases from "./keycases.json";
 
@@ -33,6 +39,26 @@ describe("windowIndex fixture parity", () => {
       expect(bucket, c.bucket).toBeDefined();
       expect(windowIndex(bucket!, c.t), `${c.bucket} t=${c.t}`).toBe(c.window);
     }
+  });
+});
+
+describe("layer time-steps", () => {
+  const steps = [117, 1279, 1914, 1942, 1990];
+
+  it("builds the API-4 layer key", () => {
+    expect(layerKey("borders", 1942)).toBe("layers/borders/1942.json");
+    expect(layerKey("borders", -500)).toBe("layers/borders/-500.json");
+  });
+
+  it("snaps to the nearest step, forwards or backwards", () => {
+    expect(nearestTimestep(steps, 1943)).toBe(1942);
+    expect(nearestTimestep(steps, 1900)).toBe(1914);
+    expect(nearestTimestep(steps, -3000)).toBe(117); // far outside: still nearest
+    expect(nearestTimestep(steps, 1928)).toBe(1914); // exact midpoint: earlier wins
+  });
+
+  it("has no answer when a layer has no steps", () => {
+    expect(nearestTimestep([], 1942)).toBeNull();
   });
 });
 

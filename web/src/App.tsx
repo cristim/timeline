@@ -6,7 +6,7 @@ import { SpaceView, SPACE_MAX } from "./components/SpaceView";
 import { Timeline } from "./components/Timeline";
 import { Inspector, focusEntity } from "./components/Inspector";
 import { SearchBox } from "./components/SearchBox";
-import { useEntity, useManifest, useViewportItems } from "./lib/hooks";
+import { useEntity, useEraLayer, useManifest, useViewportItems } from "./lib/hooks";
 import { cursorTime, DEFAULT_VIEW, parseView, serializeView, type ViewState } from "./lib/state";
 import { laneItems } from "./lib/visible";
 import { formatTime } from "./lib/timefmt";
@@ -20,6 +20,9 @@ const TL_COLLAPSE_BELOW = 100;
 const TL_COLLAPSED = 33;
 const TL_DEFAULT = 240;
 const tlMax = () => Math.round(window.innerHeight * 0.6);
+
+// The one time-aware map layer the baker currently produces (API-4).
+const BORDERS_LAYER = "borders";
 
 export function App() {
   const { manifest, error } = useManifest();
@@ -118,6 +121,10 @@ export function App() {
     view.minImportance,
   );
   const selectedDoc = useEntity(manifest, view.selected);
+  // The cursor is the moment the map is showing (FE-3/FE-5), and the map
+  // follows it wherever curated data exists (DEV-6 M4).
+  const tc = cursorTime(view);
+  const era = useEraLayer(manifest, tc, BORDERS_LAYER);
 
   const setRange = useCallback(
     (t0: number, t1: number) => setView((v) => ({ ...v, t0, t1 })),
@@ -151,8 +158,6 @@ export function App() {
     return `${formatTime(view.t0, span)} — ${formatTime(view.t1, span)}`;
   }, [view.t0, view.t1]);
 
-  // The cursor is the moment the map is showing (FE-3/FE-5).
-  const tc = cursorTime(view);
   const cursorLabel = formatTime(tc, view.t1 - view.t0);
 
   // The status-bar count matches what the timeline lanes actually consider
@@ -207,9 +212,15 @@ export function App() {
           <MapView
             items={items}
             selected={view.selected}
+            era={era}
             onSelect={setSelected}
             onZoomPastGlobe={enterSpace}
           />
+          {/* Say what the overlay is, and say when there is nothing to show
+              rather than leaving the map silently modern. */}
+          <div className={`era-chip ${era ? "" : "empty"}`}>
+            {era ? era.properties.label : `no border data for ${cursorLabel}`}
+          </div>
           {view.space > 0 && (
             <SpaceView s={view.space} onZoom={setSpace} onSelect={setSelected} />
           )}

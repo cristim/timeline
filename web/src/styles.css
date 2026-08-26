@@ -81,6 +81,13 @@ body {
   background: transparent; cursor: crosshair;
   /* opacity is driven per-frame by the eased zoom (fade over the globe) */
 }
+.era-chip {
+  position: absolute; top: 10px; left: 12px; z-index: 3; pointer-events: none;
+  background: rgba(11, 15, 23, 0.78); border: 1px solid var(--hair-2);
+  border-radius: 6px; padding: 4px 9px;
+  font: 500 10.5px var(--ui); color: var(--text-1); max-width: 46%;
+}
+.era-chip.empty { color: var(--text-3); border-color: var(--hair); font-style: italic; }
 .map-container .maplibregl-ctrl-attrib { background: rgba(11, 15, 23, 0.7); color: var(--text-3); font-size: 10px; }
 .map-container .maplibregl-ctrl-attrib a { color: var(--text-2); }
 

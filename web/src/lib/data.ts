@@ -1,5 +1,7 @@
 // Artifact reads (the whole "query engine", API-1): fetch, cache, union.
 // Everything under /v/<dataset>/ is immutable, so caching is unconditional.
+import type { Geometry } from "geojson";
+import { layerIndexKey, layerKey } from "./keyscheme";
 import { artifactURL, type Manifest } from "./manifest";
 
 export interface ChunkItem {
@@ -59,6 +61,43 @@ export interface EntityRef {
   t1: number;
 }
 
+/** One DM-7 geometry record on an entity document: a shape valid from a date. */
+export interface GeometryRecord {
+  valid_from: number;
+  label?: string;
+  representation: string;
+  source: string;
+  geometry: { type: "LineString"; coordinates: [number, number][] };
+}
+
+/**
+ * One time-step of a map layer: a GeoJSON FeatureCollection carrying the era's
+ * own coverage window, so the client never draws a snapshot at a date it does
+ * not speak for.
+ */
+export interface BorderLayerDoc {
+  type: "FeatureCollection";
+  properties: {
+    layer: string;
+    year: number;
+    t_from: number;
+    t_to: number;
+    label: string;
+    source: string;
+  };
+  features: {
+    type: "Feature";
+    properties: { name: string; slug?: string; representation: string };
+    geometry: Geometry;
+  }[];
+}
+
+/** layers/<layer>/index.json: every time-step with its coverage window. */
+export interface LayerIndexDoc {
+  layer: string;
+  steps: { year: number; t_from: number; t_to: number; label: string }[];
+}
+
 export interface SearchEntry {
   slug: string;
   name: string;
@@ -98,4 +137,16 @@ export function fetchEntity(m: Manifest, slug: string): Promise<EntityDoc> {
 
 export function fetchSearchShard(m: Manifest, shard: string): Promise<{ entries: SearchEntry[] }> {
   return fetchArtifact(m.dataset, `search/${shard}.json`);
+}
+
+export function fetchLayerIndex(m: Manifest, layer: string): Promise<LayerIndexDoc> {
+  return fetchArtifact(m.dataset, layerIndexKey(layer));
+}
+
+export function fetchBorderLayer(
+  m: Manifest,
+  layer: string,
+  timestep: number,
+): Promise<BorderLayerDoc> {
+  return fetchArtifact(m.dataset, layerKey(layer, timestep));
 }

@@ -43,6 +43,33 @@ export function chunkKey(bucket: Bucket, window: number, category: string): stri
   return `chunks/${bucket.id}/${window}/world/${category}.json`;
 }
 
+/** Map-layer artifact keys (API-4), relative to /v/<dataset>/. */
+export function layerKey(layer: string, timestep: number): string {
+  return `layers/${layer}/${timestep}.json`;
+}
+
+export function layerIndexKey(layer: string): string {
+  return `layers/${layer}/index.json`;
+}
+
+/**
+ * The time-step nearest to `year` (ARCH-3: "the client snaps the time cursor
+ * to the nearest step"). Nearest, not covering: whether the step has anything
+ * to say about that year is a separate question its coverage window answers.
+ */
+export function nearestTimestep(steps: number[], year: number): number | null {
+  let best: number | null = null;
+  let bestGap = Infinity;
+  for (const s of steps) {
+    const gap = Math.abs(s - year);
+    if (gap < bestGap) {
+      best = s;
+      bestGap = gap;
+    }
+  }
+  return best;
+}
+
 /**
  * The non-empty windows of `bucket` for one category overlapping [t0,t1]
  * (manifest-driven, API-1): only listed (window, category) pairs were baked.
