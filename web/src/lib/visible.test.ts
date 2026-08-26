@@ -40,6 +40,28 @@ describe("startsOrEndsWithin", () => {
   });
 });
 
+describe("whollyInPeriphery", () => {
+  const [v0, v1] = [0, 1000]; // 15% bands: [0,150] and [850,1000]
+  it("skips items entirely inside the left band", () => {
+    const out = laneItems([item("l", 20, 120)], v0, v1);
+    expect(out).toHaveLength(0);
+  });
+  it("skips items entirely inside the right band", () => {
+    const out = laneItems([item("r", 880, 950)], v0, v1);
+    expect(out).toHaveLength(0);
+  });
+  it("skips edge slivers of items running off-view", () => {
+    // starts before the view, ends at 5% - only an edge sliver is visible
+    expect(laneItems([item("sliver", -500, 50)], v0, v1)).toHaveLength(0);
+    // starts at 96%, runs past the view
+    expect(laneItems([item("sliver2", 960, 2000)], v0, v1)).toHaveLength(0);
+  });
+  it("keeps items straddling a band boundary", () => {
+    expect(laneItems([item("straddle", 100, 400)], v0, v1)).toHaveLength(1);
+    expect(laneItems([item("center", 400, 600)], v0, v1)).toHaveLength(1);
+  });
+});
+
 describe("laneItems", () => {
   it("caps to the most important eligible items", () => {
     const items = Array.from({ length: 150 }, (_, i) =>
