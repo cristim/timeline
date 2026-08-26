@@ -71,6 +71,30 @@ describe("frontAt", () => {
   it("handles a two-position sequence, the minimum the baker allows", () => {
     expect(frontAt(seq.slice(0, 2), 25)!.coordinates[0]).toEqual([2.5, 0]);
   });
+
+  it("is not 'held' when the cursor sits exactly on the first or last trace", () => {
+    // Held means "we are outside what was documented". On a documented date
+    // we are not, and the chip must not claim otherwise.
+    expect(frontAt(seq, 0)!.held).toBe(false);
+    expect(frontAt(seq, 0)!.coordinates).toEqual([
+      [0, 0],
+      [0, 10],
+    ]);
+    expect(frontAt(seq, 200)!.held).toBe(false);
+    expect(frontAt(seq, 200)!.coordinates).toEqual([
+      [30, 0],
+      [30, 10],
+    ]);
+  });
+
+  it("survives a single-position sequence without walking off the end", () => {
+    const one = [seq[0]];
+    expect(frontAt(one, -1)!.coordinates).toEqual([
+      [0, 0],
+      [0, 10],
+    ]);
+    expect(frontAt(one, 999)!.held).toBe(true);
+  });
 });
 
 describe("frontBounds", () => {

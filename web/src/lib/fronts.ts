@@ -25,8 +25,11 @@ export function frontAt(positions: GeometryRecord[], t: number): FrontSample | n
   if (positions.length === 0) return null;
   const first = positions[0];
   const last = positions[positions.length - 1];
-  if (t <= first.valid_from) return sample(first.geometry.coordinates, first, true);
-  if (t >= last.valid_from) return sample(last.geometry.coordinates, last, true);
+  if (positions.length === 1) return sample(first.geometry.coordinates, first, true);
+  // Strictly outside: a cursor sitting exactly on a documented trace is not
+  // being held, it is on the trace.
+  if (t < first.valid_from) return sample(first.geometry.coordinates, first, true);
+  if (t > last.valid_from) return sample(last.geometry.coordinates, last, true);
 
   let i = 0;
   while (i < positions.length - 2 && positions[i + 1].valid_from <= t) i++;

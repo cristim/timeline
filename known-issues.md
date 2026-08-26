@@ -34,16 +34,24 @@
   other date honestly reports "no border data". Modern borders are absent on
   purpose: hand-tracing them would be neither feasible nor honest, and the
   real answer is the OpenHistoricalMap ingest in M4.
-- **Era extents are coarse blocks, and merge distinct polities.** The 1914
-  British and French empires are drawn as a few contiguous blocks, so enclaves
-  and rival holdings inside a block are not distinguished, and the 1942 Axis
-  and Japanese outlines include the sea inside their envelope. Each file says
-  so in its `source` string, and everything is marked
-  `representation: "estimated"` so it renders dashed rather than as a hard
-  border. Do not read areas off these shapes.
-- **Front-line interpolation needs matching vertex counts.** Positions in one
-  sequence must share a vertex count, because the client interpolates vertex
-  by vertex; the baker rejects a sequence that does not. This makes a front
-  that genuinely gains or loses a segment awkward to curate. Only the Eastern
-  Front is curated so far, at ten sample points per date, with the northern
-  vertices simplified after Finland's 1944 armistice.
+- **Era extents are coarse blocks, and enclose sea.** Each empire is a handful
+  of ~20-vertex outlines, so frontiers are off by up to a couple of hundred
+  kilometres and small enclaves inside a block are not distinguished. Blocks
+  are notched where a neighbour belonged to somebody else (Liberia, the Gold
+  Coast, Togo and Cameroon out of French Africa; East Prussia out of Russia;
+  neutral Sweden as a hole in Axis Europe), so no territory is claimed for the
+  wrong power, but smaller neutrals inside an envelope are not cut out and
+  neither is the sea. **Do not read areas off these shapes**: the Roman
+  outline encloses the whole Mediterranean and is about 50% larger than the
+  land area the seed itself cites for the same entity.
+  `internal/ingest/geo_plausibility_test.go` pins each outline against places
+  whose status on the stated date is not in dispute; add a case there rather
+  than trusting an eyeball.
+- **Front-line interpolation needs matching vertex counts, and vertex *n* has
+  to mean the same thing at every date.** The baker enforces the count; it
+  cannot enforce the meaning, and getting it wrong is not a small error. An
+  earlier draft folded the Finnish and Arctic fronts into the same ten
+  vertices as the German-Soviet one, and interpolating across the point where
+  they vanished walked the front line through neutral Sweden. The traces now
+  cover only the German-Soviet front, north to south. A front that genuinely
+  gains or loses a segment is still awkward to curate.

@@ -291,6 +291,10 @@ func checkPolygons(where string, raw json.RawMessage) error {
 			if ccw := ringIsCCW(ring); ccw != (ri == 0) {
 				return fmt.Errorf("%s: winds the wrong way (RFC 7946: exterior counterclockwise, holes clockwise)", at)
 			}
+			if i, j := selfIntersection(ring); i >= 0 {
+				return fmt.Errorf("%s: segments %d and %d cross (RFC 7946: a ring must not self-intersect); "+
+					"a bowtie renders as a torn fill", at, i, j)
+			}
 		}
 	}
 	return nil
@@ -331,6 +335,37 @@ func checkPositions(where string, ring [][]float64) error {
 		}
 	}
 	return nil
+}
+
+// selfIntersection returns the indexes of the first pair of non-adjacent
+// segments that cross, or (-1, -1). It tests for proper crossings only, not
+// for segments that merely touch at a point: crossings are the failure that
+// tears a rendered fill, and a coarse hand-traced outline that grazes itself
+// at a vertex is not worth blocking a bake over.
+func selfIntersection(ring [][]float64) (int, int) {
+	n := len(ring) - 1 // the closing repeat is not its own segment
+	for i := 0; i < n; i++ {
+		for j := i + 2; j < n; j++ {
+			if i == 0 && j == n-1 {
+				continue // first and last segments share a vertex
+			}
+			if segmentsCross(ring[i], ring[i+1], ring[j], ring[j+1]) {
+				return i, j
+			}
+		}
+	}
+	return -1, -1
+}
+
+func segmentsCross(a, b, c, d []float64) bool {
+	d1, d2 := cross(c, d, a), cross(c, d, b)
+	d3, d4 := cross(a, b, c), cross(a, b, d)
+	return ((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0))
+}
+
+// cross is the z of (q-p) x (r-p): the side of line pq that r falls on.
+func cross(p, q, r []float64) float64 {
+	return (q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0])
 }
 
 // ringIsCCW: the shoelace sum over a closed ring is negative when the ring

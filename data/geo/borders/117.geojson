@@ -5,7 +5,7 @@
     "t_from": 98,
     "t_to": 180,
     "label": "Roman Empire at its greatest extent, c. 117 CE",
-    "source": "Outline traced by eye from Talbert (ed.) 2000, Barrington Atlas of the Greek and Roman World, Princeton University Press. Approximate: coarse, undisputed-frontier only, not survey data."
+    "source": "Outline traced by eye from Talbert (ed.) 2000, Barrington Atlas of the Greek and Roman World, Princeton University Press. Approximate: a single envelope around the empire, so the Mediterranean it enclosed is inside the shape and its area is not the empire's land area (this repo's own seed cites 5.0 M km2 from Taagepera 1979). Coarse, undisputed frontiers only."
   },
   "features": [
     {
@@ -29,13 +29,15 @@
               [43.5, 38.5], [41, 41], [36, 41.5], [31.5, 41.5],
               [28.2, 43.2], [29.7, 45.3], [25.5, 47.9], [21, 46.6],
               [17.2, 48.1], [13, 48.3], [8.3, 47.6], [6.1, 50.9],
-              [2.6, 51.1], [0.5, 47.6], [-1.8, 43.4], [-9.5, 43]
+              [2.6, 51.1], [-1.5, 49.8], [-4.8, 48.4], [-1.8, 43.5],
+              [-4, 43.6], [-8.9, 43.8], [-9.5, 43]
             ]
           ],
           [
             [
-              [-5, 50.1], [1.4, 51], [0, 53.5], [-1.5, 55],
-              [-3, 55], [-4.8, 54], [-3.2, 51.4], [-5, 50.1]
+              [-5.5, 50], [1.5, 51], [1.8, 52.8], [-0.5, 54.5],
+              [-1.5, 55], [-3.5, 55], [-4.9, 54.6], [-4.5, 53.3],
+              [-5.3, 51.6], [-5.5, 50]
             ]
           ]
         ]

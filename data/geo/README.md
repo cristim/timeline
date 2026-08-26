@@ -40,17 +40,30 @@ A `LineString` per dated front position for one war, with top-level
 entity's document as DM-7 `geometry` records; the client interpolates between
 the bracketing dates as the time cursor moves.
 
-**Every feature in one file must have the same number of vertices.** The
-client interpolates vertex-by-vertex, so position *n* of one date has to mean
-roughly the same place on the line as position *n* of the next. The baker
-enforces this.
+**Every feature in one file must have the same number of vertices, and vertex
+*n* must mean the same place on the line at every date.** The client
+interpolates vertex-by-vertex. The baker enforces the count; nothing can
+enforce the meaning, so this is on the curator. Getting it wrong is not a
+small error: an earlier draft of the Eastern Front folded the Finnish and
+Arctic sectors into the same ten vertices, and interpolating across the date
+they vanished dragged the front line through neutral Sweden.
 
 ## Accuracy
 
 Everything here is a coarse approximation traced by eye from published
-historical atlases, at roughly 10-35 vertices per shape. It is good enough to
+historical atlases, at roughly 10-50 vertices per shape. It is good enough to
 show *that* territory changed and roughly where; it is not survey data, it
 carries no claim about disputed or fuzzy frontiers, and it is marked
 `representation: "estimated"` (DM-7) so the client draws it dashed rather than
 as a hard border. Replacing it with a real OpenHistoricalMap extract baked to
 PMTiles is milestone M4 (DEV-6).
+
+There is a line between a simplification and an error, and it is worth naming.
+A frontier drawn 200km off is a simplification. An empire that excludes its
+own capital province, a union that has lost a republic, or a neutral state
+shaded as a belligerent is an error, and no "approximate" disclaimer covers
+it. `internal/ingest/geo_plausibility_test.go` holds each outline against
+places whose status on the stated date is not in dispute, precisely because
+structural validation cannot tell the two apart: a shape can be perfectly
+well-formed GeoJSON and still be the wrong empire. Add cases there when you
+add or edit an outline.

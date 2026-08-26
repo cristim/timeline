@@ -26,6 +26,16 @@ const CURSOR_COLOR = "#e8e4d8";
 /** Half-width of the cursor handle's grab zone, in CSS pixels. */
 const CURSOR_GRAB = 12;
 
+/**
+ * Where the cursor handle is drawn, which is not where the cursor is: a
+ * pinned cursor panned out of view pins to the edge. Drawing and hit-testing
+ * must agree, or the visible handle is not the one you can grab.
+ */
+function handleX(cursor: number, t0: number, t1: number, w: number): number {
+  const cx = ((cursor - t0) / (t1 - t0)) * w;
+  return Math.max(6, Math.min(w - 6, cx));
+}
+
 interface Props {
   t0: number;
   t1: number;
@@ -220,7 +230,7 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
     // Drawn last so it stays legible over the lanes. A pinned cursor can be
     // panned off-screen; it pins to the edge with an arrow rather than
     // vanishing, because the map is still showing whatever time it holds.
-    drawCursor(ctx, x(cursor), w, h, formatTime(cursor, span), tc !== null);
+    drawCursor(ctx, x(cursor), handleX(cursor, t0, t1, w), w, h, formatTime(cursor, span), tc !== null);
   }, [t0, t1, items, selected, cursor, tc]);
 
   useEffect(() => {
@@ -270,11 +280,12 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
     Math.max(t0, Math.min(t1, t0 + ((clientX - rect.left) / rect.width) * (t1 - t0)));
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.button !== 0) return; // a right-click drag is not a drag
     e.currentTarget.setPointerCapture(e.pointerId);
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
-    const cx = ((cursor - t0) / (t1 - t0)) * rect.width;
+    const cx = handleX(cursor, t0, t1, rect.width);
     // Only the handle in the axis strip grabs the cursor. A grab zone along
     // the whole line would swallow clicks on the lane items behind it.
     const mode = py <= AXIS_H && Math.abs(px - cx) <= CURSOR_GRAB ? "cursor" : "pan";
@@ -326,6 +337,11 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      // Without this a cancelled drag (context menu, gesture takeover) leaves
+      // the drag state live, and every later hover pans or moves the cursor.
+      onPointerCancel={() => {
+        drag.current = null;
+      }}
       onKeyDown={onKeyDown}
     />
   );
@@ -339,13 +355,13 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
 function drawCursor(
   ctx: CanvasRenderingContext2D,
   cx: number,
+  px: number,
   w: number,
   h: number,
   label: string,
   pinned: boolean,
 ) {
   const off = cx < 0 ? -1 : cx > w ? 1 : 0;
-  const px = Math.max(6, Math.min(w - 6, cx));
 
   ctx.save();
   ctx.strokeStyle = CURSOR_COLOR;

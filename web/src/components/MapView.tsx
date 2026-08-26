@@ -30,6 +30,8 @@ const ERA_SLOTS = ["a", "b"] as const;
 const ERA_FILL = "#2f4487";
 const ERA_LINE = "#16224a";
 const ERA_FADE_MS = 450;
+const ERA_FILL_OPACITY = 0.38;
+const ERA_LINE_OPACITY = 0.9;
 const EMPTY_FC: FeatureCollection = { type: "FeatureCollection", features: [] };
 
 // The front line uses the war category colour, since that is what it is.
@@ -100,46 +102,40 @@ function toGeoJSON(items: ChunkItem[], selected: string | null): FeatureCollecti
   };
 }
 
-/** Adds the fill + outline layers for one era slot, below `beforeId`. */
-function addEraLayers(map: maplibregl.Map, slot: string, beforeId?: string) {
+/** Adds the fill + outline layers for one era slot. */
+function addEraLayers(map: maplibregl.Map, slot: string) {
   const source = `wk-era-${slot}`;
   map.addSource(source, { type: "geojson", data: EMPTY_FC });
-  map.addLayer(
-    {
-      id: `${source}-fill`,
-      type: "fill",
-      source,
-      paint: {
-        "fill-color": ERA_FILL,
-        "fill-opacity": 0,
-        "fill-opacity-transition": { duration: ERA_FADE_MS },
-      },
+  map.addLayer({
+    id: `${source}-fill`,
+    type: "fill",
+    source,
+    paint: {
+      "fill-color": ERA_FILL,
+      "fill-opacity": 0,
+      "fill-opacity-transition": { duration: ERA_FADE_MS },
     },
-    beforeId,
-  );
-  map.addLayer(
-    {
-      id: `${source}-line`,
-      type: "line",
-      source,
-      paint: {
-        "line-color": ERA_LINE,
-        "line-width": 2,
-        // Every curated extent is representation=estimated (DM-7), and FE-3
-        // wants that drawn as a hedge, not a hard border. An exact layer would
-        // need its own solid line layer: line-dasharray is not data-driven.
-        "line-dasharray": [3, 2],
-        "line-opacity": 0,
-        "line-opacity-transition": { duration: ERA_FADE_MS },
-      },
+  });
+  map.addLayer({
+    id: `${source}-line`,
+    type: "line",
+    source,
+    paint: {
+      "line-color": ERA_LINE,
+      "line-width": 2,
+      // Every curated extent is representation=estimated (DM-7), and FE-3
+      // wants that drawn as a hedge, not a hard border. An exact layer would
+      // need its own solid line layer: line-dasharray is not data-driven.
+      "line-dasharray": [3, 2],
+      "line-opacity": 0,
+      "line-opacity-transition": { duration: ERA_FADE_MS },
     },
-    beforeId,
-  );
+  });
 }
 
 function setEraOpacity(map: maplibregl.Map, slot: string, on: boolean) {
-  map.setPaintProperty(`wk-era-${slot}-fill`, "fill-opacity", on ? 0.38 : 0);
-  map.setPaintProperty(`wk-era-${slot}-line`, "line-opacity", on ? 0.9 : 0);
+  map.setPaintProperty(`wk-era-${slot}-fill`, "fill-opacity", on ? ERA_FILL_OPACITY : 0);
+  map.setPaintProperty(`wk-era-${slot}-line`, "line-opacity", on ? ERA_LINE_OPACITY : 0);
 }
 
 /** GeoJSON for the front sample, or an empty collection when there is none. */
@@ -150,11 +146,18 @@ function frontFC(front: FrontSample | null): FeatureCollection {
     features: [
       {
         type: "Feature",
-        properties: { label: front.label },
+        properties: {},
         geometry: { type: "LineString", coordinates: front.coordinates },
       },
     ],
   };
+}
+
+/** e2e hook, dev server only; stripped from prod builds. */
+function devHook(name: string, value: unknown) {
+  if (import.meta.env.DEV) {
+    (window as unknown as Record<string, unknown>)[name] = value;
+  }
 }
 
 export function MapView({
@@ -173,6 +176,7 @@ export function MapView({
   const eraRef = useRef<BorderLayerDoc | null>(era);
   const liveEraSlot = useRef<(typeof ERA_SLOTS)[number]>("a");
   const shownEra = useRef<number | null>(null);
+  const pendingFade = useRef<(() => void) | null>(null);
   const frontRef = useRef<FeatureCollection>(frontFC(front));
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
@@ -181,25 +185,44 @@ export function MapView({
 
   /**
    * Crossfades to `next` by loading it into the idle slot and swapping the
-   * opacities; MapLibre animates both through the paint transitions. The
-   * shownEra guard keeps a re-render from restarting a fade that is already
-   * running, and keeps a fast drag across two era boundaries from leaving
-   * both slots visible.
+   * opacities once the new data is actually parsed. Raising the incoming slot
+   * immediately after setData would fade in an empty layer and pop the shapes
+   * in afterwards, which is the hard cut the two slots exist to avoid.
+   *
+   * The shownEra guard keeps a re-render from restarting a fade already
+   * running; pendingFade keeps a fast drag across two era boundaries from
+   * leaving both slots visible.
    */
   const applyEra = useCallback((map: maplibregl.Map, next: BorderLayerDoc | null) => {
     const year = next?.properties.year ?? null;
     if (year === shownEra.current) return;
     shownEra.current = year;
+    pendingFade.current?.(); // settle any half-finished swap first
+    pendingFade.current = null;
+
     if (!next) {
       for (const slot of ERA_SLOTS) setEraOpacity(map, slot, false);
       return;
     }
     const slot = liveEraSlot.current === "a" ? "b" : "a";
-    (map.getSource(`wk-era-${slot}`) as maplibregl.GeoJSONSource | undefined)?.setData(next);
-    setEraOpacity(map, slot, true);
-    setEraOpacity(map, liveEraSlot.current, false);
+    const outgoing = liveEraSlot.current;
     liveEraSlot.current = slot;
+
+    const swap = () => {
+      map.off("sourcedata", onSourceData);
+      pendingFade.current = null;
+      setEraOpacity(map, slot, true);
+      setEraOpacity(map, outgoing, false);
+    };
+    function onSourceData(e: maplibregl.MapSourceDataEvent) {
+      if (e.sourceId === `wk-era-${slot}` && e.isSourceLoaded) swap();
+    }
+    pendingFade.current = swap;
+    map.on("sourcedata", onSourceData);
+    (map.getSource(`wk-era-${slot}`) as maplibregl.GeoJSONSource | undefined)?.setData(next);
   }, []);
+  const applyEraRef = useRef(applyEra);
+  applyEraRef.current = applyEra;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -237,6 +260,9 @@ export function MapView({
       for (const slot of ERA_SLOTS) addEraLayers(map, slot);
       for (const slot of ERA_SLOTS) {
         map.on("click", `wk-era-${slot}-fill`, (e: maplibregl.MapLayerMouseEvent) => {
+          // A dot on top of an extent is the more specific target, and its own
+          // handler will take the click.
+          if (map.queryRenderedFeatures(e.point, { layers: ["wk-dots"] }).length) return;
           const slug = e.features?.[0]?.properties?.slug as string | undefined;
           if (slug) onSelectRef.current(slug);
         });
@@ -294,14 +320,11 @@ export function MapView({
       readyRef.current = true;
       // An era can resolve before the style finishes loading; apply whatever
       // the latest render handed us rather than waiting for the next change.
-      applyEra(map, eraRef.current);
+      applyEraRef.current(map, eraRef.current);
     });
     mapRef.current = map;
     liveMap = map;
-    if (import.meta.env.DEV) {
-      // e2e test hook (dev server only; stripped from prod builds)
-      (window as unknown as Record<string, unknown>).__wkmap = map;
-    }
+    devHook("__wkmap", map);
     return () => {
       container.removeEventListener("wheel", onWheelCapture, { capture: true });
       readyRef.current = false;
@@ -312,17 +335,15 @@ export function MapView({
       // "what is already shown" bookkeeping has to start over with it.
       shownEra.current = null;
       liveEraSlot.current = "a";
+      pendingFade.current = null;
     };
-  }, [applyEra]);
+  }, []);
 
   useEffect(() => {
     eraRef.current = era;
     const map = mapRef.current;
     if (map && readyRef.current) applyEra(map, era);
-    if (import.meta.env.DEV) {
-      // e2e test hook (dev server only; stripped from prod builds)
-      (window as unknown as Record<string, unknown>).__wkera = era;
-    }
+    devHook("__wkera", era);
   }, [era, applyEra]);
 
   useEffect(() => {
@@ -341,10 +362,7 @@ export function MapView({
         frontRef.current,
       );
     }
-    if (import.meta.env.DEV) {
-      // e2e test hook (dev server only; stripped from prod builds)
-      (window as unknown as Record<string, unknown>).__wkfront = front;
-    }
+    devHook("__wkfront", front);
   }, [front]);
 
   // Frame a selection: a war with curated geometry gets its whole theatre,
