@@ -31,5 +31,11 @@ found-but-deferred items - check it before starting, prune what you resolve.
   regenerating that fixture and keeping both sides green.
 - Seed edits: run `./scripts/seed-manifest.sh`, then re-bake; golden views
   (`data/goldens.json`) are pinned to the seed version and will demand review.
+- Curated geometry lives in `data/geo/` (see its README), deliberately outside
+  `data/seed/` and so outside `seed_version` - editing it does not force a
+  golden review. It has its own fail-loud validation instead: entity
+  references resolve against the seed, era windows may not overlap, rings must
+  be closed and wound per RFC 7946, and front positions must share a vertex
+  count. Re-bake after editing.
 - Dev-only browser hooks for e2e: `window.__wkmap`, `window.__wkhits`
   (stripped from prod builds).
