@@ -57,6 +57,28 @@ export function App() {
   const toggleCollapsed = () =>
     setTlHeight(collapsed ? Math.max(TL_MIN, lastExpanded.current) : TL_COLLAPSED);
 
+  // Inspector width: draggable between 260 and 560px, persisted.
+  const [inspWidth, setInspWidth] = useState<number>(() => {
+    const saved = Number(localStorage.getItem("wk-insp-width"));
+    return Number.isFinite(saved) && saved >= 260 && saved <= 560 ? saved : 330;
+  });
+  useEffect(() => {
+    localStorage.setItem("wk-insp-width", `${inspWidth}`);
+  }, [inspWidth]);
+  const onInspHandleDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = inspWidth;
+    const onMove = (ev: PointerEvent) =>
+      setInspWidth(Math.min(560, Math.max(260, startW + (startX - ev.clientX))));
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+
   // URL sync (API-6): selection changes push a history entry (back/forward
   // walks selections, FE-9); pan/zoom/filter changes replace in place.
   const urlTimer = useRef<number | undefined>(undefined);
@@ -187,8 +209,14 @@ export function App() {
             <SpaceView s={view.space} onZoom={setSpace} onSelect={setSelected} />
           )}
         </div>
+        <div
+          className="insp-resize-handle"
+          title="Drag to resize the inspector"
+          onPointerDown={onInspHandleDown}
+        />
         <Inspector
           doc={selectedDoc}
+          width={inspWidth}
           onSelect={setSelected}
           onFocusTime={setRange}
           onClose={() => setSelected(null)}

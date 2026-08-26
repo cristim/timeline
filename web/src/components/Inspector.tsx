@@ -1,21 +1,25 @@
 // FE-6: the inspector panel. Claims render as ranges with sources - the
-// DM-5 model made visible. No page navigation; selecting related entities
-// swaps the panel in place.
+// DM-5 model made visible. Every section of the entity document is shown,
+// long ones collapsed behind expanders; the raw document itself is available
+// at the bottom. No page navigation; selecting related entities swaps the
+// panel in place.
+import { useState, type ReactNode } from "react";
 import type { EntityDoc, EntityRef } from "../lib/data";
 import { markerStyle } from "../lib/colors";
 import { formatRange, isOngoing } from "../lib/timefmt";
 
 interface Props {
   doc: EntityDoc | null;
+  width?: number;
   onSelect: (slug: string) => void;
   onFocusTime: (t0: number, t1: number) => void;
   onClose: () => void;
 }
 
-export function Inspector({ doc, onSelect, onFocusTime, onClose }: Props) {
+export function Inspector({ doc, width, onSelect, onFocusTime, onClose }: Props) {
   if (!doc) {
     return (
-      <aside className="inspector empty">
+      <aside className="inspector empty" style={{ width }}>
         <p className="hint">
           Select anything on the timeline or map.
           <br />
@@ -27,7 +31,7 @@ export function Inspector({ doc, onSelect, onFocusTime, onClose }: Props) {
   const { temporal } = doc;
   const ongoing = isOngoing(temporal.t1) && temporal.t1 !== temporal.t0;
   return (
-    <aside className="inspector">
+    <aside className="inspector" style={{ width }}>
       <div className="insp-head">
         <div className="insp-topline">
           <span className={`status-badge s-${markerStyle(temporal.status)}`}>{temporal.status}</span>
@@ -47,9 +51,31 @@ export function Inspector({ doc, onSelect, onFocusTime, onClose }: Props) {
         {doc.description && <p className="desc">{doc.description}</p>}
       </div>
 
+      <Section title="Details" defaultOpen>
+        <div className="kv">
+          <span className="k">Categories</span>
+          <span className="v">{doc.categories.join(", ")}</span>
+        </div>
+        <div className="kv">
+          <span className="k">Importance</span>
+          <span className="v">{doc.importance.toFixed(2)}</span>
+        </div>
+        {doc.point && (
+          <div className="kv">
+            <span className="k">Location</span>
+            <span className="v">
+              {doc.point[1].toFixed(2)}°, {doc.point[0].toFixed(2)}°
+            </span>
+          </div>
+        )}
+        <div className="kv">
+          <span className="k">Identity</span>
+          <span className="v mono">{doc.slug}</span>
+        </div>
+      </Section>
+
       {doc.properties && doc.properties.length > 0 && (
-        <section>
-          <h4>Measurements</h4>
+        <Section title="Measurements" count={doc.properties.length} defaultOpen>
           {doc.properties.map((p) => (
             <details key={p.property} className="prop">
               <summary>
@@ -79,12 +105,11 @@ export function Inspector({ doc, onSelect, onFocusTime, onClose }: Props) {
               </ul>
             </details>
           ))}
-        </section>
+        </Section>
       )}
 
       {doc.relationships && doc.relationships.length > 0 && (
-        <section>
-          <h4>Related</h4>
+        <Section title="Related" count={doc.relationships.length} defaultOpen>
           <div className="chips">
             {doc.relationships.map((r, i) => (
               <button key={i} className="chip" onClick={() => onSelect(r.target.slug)}>
@@ -92,26 +117,25 @@ export function Inspector({ doc, onSelect, onFocusTime, onClose }: Props) {
               </button>
             ))}
           </div>
-        </section>
+        </Section>
       )}
 
       {doc.children && doc.children.length > 0 && (
-        <section>
-          <h4>Contains</h4>
+        <Section title="Contains" count={doc.children.length} defaultOpen>
           <RefChips refs={doc.children} onSelect={onSelect} />
-        </section>
+        </Section>
       )}
 
       {doc.contemporaries && doc.contemporaries.length > 0 && (
-        <section>
-          <h4>At the same time</h4>
-          <RefChips refs={doc.contemporaries.slice(0, 12)} onSelect={onSelect} />
-        </section>
+        <TruncatedRefs
+          title="At the same time"
+          refs={doc.contemporaries}
+          onSelect={onSelect}
+        />
       )}
 
       {(doc.links.wikipedia || doc.links.wikidata) && (
-        <section>
-          <h4>Read &amp; verify</h4>
+        <Section title="Read & verify" defaultOpen>
           <div className="chips">
             {doc.links.wikipedia && (
               <a className="chip" href={doc.links.wikipedia} target="_blank" rel="noreferrer">
@@ -129,9 +153,66 @@ export function Inspector({ doc, onSelect, onFocusTime, onClose }: Props) {
               </a>
             )}
           </div>
-        </section>
+        </Section>
       )}
+
+      <Section title="Raw data">
+        <p className="raw-note">
+          The complete entity document as served - every claim, source, and
+          relationship this dataset holds for this item.
+        </p>
+        <pre className="rawjson">{JSON.stringify(doc, null, 2)}</pre>
+      </Section>
     </aside>
+  );
+}
+
+/** Collapsible section with the standard header style. */
+function Section({
+  title,
+  count,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  count?: number;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details className="isec" open={defaultOpen}>
+      <summary>
+        <h4>
+          {title}
+          {count != null && <span className="isec-count"> · {count}</span>}
+        </h4>
+      </summary>
+      <div className="isec-body">{children}</div>
+    </details>
+  );
+}
+
+/** Shows the first few refs; the rest expand on demand. */
+function TruncatedRefs({
+  title,
+  refs,
+  onSelect,
+}: {
+  title: string;
+  refs: EntityRef[];
+  onSelect: (slug: string) => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? refs : refs.slice(0, 10);
+  return (
+    <Section title={title} count={refs.length} defaultOpen>
+      <RefChips refs={visible} onSelect={onSelect} />
+      {refs.length > 10 && (
+        <button className="chip more" onClick={() => setShowAll((s) => !s)}>
+          {showAll ? "show fewer" : `show all ${refs.length}`}
+        </button>
+      )}
+    </Section>
   );
 }
 
