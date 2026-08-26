@@ -128,10 +128,11 @@ export function SpaceView({ s, onZoom, onSelect }: Props) {
     earthSpriteRef.current = captureGlobeSprite();
     let raf = 0;
     const tick = () => {
-      // Cold loads land here before the map has rendered; retry the globe
-      // capture occasionally until it succeeds.
-      if (!earthSpriteRef.current && spriteRetryRef.current++ % 30 === 0) {
-        earthSpriteRef.current = captureGlobeSprite();
+      // Re-capture the globe periodically: cold loads land here before the
+      // map has rendered (or with only the pale untiled sphere), and the
+      // sprite upgrades as soon as basemap tiles finish loading underneath.
+      if (spriteRetryRef.current++ % 30 === 0) {
+        earthSpriteRef.current = captureGlobeSprite() ?? earthSpriteRef.current;
       }
       const target = sRef.current;
       const d = dispRef.current;
