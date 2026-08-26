@@ -37,6 +37,16 @@ jobs:
         run: go run ./cmd/baker bake --seed data/seed --out web/dist
       - name: SPA fallback
         run: cp web/dist/index.html web/dist/404.html
+      - name: Install Playwright
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Browser-verify the built site (playwright-verify)
+        working-directory: web
+        env:
+          E2E_STATIC: "1"
+          E2E_BASE_URL: http://localhost:4173/everything-timeline/
+          VITE_BASE: /everything-timeline/
+        run: npx playwright test
       - uses: actions/configure-pages@v5
         with:
           enablement: true
