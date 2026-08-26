@@ -14,7 +14,12 @@ interface Props {
   items: ChunkItem[];
   selected: string | null;
   onSelect: (slug: string) => void;
+  /** Called when the user zooms out past the whole globe (cosmic handoff). */
+  onZoomPastGlobe: () => void;
 }
+
+/** Below this zoom the whole globe is on screen; further zoom-out leaves it. */
+const GLOBE_MIN_ZOOM = 1.05;
 
 function toGeoJSON(items: ChunkItem[], selected: string | null): FeatureCollection {
   return {
@@ -34,13 +39,15 @@ function toGeoJSON(items: ChunkItem[], selected: string | null): FeatureCollecti
   };
 }
 
-export function MapView({ items, selected, onSelect }: Props) {
+export function MapView({ items, selected, onSelect, onZoomPastGlobe }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const readyRef = useRef(false);
   const dataRef = useRef<FeatureCollection>({ type: "FeatureCollection", features: [] });
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  const onZoomPastGlobeRef = useRef(onZoomPastGlobe);
+  onZoomPastGlobeRef.current = onZoomPastGlobe;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -49,8 +56,25 @@ export function MapView({ items, selected, onSelect }: Props) {
       style: STYLE_URL,
       center: [15, 35],
       zoom: 1.4,
+      minZoom: GLOBE_MIN_ZOOM,
       attributionControl: false,
     });
+    // Globe projection where the MapLibre build supports it (v5+).
+    const setProjection = (map as unknown as { setProjection?: (p: { type: string }) => void }).setProjection;
+    if (typeof setProjection === "function") {
+      map.on("style.load", () => setProjection.call(map, { type: "globe" }));
+    }
+    // Wheel-out at the globe's minimum zoom hands off to the cosmic view.
+    // Capture phase so MapLibre's own (exhausted) zoom handling never sees it.
+    const container = containerRef.current;
+    const onWheelCapture = (e: WheelEvent) => {
+      if (e.deltaY > 0 && map.getZoom() <= GLOBE_MIN_ZOOM + 0.01) {
+        e.preventDefault();
+        e.stopPropagation();
+        onZoomPastGlobeRef.current();
+      }
+    };
+    container.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
     map.addControl(
       new maplibregl.AttributionControl({
         compact: true,
@@ -96,6 +120,7 @@ export function MapView({ items, selected, onSelect }: Props) {
       (window as unknown as Record<string, unknown>).__wkmap = map;
     }
     return () => {
+      container.removeEventListener("wheel", onWheelCapture, { capture: true });
       readyRef.current = false;
       map.remove();
       mapRef.current = null;
