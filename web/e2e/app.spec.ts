@@ -120,6 +120,109 @@ test("timeline resizes via the drag handle and collapses below the minimum", asy
   expect((await shell.boundingBox())!.height).toBeGreaterThanOrEqual(140);
 });
 
+// A 1900-1995 view with the cursor pinned to 1942, inside the curated Axis
+// era window. Exponents are written without a "+" because a literal plus in a
+// query string decodes as a space.
+const CENTURY_VIEW = "?t0=-2.209e9&t1=7.889e8&tc=-8.558e8";
+const V_T0 = -2.209e9;
+const V_T1 = 7.889e8;
+
+/** Viewport x of a time on the timeline canvas, plus the handle's y. */
+async function cursorHandle(page: Page, t: number) {
+  const box = (await page.locator(".timeline-canvas").boundingBox())!;
+  return {
+    x: box.x + ((t - V_T0) / (V_T1 - V_T0)) * box.width,
+    y: box.y + 14, // the handle sits in the axis strip
+  };
+}
+
+async function dragCursorTo(page: Page, from: number, to: number) {
+  const a = await cursorHandle(page, from);
+  const b = await cursorHandle(page, to);
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 12 });
+  await page.mouse.up();
+}
+
+test("the time cursor restores from a URL, drags, nudges, and unpins", async ({ page }) => {
+  const w = watch(page);
+  await page.goto(`./${CENTURY_VIEW}`);
+  await booted(page);
+  await expect(page.locator(".cur-label")).toContainText("1942");
+  await expect(page.locator(".cursor-readout")).not.toHaveClass(/unpinned/);
+
+  // Drag the handle from 1942 towards 1985.
+  await dragCursorTo(page, -8.558e8, 4.7335e8);
+  await expect(page.locator(".cur-label")).toContainText("198");
+  await page.waitForTimeout(400); // the URL write is debounced
+  expect(page.url()).toContain("tc=");
+
+  // Arrow keys nudge it while the timeline has focus.
+  const before = await page.locator(".cur-label").textContent();
+  await page.locator(".timeline-canvas").focus();
+  for (let i = 0; i < 5; i++) await page.keyboard.press("Shift+ArrowLeft");
+  await expect(page.locator(".cur-label")).not.toHaveText(before!);
+
+  // Unpinning returns it to following the centre of the view, and drops the
+  // parameter from the URL.
+  await page.locator(".cur-unpin").click();
+  await expect(page.locator(".cursor-readout")).toHaveClass(/unpinned/);
+  await page.waitForTimeout(400);
+  expect(page.url()).not.toContain("tc=");
+  expect(w.errors, "console errors").toEqual([]);
+  expect(w.notFound, "same-origin 404s").toEqual([]);
+});
+
+// DEV-6 M4's acceptance test: dragging the cursor over a covered era visibly
+// changes the borders, with no tile server involved.
+test("dragging the cursor swaps the historical border overlay", async ({ page }) => {
+  const w = watch(page);
+  await page.goto(`./${CENTURY_VIEW}`);
+  await booted(page);
+  await expect(page.locator(".era-chip")).toContainText("Axis");
+  await expect(page.locator(".era-chip")).not.toHaveClass(/empty/);
+  // Let the basemap settle so the comparison below cannot be decided by a
+  // tile that arrived late.
+  await page.waitForTimeout(4000);
+  const axis = await page.locator(".map-container").screenshot();
+
+  // 1985 falls in the Soviet Union era window instead.
+  await dragCursorTo(page, -8.558e8, 4.7335e8);
+  await expect(page.locator(".era-chip")).toContainText("Soviet Union");
+  await page.waitForTimeout(1500); // crossfade
+  const soviet = await page.locator(".map-container").screenshot();
+  expect(Buffer.compare(axis, soviet), "the map must visibly change").not.toBe(0);
+
+  // 1751 has no curated era, and the map says so instead of staying modern.
+  await dragCursorTo(page, 4.7335e8, -6.9e9);
+  await expect(page.locator(".era-chip")).toContainText("no border data");
+  await expect(page.locator(".era-chip")).toHaveClass(/empty/);
+  expect(w.errors).toEqual([]);
+  expect(w.notFound).toEqual([]);
+});
+
+test("a war with curated fronts animates against the cursor", async ({ page }) => {
+  const w = watch(page);
+  await page.goto(`./${CENTURY_VIEW}&sel=eastern-front-wwii`);
+  await booted(page);
+  await expect(page.locator(".inspector h2")).toHaveText(/Eastern Front/);
+  await expect(page.locator(".front-chip")).toContainText("1942 front line");
+  await expect(page.locator(".front-chip")).toContainText("Stalingrad");
+
+  // Two years later the nearest documented trace is a different one.
+  await dragCursorTo(page, -8.558e8, -8.0e8);
+  await expect(page.locator(".front-chip")).toContainText("1944 front line");
+  await expect(page.locator(".front-chip")).not.toContainText("Stalingrad");
+
+  // Past the end of the war the line is held, and says so rather than
+  // pretending to know where a front was in 1985.
+  await dragCursorTo(page, -8.0e8, 4.7335e8);
+  await expect(page.locator(".front-chip")).toContainText("held");
+  expect(w.errors).toEqual([]);
+  expect(w.notFound).toEqual([]);
+});
+
 test("phone viewport still renders the three areas", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const w = watch(page);
