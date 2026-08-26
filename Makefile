@@ -5,7 +5,7 @@
 S3_ENV = S3_ENDPOINT=http://localhost:9000 S3_FORCE_PATH_STYLE=true \
          AWS_ACCESS_KEY_ID=wkadmin AWS_SECRET_ACCESS_KEY=wk-dev-minio AWS_REGION=us-east-1
 
-.PHONY: up down bake bake-docker smoke test vet fmt web-install
+.PHONY: up down bake bake-full bake-docker fetch-wikidata census smoke test vet fmt web-install
 
 up:
 	docker compose up -d minio minio-init gateway web
@@ -15,6 +15,15 @@ down:
 
 bake:
 	$(S3_ENV) go run ./cmd/baker bake --seed data/seed
+
+bake-full:
+	$(S3_ENV) go run ./cmd/baker bake --seed data/seed --warm
+
+fetch-wikidata:
+	$(S3_ENV) go run ./cmd/baker fetch-wikidata
+
+census:
+	$(S3_ENV) go run ./cmd/baker census
 
 bake-docker:
 	docker compose run --rm baker bake --seed /seed

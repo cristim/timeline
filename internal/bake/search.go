@@ -1,7 +1,6 @@
 package bake
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -44,7 +43,7 @@ func SearchTokens(name string) []string {
 	return out
 }
 
-func bakeSearch(ctx context.Context, sink Sink, dataset string, entities []*model.Entity, stats *Stats) ([]string, error) {
+func bakeSearch(w *writer, dataset string, entities []*model.Entity) ([]string, error) {
 	shards := map[string]map[string]SearchEntry{} // shard -> slug -> entry
 	for _, e := range entities {
 		entry := SearchEntry{
@@ -78,7 +77,7 @@ func bakeSearch(ctx context.Context, sink Sink, dataset string, entities []*mode
 			return entries[i].Slug < entries[j].Slug
 		})
 		key := fmt.Sprintf("v/%s/search/%s.json", dataset, name)
-		if _, err := putJSON(ctx, sink, key, searchShard{Entries: entries}, stats); err != nil {
+		if err := w.putJSON(key, searchShard{Entries: entries}); err != nil {
 			return nil, err
 		}
 	}

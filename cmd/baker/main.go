@@ -4,10 +4,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
-	"wk/internal/blob"
+	"wk/internal/bake"
 	"wk/internal/model"
 )
 
@@ -21,6 +22,10 @@ func main() {
 	switch os.Args[1] {
 	case "bake":
 		err = runBake(ctx, os.Args[2:])
+	case "fetch-wikidata":
+		err = runFetchWikidata(ctx)
+	case "census":
+		err = runCensus(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -33,8 +38,12 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: baker <command>
-  bake --seed <dir>   run the full bake pipeline from the NDJSON seed set
-                      (validates, ranks, bakes artifacts, publishes manifest)`)
+  bake --seed <dir> [--warm]   full bake: validate, rank, bake artifacts,
+                               publish manifest; --warm merges the wk-warm
+                               Wikidata event set
+  fetch-wikidata               pull the bounded Wikidata event slice into
+                               wk-dumps (raw) + wk-warm (normalized)
+  census [--seed <dir>]        per-era/type counts + coverage report (ROAD-2)`)
 }
 
 func artifactsBucket() string { return envOr("BUCKET_ARTIFACTS", "wk-artifacts") }
@@ -48,18 +57,21 @@ func envOr(key, def string) string {
 	return def
 }
 
-// publishManifest writes the immutable per-dataset copy first, then atomically
-// repoints the root manifest (ARCH-2: release = pointer flip, rollback = the
-// previous /v/<dataset>/manifest.json still exists in full).
-func publishManifest(ctx context.Context, cli *blob.Client, m model.Manifest) error {
-	bucket := artifactsBucket()
-	versioned := fmt.Sprintf("v/%s/manifest.json", m.Dataset)
-	if _, err := cli.PutJSON(ctx, bucket, versioned, m); err != nil {
+// publishManifest writes the immutable per-dataset copy first, then repoints
+// the root manifest (ARCH-2: release = pointer flip, rollback = the previous
+// /v/<dataset>/manifest.json still exists in full). Works against any sink:
+// S3/MinIO or a local directory.
+func publishManifest(ctx context.Context, sink bake.Sink, m model.Manifest) error {
+	body, err := json.Marshal(m)
+	if err != nil {
 		return err
 	}
-	if _, err := cli.PutJSON(ctx, bucket, "manifest.json", m); err != nil {
+	if _, err := sink.Put(ctx, fmt.Sprintf("v/%s/manifest.json", m.Dataset), body, "application/json"); err != nil {
 		return err
 	}
-	fmt.Printf("published dataset %q -> s3://%s/manifest.json\n", m.Dataset, bucket)
+	if _, err := sink.Put(ctx, "manifest.json", body, "application/json"); err != nil {
+		return err
+	}
+	fmt.Printf("published dataset %q (%d entities)\n", m.Dataset, m.Counts["entities"])
 	return nil
 }

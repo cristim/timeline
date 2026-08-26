@@ -71,6 +71,19 @@ func (c *Client) PutJSON(ctx context.Context, bucket, key string, v any) (bool, 
 	return c.PutIfChanged(ctx, bucket, key, body, "application/json")
 }
 
+func (c *Client) Get(ctx context.Context, bucket, key string) ([]byte, error) {
+	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{Bucket: &bucket, Key: &key})
+	if err != nil {
+		return nil, fmt.Errorf("get s3://%s/%s: %w", bucket, key, err)
+	}
+	defer out.Body.Close()
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(out.Body); err != nil {
+		return nil, fmt.Errorf("read s3://%s/%s: %w", bucket, key, err)
+	}
+	return buf.Bytes(), nil
+}
+
 func isNotFound(err error) bool {
 	var ae smithy.APIError
 	if errors.As(err, &ae) {

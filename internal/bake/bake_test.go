@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"wk/internal/model"
@@ -13,13 +14,17 @@ import (
 )
 
 // memSink collects artifacts in memory and reports change like the S3 sink.
+// Put is called from the writer's upload pool, so it must be goroutine-safe.
 type memSink struct {
+	mu      sync.Mutex
 	objects map[string][]byte
 }
 
 func newMemSink() *memSink { return &memSink{objects: map[string][]byte{}} }
 
 func (m *memSink) Put(_ context.Context, key string, body []byte, _ string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if old, ok := m.objects[key]; ok && string(old) == string(body) {
 		return false, nil
 	}

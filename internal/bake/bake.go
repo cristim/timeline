@@ -72,26 +72,32 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 	if err != nil {
 		return nil, stats, err
 	}
-	buckets, captured, err := bakeChunks(ctx, sink, dataset, entities, childCount, goldenKeys, stats)
+	w := newWriter(ctx, sink, stats)
+	buckets, captured, err := bakeChunks(w, dataset, entities, childCount, goldenKeys)
 	if err != nil {
 		return nil, stats, err
 	}
 	goldenStatus := ""
 	if goldens != nil {
 		if fails := Evaluate(goldens, seedVersion, captured); len(fails) > 0 {
+			// Uploaded chunks are harmless without a manifest repoint (ARCH-2);
+			// aborting here is what "a failing golden view blocks publish" means.
 			return nil, stats, fmt.Errorf("%s", formatFails(fails))
 		}
 		goldenStatus = "pass"
 	}
 
-	if err := bakeEntityDocs(ctx, sink, dataset, entities, stats); err != nil {
+	if err := bakeEntityDocs(w, dataset, entities); err != nil {
 		return nil, stats, err
 	}
-	shards, err := bakeSearch(ctx, sink, dataset, entities, stats)
+	shards, err := bakeSearch(w, dataset, entities)
 	if err != nil {
 		return nil, stats, err
 	}
-	if _, err := putJSON(ctx, sink, fmt.Sprintf("v/%s/aliases.json", dataset), map[string]string{}, stats); err != nil {
+	if err := w.putJSON(fmt.Sprintf("v/%s/aliases.json", dataset), map[string]string{}); err != nil {
+		return nil, stats, err
+	}
+	if err := w.wait(); err != nil {
 		return nil, stats, err
 	}
 
@@ -115,7 +121,7 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 // returns the bucket table with per-bucket non-empty window lists (shipped in
 // the manifest so the client never fetches, or 404s on, an empty window), plus
 // the chunks named by goldenKeys for evaluation.
-func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*model.Entity, childCount map[string]int, goldenKeys map[string]bool, stats *Stats) ([]model.Bucket, map[string]chunkFile, error) {
+func bakeChunks(w *writer, dataset string, entities []*model.Entity, childCount map[string]int, goldenKeys map[string]bool) ([]model.Bucket, map[string]chunkFile, error) {
 	type cell struct {
 		bucket int
 		window int64
@@ -164,7 +170,7 @@ func bakeChunks(ctx context.Context, sink Sink, dataset string, entities []*mode
 		items := rankCell(cells[c], c.cat == "all", childCount)
 		relKey := fmt.Sprintf("chunks/%s/%d/world/%s.json",
 			model.Buckets[c.bucket].ID, c.window, c.cat)
-		if _, err := putJSON(ctx, sink, fmt.Sprintf("v/%s/%s", dataset, relKey), chunkFile{Items: items}, stats); err != nil {
+		if err := w.putJSON(fmt.Sprintf("v/%s/%s", dataset, relKey), chunkFile{Items: items}); err != nil {
 			return nil, nil, err
 		}
 		if goldenKeys[relKey] {
