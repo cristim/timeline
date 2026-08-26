@@ -207,7 +207,13 @@ export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) 
   useEffect(() => {
     const onResize = () => draw();
     window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
+    // The shell is user-resizable (drag handle), so watch the canvas itself.
+    const ro = new ResizeObserver(() => draw());
+    if (canvasRef.current) ro.observe(canvasRef.current);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      ro.disconnect();
+    };
   }, [draw]);
 
   // ── interaction ──────────────────────────────────────

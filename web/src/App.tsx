@@ -2,6 +2,7 @@
 // inspector - over static artifacts only (no server, ARCH-1).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MapView } from "./components/MapView";
+import { SpaceView, SPACE_MAX } from "./components/SpaceView";
 import { Timeline } from "./components/Timeline";
 import { Inspector, focusEntity } from "./components/Inspector";
 import { SearchBox } from "./components/SearchBox";
@@ -12,9 +13,49 @@ import { formatTime } from "./lib/timefmt";
 import { categoryColor } from "./lib/colors";
 import type { SearchEntry } from "./lib/data";
 
+// Timeline shell sizing: draggable between MIN and MAX; dragging below the
+// collapse threshold folds it down to just the status bar.
+const TL_MIN = 140;
+const TL_COLLAPSE_BELOW = 100;
+const TL_COLLAPSED = 33;
+const TL_DEFAULT = 240;
+const tlMax = () => Math.round(window.innerHeight * 0.6);
+
 export function App() {
   const { manifest, error } = useManifest();
   const [view, setView] = useState<ViewState>(() => parseView(window.location.search));
+  const [tlHeight, setTlHeight] = useState<number>(() => {
+    const saved = Number(localStorage.getItem("wk-tl-height"));
+    return Number.isFinite(saved) && saved >= TL_COLLAPSED ? saved : TL_DEFAULT;
+  });
+  const collapsed = tlHeight <= TL_COLLAPSED;
+  const lastExpanded = useRef(TL_DEFAULT);
+  if (!collapsed) lastExpanded.current = tlHeight;
+  useEffect(() => {
+    localStorage.setItem("wk-tl-height", `${tlHeight}`);
+  }, [tlHeight]);
+
+  const onHandleDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = tlHeight;
+    const onMove = (ev: PointerEvent) => {
+      const raw = startH + (startY - ev.clientY);
+      if (raw < TL_COLLAPSE_BELOW) {
+        setTlHeight(TL_COLLAPSED);
+      } else {
+        setTlHeight(Math.min(tlMax(), Math.max(TL_MIN, raw)));
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+  const toggleCollapsed = () =>
+    setTlHeight(collapsed ? Math.max(TL_MIN, lastExpanded.current) : TL_COLLAPSED);
 
   // URL sync (API-6): selection changes push a history entry (back/forward
   // walks selections, FE-9); pan/zoom/filter changes replace in place.
@@ -35,7 +76,14 @@ export function App() {
     return () => window.clearTimeout(urlTimer.current);
   }, [view]);
   useEffect(() => {
-    const onPop = () => setView(parseView(window.location.search));
+    const onPop = () => {
+      const v = parseView(window.location.search);
+      // History navigation is not a new selection: sync the ref so the URL
+      // normalization write below stays a replaceState - a pushState here
+      // would destroy the forward history stack.
+      lastPushedSel.current = v.selected;
+      setView(v);
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
@@ -57,6 +105,11 @@ export function App() {
     (slug: string | null) => setView((v) => ({ ...v, selected: slug })),
     [],
   );
+  const setSpace = useCallback(
+    (next: number) => setView((v) => ({ ...v, space: Math.max(0, Math.min(SPACE_MAX, next)) })),
+    [],
+  );
+  const enterSpace = useCallback(() => setSpace(0.25), [setSpace]);
   const toggleCat = (cat: string) =>
     setView((v) => ({
       ...v,
@@ -123,7 +176,17 @@ export function App() {
       </header>
 
       <div className="mid">
-        <MapView items={items} selected={view.selected} onSelect={setSelected} />
+        <div className="stage">
+          <MapView
+            items={items}
+            selected={view.selected}
+            onSelect={setSelected}
+            onZoomPastGlobe={enterSpace}
+          />
+          {view.space > 0 && (
+            <SpaceView s={view.space} onZoom={setSpace} onSelect={setSelected} />
+          )}
+        </div>
         <Inspector
           doc={selectedDoc}
           onSelect={setSelected}
@@ -132,16 +195,31 @@ export function App() {
         />
       </div>
 
-      <footer className="timeline-shell">
-        <Timeline
-          t0={view.t0}
-          t1={view.t1}
-          items={items}
-          selected={view.selected}
-          onRange={setRange}
-          onSelect={setSelected}
+      <footer className={`timeline-shell ${collapsed ? "collapsed" : ""}`} style={{ height: tlHeight }}>
+        <div
+          className="tl-resize-handle"
+          title="Drag to resize the timeline; drag down to collapse"
+          onPointerDown={onHandleDown}
+          onDoubleClick={toggleCollapsed}
         />
+        {!collapsed && (
+          <Timeline
+            t0={view.t0}
+            t1={view.t1}
+            items={items}
+            selected={view.selected}
+            onRange={setRange}
+            onSelect={setSelected}
+          />
+        )}
         <div className="tl-status">
+          <button
+            className="tl-toggle"
+            title={collapsed ? "Expand the timeline" : "Collapse the timeline"}
+            onClick={toggleCollapsed}
+          >
+            {collapsed ? "▲" : "▼"}
+          </button>
           <span className="bucket-badge">{manifest.buckets[bucket]?.id}</span>
           <span className="range-label">{rangeLabel}</span>
           <span className="count">{loading ? "…" : `${laneCount} shown`}</span>
