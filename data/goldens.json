@@ -1,0 +1,47 @@
+{
+  "seed_version": "seed-5d37f439",
+  "views": [
+    {
+      "name": "universe-scale",
+      "bucket": "T0", "category": "all",
+      "include": ["big-bang", "earth", "homo-sapiens", "cretaceous-paleogene-extinction", "sun-becomes-a-red-giant"],
+      "exclude": ["doom", "battle-of-hastings"],
+      "min_items": 15, "max_items": 40
+    },
+    {
+      "name": "modern-century",
+      "bucket": "T8", "year": 1942, "category": "all",
+      "include": ["world-war-i", "world-war-ii", "apollo-11-moon-landing", "transistor"],
+      "exclude": ["battle-of-hastings", "covid-19-pandemic"],
+      "min_items": 10, "max_items": 200
+    },
+    {
+      "name": "year-1942-war",
+      "bucket": "T10", "year": 1942.5, "category": "war",
+      "include": ["battle-of-stalingrad", "world-war-ii", "eastern-front-wwii"],
+      "exclude": ["d-day-normandy-landings"]
+    },
+    {
+      "name": "year-1969",
+      "bucket": "T10", "year": 1969.6, "category": "all",
+      "include": ["apollo-11-moon-landing"]
+    },
+    {
+      "name": "science-century",
+      "bucket": "T8", "year": 1942, "category": "science",
+      "include": ["penicillin-discovered", "general-relativity", "special-relativity-1905-paper"],
+      "exclude": ["battle-of-stalingrad"]
+    },
+    {
+      "name": "medieval-millennium",
+      "bucket": "T7", "year": 1400, "category": "all",
+      "include": ["gutenberg-printing-press", "mongol-empire", "fall-of-constantinople"],
+      "exclude": ["big-bang"]
+    },
+    {
+      "name": "deep-future",
+      "bucket": "T2", "category": "all",
+      "include": ["heat-death-of-the-universe", "sun-becomes-a-red-giant"]
+    }
+  ]
+}
