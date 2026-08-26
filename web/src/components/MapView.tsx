@@ -7,7 +7,9 @@ import type { FeatureCollection, Point } from "geojson";
 import type { ChunkItem } from "../lib/data";
 import { categoryColor, FALLBACK_COLOR } from "../lib/colors";
 
-const STYLE_URL = "https://demotiles.maplibre.org/style.json";
+// The globe-ready demotiles style (projection: globe baked in). The plain
+// style.json renders an empty pale sphere under globe projection.
+const STYLE_URL = "https://demotiles.maplibre.org/globe.json";
 const SOURCE = "wk-items";
 
 interface Props {
@@ -20,6 +22,35 @@ interface Props {
 
 /** Below this zoom the whole globe is on screen; further zoom-out leaves it. */
 const GLOBE_MIN_ZOOM = 1.05;
+
+// Live map singleton for the space view's Earth capture (one map per app).
+let liveMap: maplibregl.Map | null = null;
+
+/**
+ * Snapshots the currently rendered globe into a square sprite (the space
+ * view's Earth texture, giving pixel-continuity across the handoff).
+ * Returns null before the map has rendered anything usable.
+ */
+export function captureGlobeSprite(): HTMLCanvasElement | null {
+  if (!liveMap) return null;
+  const src = liveMap.getCanvas();
+  if (!src.width || !src.height) return null;
+  const dpr = window.devicePixelRatio || 1;
+  // Globe pixel radius: worldSize / 2π (tileSize 512).
+  const r = ((512 * Math.pow(2, liveMap.getZoom())) / (2 * Math.PI)) * dpr;
+  const side = Math.min(2 * r * 1.02, Math.min(src.width, src.height));
+  const out = document.createElement("canvas");
+  out.width = out.height = 512;
+  const ctx = out.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(src, src.width / 2 - side / 2, src.height / 2 - side / 2, side, side, 0, 0, 512, 512);
+  // A blank capture (context lost, buffer not preserved) must not be used.
+  const probe = ctx.getImageData(256, 256, 1, 1).data;
+  if (probe[3] === 0 || (probe[0] === 0 && probe[1] === 0 && probe[2] === 0)) {
+    return null;
+  }
+  return out;
+}
 
 function toGeoJSON(items: ChunkItem[], selected: string | null): FeatureCollection {
   return {
@@ -58,12 +89,10 @@ export function MapView({ items, selected, onSelect, onZoomPastGlobe }: Props) {
       zoom: 1.4,
       minZoom: GLOBE_MIN_ZOOM,
       attributionControl: false,
-    });
-    // Globe projection where the MapLibre build supports it (v5+).
-    const setProjection = (map as unknown as { setProjection?: (p: { type: string }) => void }).setProjection;
-    if (typeof setProjection === "function") {
-      map.on("style.load", () => setProjection.call(map, { type: "globe" }));
-    }
+      // The space view snapshots the globe as its Earth texture on handoff;
+      // without a preserved buffer, drawImage from the WebGL canvas is blank.
+      canvasContextAttributes: { preserveDrawingBuffer: true },
+    } as maplibregl.MapOptions);
     // Wheel-out at the globe's minimum zoom hands off to the cosmic view.
     // Capture phase so MapLibre's own (exhausted) zoom handling never sees it.
     const container = containerRef.current;
@@ -115,6 +144,7 @@ export function MapView({ items, selected, onSelect, onZoomPastGlobe }: Props) {
       readyRef.current = true;
     });
     mapRef.current = map;
+    liveMap = map;
     if (import.meta.env.DEV) {
       // e2e test hook (dev server only; stripped from prod builds)
       (window as unknown as Record<string, unknown>).__wkmap = map;
@@ -122,6 +152,7 @@ export function MapView({ items, selected, onSelect, onZoomPastGlobe }: Props) {
     return () => {
       container.removeEventListener("wheel", onWheelCapture, { capture: true });
       readyRef.current = false;
+      liveMap = null;
       map.remove();
       mapRef.current = null;
     };

@@ -12,6 +12,7 @@
 // - below the handback threshold the whole canvas fades out, revealing the
 //   real MapLibre globe underneath - no cut on exit.
 import { useCallback, useEffect, useRef } from "react";
+import { captureGlobeSprite } from "./MapView";
 
 interface Props {
   /** Space zoom s: 0 = handing back to the map, 4 = observable universe. */
@@ -42,6 +43,11 @@ export function SpaceView({ s, onZoom, onSelect }: Props) {
   const onZoomRef = useRef(onZoom);
   onZoomRef.current = onZoom;
   const hitsRef = useRef<{ x: number; y: number; r: number; slug: string }[]>([]);
+  // The real globe, captured at handoff, becomes the Earth texture - the
+  // sphere in space is the same pixels the user was just looking at. Null
+  // until the map has rendered (cold loads with ?space= retry below).
+  const earthSpriteRef = useRef<HTMLCanvasElement | null>(null);
+  const spriteRetryRef = useRef(0);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -100,7 +106,8 @@ export function SpaceView({ s, onZoom, onSelect }: Props) {
     if (cosmosA > 0) drawCosmos(ctx, w, h, z, cosmosA, cosmosAnchor);
     if (galaxyA > 0) drawGalaxy(ctx, gCx, gCy, galaxy.R, galaxyA);
     if (solarA > 0) drawSolarSystem(ctx, sCx, sCy, h, z, solarA, hitsRef.current);
-    if (earthA > 0) drawEarthMoon(ctx, eCx, eCy, h, z, earthA, hitsRef.current);
+    if (earthA > 0)
+      drawEarthMoon(ctx, eCx, eCy, h, z, earthA, hitsRef.current, earthSpriteRef.current);
 
     // Scale caption + hint
     ctx.font = "12px ui-monospace, monospace";
@@ -118,8 +125,14 @@ export function SpaceView({ s, onZoom, onSelect }: Props) {
   // Continuous ease loop: the display zoom springs toward the target, so both
   // wheel steps and the mount/unmount boundaries feel animated.
   useEffect(() => {
+    earthSpriteRef.current = captureGlobeSprite();
     let raf = 0;
     const tick = () => {
+      // Cold loads land here before the map has rendered; retry the globe
+      // capture occasionally until it succeeds.
+      if (!earthSpriteRef.current && spriteRetryRef.current++ % 30 === 0) {
+        earthSpriteRef.current = captureGlobeSprite();
+      }
       const target = sRef.current;
       const d = dispRef.current;
       const next = Math.abs(target - d) < 0.001 ? target : d + (target - d) * 0.16;
@@ -255,30 +268,36 @@ function drawEarthMoon(
   z: number,
   alpha: number,
   hits: { x: number; y: number; r: number; slug: string }[],
+  sprite: HTMLCanvasElement | null,
 ) {
   // Earth shrinks from filling much of the view down to the size of its dot
   // in the solar-system scene, which it drifts into (anchor continuity).
   const r = Math.max(2.2, h * 0.34 * Math.pow(0.14, z));
   ctx.globalAlpha = alpha;
-  const grad = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.35, r * 0.1, cx, cy, r);
-  grad.addColorStop(0, "#7db4d8");
-  grad.addColorStop(0.55, "#2e6ea3");
-  grad.addColorStop(1, "#12283f");
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fill();
-  if (r > 12) {
-    // a few soft landmass blobs; scenery, not cartography
-    ctx.fillStyle = "rgba(111, 174, 98, 0.5)";
-    const rand = mulberry32(7);
-    for (let i = 0; i < 6; i++) {
-      const a = rand() * Math.PI * 2;
-      const d = rand() * r * 0.55;
-      ctx.beginPath();
-      ctx.ellipse(cx + Math.cos(a) * d, cy + Math.sin(a) * d, r * (0.14 + rand() * 0.2), r * (0.1 + rand() * 0.12), a, 0, Math.PI * 2);
-      ctx.fill();
-    }
+  if (sprite && r > 3) {
+    // The captured globe: the same pixels the user was just looking at.
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.drawImage(sprite, cx - r, cy - r, r * 2, r * 2);
+    // Soft terminator shading so it reads as a lit sphere.
+    const shade = ctx.createRadialGradient(cx - r * 0.4, cy - r * 0.4, r * 0.2, cx, cy, r * 1.05);
+    shade.addColorStop(0, "rgba(255,255,255,0.06)");
+    shade.addColorStop(0.75, "rgba(4,6,12,0)");
+    shade.addColorStop(1, "rgba(4,6,12,0.55)");
+    ctx.fillStyle = shade;
+    ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+    ctx.restore();
+  } else {
+    const grad = ctx.createRadialGradient(cx - r * 0.35, cy - r * 0.35, r * 0.1, cx, cy, r);
+    grad.addColorStop(0, "#7db4d8");
+    grad.addColorStop(0.55, "#2e6ea3");
+    grad.addColorStop(1, "#12283f");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
   }
   hits.push({ x: cx, y: cy, r: Math.max(r, 10), slug: "earth" });
 
