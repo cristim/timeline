@@ -21,11 +21,21 @@ export interface Manifest {
   golden_views?: string;
 }
 
-export const DATA_URL: string =
-  import.meta.env.VITE_DATA_URL ?? "http://localhost:8080";
+/**
+ * Artifact URL resolution: an explicit VITE_DATA_URL (dev gateway, CDN) wins;
+ * otherwise artifacts are same-origin relative to the app's base path - the
+ * static-hosting case (GitHub Pages serves under /<repo>/).
+ */
+export function artifactURL(path: string): string {
+  const explicit = import.meta.env.VITE_DATA_URL;
+  if (explicit) {
+    return `${explicit}${path}`;
+  }
+  return `${import.meta.env.BASE_URL.replace(/\/$/, "")}${path}`;
+}
 
 export async function loadManifest(): Promise<Manifest> {
-  const res = await fetch(`${DATA_URL}/manifest.json`);
+  const res = await fetch(artifactURL("/manifest.json"));
   if (!res.ok) {
     throw new Error(`manifest fetch failed: ${res.status}`);
   }

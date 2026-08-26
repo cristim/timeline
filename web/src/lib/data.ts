@@ -1,6 +1,6 @@
 // Artifact reads (the whole "query engine", API-1): fetch, cache, union.
 // Everything under /v/<dataset>/ is immutable, so caching is unconditional.
-import { DATA_URL, type Manifest } from "./manifest";
+import { artifactURL, type Manifest } from "./manifest";
 
 export interface ChunkItem {
   slug: string;
@@ -72,7 +72,7 @@ export interface SearchEntry {
 const cache = new Map<string, Promise<unknown>>();
 
 function fetchArtifact<T>(dataset: string, relKey: string): Promise<T> {
-  const url = `${DATA_URL}/v/${dataset}/${relKey}`;
+  const url = artifactURL(`/v/${dataset}/${relKey}`);
   let p = cache.get(url);
   if (!p) {
     p = fetch(url).then((res) => {
