@@ -7,6 +7,7 @@ import { Inspector, focusEntity } from "./components/Inspector";
 import { SearchBox } from "./components/SearchBox";
 import { useEntity, useManifest, useViewportItems } from "./lib/hooks";
 import { DEFAULT_VIEW, parseView, serializeView, type ViewState } from "./lib/state";
+import { laneItems } from "./lib/visible";
 import { formatTime } from "./lib/timefmt";
 import { categoryColor } from "./lib/colors";
 import type { SearchEntry } from "./lib/data";
@@ -74,6 +75,13 @@ export function App() {
     return `${formatTime(view.t0, span)} — ${formatTime(view.t1, span)}`;
   }, [view.t0, view.t1]);
 
+  // The status-bar count matches what the timeline lanes actually consider
+  // (top-100 starting/ending in view), not the raw chunk union.
+  const laneCount = useMemo(
+    () => laneItems(items, view.t0, view.t1).length,
+    [items, view.t0, view.t1],
+  );
+
   if (error) {
     return (
       <div className="boot-error">
@@ -136,7 +144,7 @@ export function App() {
         <div className="tl-status">
           <span className="bucket-badge">{manifest.buckets[bucket]?.id}</span>
           <span className="range-label">{rangeLabel}</span>
-          <span className="count">{loading ? "…" : `${items.length} shown`}</span>
+          <span className="count">{loading ? "…" : `${laneCount} shown`}</span>
           <label className="imp">
             importance ≥ {view.minImportance.toFixed(2)}
             <input

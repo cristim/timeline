@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { ChunkItem } from "../lib/data";
 import { colorFor, markerStyle } from "../lib/colors";
 import { formatTime } from "../lib/timefmt";
+import { laneItems } from "../lib/visible";
 import { SECONDS_PER_YEAR } from "../lib/keyscheme";
 
 // Hard clamps: a linear axis cannot reach the 1e100-year tail; far-future
@@ -98,18 +99,18 @@ export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) 
     }
 
     // ── items: greedy row packing, importance first ────
+    // Lanes hold the top items that start or end inside the view; items that
+    // merely pass through the whole view are skipped (lib/visible.ts).
     hits.current = [];
     const rows: number[] = []; // per-row rightmost occupied x
     const maxRows = Math.floor((h - AXIS_H - 6) / ROW_H);
     const offRight: ChunkItem[] = [];
+    for (const item of items) {
+      if (item.t0 > t1 && offRight.length < 12) offRight.push(item);
+    }
     ctx.font = "11px system-ui, sans-serif";
 
-    for (const item of items) {
-      if (item.t0 > t1) {
-        if (offRight.length < 12) offRight.push(item);
-        continue;
-      }
-      if (item.t1 < t0) continue;
+    for (const item of laneItems(items, t0, t1)) {
       const isSpan = item.t1 > item.t0 && x(item.t1) - x(item.t0) > 8;
       const x0 = Math.max(-200, x(item.t0));
       const x1 = isSpan ? Math.min(w + 200, x(item.t1)) : x0;
