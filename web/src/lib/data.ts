@@ -51,6 +51,8 @@ export interface EntityDoc {
   children?: EntityRef[];
   links: { wikipedia?: string; wikidata?: string };
   media_thumb?: string;
+  /** Time-sliced geometry (DM-7); for a war, its dated front positions. */
+  geometry?: GeometryRecord[];
 }
 
 export interface EntityRef {

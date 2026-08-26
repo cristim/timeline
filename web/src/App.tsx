@@ -9,6 +9,7 @@ import { SearchBox } from "./components/SearchBox";
 import { useEntity, useEraLayer, useManifest, useViewportItems } from "./lib/hooks";
 import { cursorTime, DEFAULT_VIEW, parseView, serializeView, type ViewState } from "./lib/state";
 import { laneItems } from "./lib/visible";
+import { frontAt, frontBounds } from "./lib/fronts";
 import { formatTime } from "./lib/timefmt";
 import { categoryColor } from "./lib/colors";
 import type { SearchEntry } from "./lib/data";
@@ -126,6 +127,18 @@ export function App() {
   const tc = cursorTime(view);
   const era = useEraLayer(manifest, tc, BORDERS_LAYER);
 
+  // War focus: a selected entity carrying dated front positions (DM-7) gets
+  // its front interpolated to the cursor and the map framed on the theatre.
+  const frontPositions = selectedDoc?.geometry;
+  const front = useMemo(
+    () => (frontPositions ? frontAt(frontPositions, tc) : null),
+    [frontPositions, tc],
+  );
+  const focusBounds = useMemo(
+    () => (frontPositions ? frontBounds(frontPositions) : null),
+    [frontPositions],
+  );
+
   const setRange = useCallback(
     (t0: number, t1: number) => setView((v) => ({ ...v, t0, t1 })),
     [],
@@ -213,6 +226,8 @@ export function App() {
             items={items}
             selected={view.selected}
             era={era}
+            front={front}
+            focusBounds={focusBounds}
             onSelect={setSelected}
             onZoomPastGlobe={enterSpace}
           />
@@ -221,6 +236,13 @@ export function App() {
           <div className={`era-chip ${era ? "" : "empty"}`}>
             {era ? era.properties.label : `no border data for ${cursorLabel}`}
           </div>
+          {front && (
+            <div className={`front-chip ${front.held ? "held" : ""}`}>
+              <b>{cursorLabel}</b> front line
+              {front.label && <span className="fc-near"> · nearest trace: {front.label}</span>}
+              {front.held && <span className="fc-held"> · held: cursor is outside the war</span>}
+            </div>
+          )}
           {view.space > 0 && (
             <SpaceView s={view.space} onZoom={setSpace} onSelect={setSelected} />
           )}

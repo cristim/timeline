@@ -13,6 +13,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
 import type { FeatureCollection, Point } from "geojson";
 import type { BorderLayerDoc, ChunkItem } from "../lib/data";
+import type { FrontSample } from "../lib/fronts";
 import { categoryColor, FALLBACK_COLOR } from "../lib/colors";
 
 // The globe-ready demotiles style (projection: globe baked in). The plain
@@ -31,11 +32,19 @@ const ERA_LINE = "#16224a";
 const ERA_FADE_MS = 450;
 const EMPTY_FC: FeatureCollection = { type: "FeatureCollection", features: [] };
 
+// The front line uses the war category colour, since that is what it is.
+const FRONT_SOURCE = "wk-front";
+const FRONT_COLOR = "#c96b4a";
+
 interface Props {
   items: ChunkItem[];
   selected: string | null;
   /** Historical extents for the cursor time, or null when none are curated. */
   era: BorderLayerDoc | null;
+  /** The selected war's front at the cursor time, or null for everything else. */
+  front: FrontSample | null;
+  /** Bounds framing the selection's geometry, when it has any. */
+  focusBounds: [[number, number], [number, number]] | null;
   onSelect: (slug: string) => void;
   /** Called when the user zooms out past the whole globe (cosmic handoff). */
   onZoomPastGlobe: () => void;
@@ -133,7 +142,30 @@ function setEraOpacity(map: maplibregl.Map, slot: string, on: boolean) {
   map.setPaintProperty(`wk-era-${slot}-line`, "line-opacity", on ? 0.9 : 0);
 }
 
-export function MapView({ items, selected, era, onSelect, onZoomPastGlobe }: Props) {
+/** GeoJSON for the front sample, or an empty collection when there is none. */
+function frontFC(front: FrontSample | null): FeatureCollection {
+  if (!front) return EMPTY_FC;
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: { label: front.label },
+        geometry: { type: "LineString", coordinates: front.coordinates },
+      },
+    ],
+  };
+}
+
+export function MapView({
+  items,
+  selected,
+  era,
+  front,
+  focusBounds,
+  onSelect,
+  onZoomPastGlobe,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const readyRef = useRef(false);
@@ -141,6 +173,7 @@ export function MapView({ items, selected, era, onSelect, onZoomPastGlobe }: Pro
   const eraRef = useRef<BorderLayerDoc | null>(era);
   const liveEraSlot = useRef<(typeof ERA_SLOTS)[number]>("a");
   const shownEra = useRef<number | null>(null);
+  const frontRef = useRef<FeatureCollection>(frontFC(front));
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
   const onZoomPastGlobeRef = useRef(onZoomPastGlobe);
@@ -238,6 +271,26 @@ export function MapView({ items, selected, era, onSelect, onZoomPastGlobe }: Pro
       });
       map.on("mouseenter", "wk-dots", () => (map.getCanvas().style.cursor = "pointer"));
       map.on("mouseleave", "wk-dots", () => (map.getCanvas().style.cursor = ""));
+
+      // The front line sits above the era fill but below the item dots: it is
+      // the subject of a war focus, not the background and not a target.
+      map.addSource(FRONT_SOURCE, { type: "geojson", data: frontRef.current });
+      map.addLayer(
+        {
+          id: "wk-front-line",
+          type: "line",
+          source: FRONT_SOURCE,
+          layout: { "line-cap": "round", "line-join": "round" },
+          paint: {
+            "line-color": FRONT_COLOR,
+            "line-width": 3.5,
+            // Interpolated between a handful of dated traces, so it is at
+            // best representation=estimated (DM-7): never a hard line.
+            "line-dasharray": [2, 1.2],
+          },
+        },
+        "wk-halo",
+      );
       readyRef.current = true;
       // An era can resolve before the style finishes loading; apply whatever
       // the latest render handed us rather than waiting for the next change.
@@ -280,16 +333,35 @@ export function MapView({ items, selected, era, onSelect, onZoomPastGlobe }: Pro
     }
   }, [items, selected]);
 
-  // Fly to a selected entity that has a location.
+  useEffect(() => {
+    frontRef.current = frontFC(front);
+    const map = mapRef.current;
+    if (map && readyRef.current) {
+      (map.getSource(FRONT_SOURCE) as maplibregl.GeoJSONSource | undefined)?.setData(
+        frontRef.current,
+      );
+    }
+    if (import.meta.env.DEV) {
+      // e2e test hook (dev server only; stripped from prod builds)
+      (window as unknown as Record<string, unknown>).__wkfront = front;
+    }
+  }, [front]);
+
+  // Frame a selection: a war with curated geometry gets its whole theatre,
+  // anything else with a location gets flown to.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !selected) return;
+    if (focusBounds) {
+      map.fitBounds(focusBounds, { padding: 80, maxZoom: 5, duration: 900 });
+      return;
+    }
     const feature = dataRef.current.features.find((f) => f.properties?.slug === selected);
     const coords = (feature?.geometry as Point | undefined)?.coordinates;
     if (coords) {
       map.flyTo({ center: coords as [number, number], zoom: Math.max(map.getZoom(), 3), duration: 700 });
     }
-  }, [selected]);
+  }, [selected, focusBounds]);
 
   return <div ref={containerRef} className="map-container" />;
 }
