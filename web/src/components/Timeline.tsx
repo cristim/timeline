@@ -7,6 +7,7 @@ import { colorFor, markerStyle } from "../lib/colors";
 import { formatTime } from "../lib/timefmt";
 import { laneItems } from "../lib/visible";
 import { SECONDS_PER_YEAR } from "../lib/keyscheme";
+import { cursorTime } from "../lib/state";
 
 // Hard clamps: a linear axis cannot reach the 1e100-year tail; far-future
 // items pin to a right-edge gutter instead (the deep-time overview strip in
@@ -18,13 +19,23 @@ const AXIS_H = 26;
 const ROW_H = 22;
 const NOW_S = Date.now() / 1000;
 
+// Time cursor (FE-3/FE-5): a bright neutral instrument line, deliberately not
+// a category colour and not the selection amber - it marks a moment, it is not
+// a thing in the dataset.
+const CURSOR_COLOR = "#e8e4d8";
+/** Half-width of the cursor handle's grab zone, in CSS pixels. */
+const CURSOR_GRAB = 12;
+
 interface Props {
   t0: number;
   t1: number;
   items: ChunkItem[];
   selected: string | null;
+  /** Pinned cursor time; null follows the centre of the view. */
+  tc: number | null;
   onRange: (t0: number, t1: number) => void;
   onSelect: (slug: string | null) => void;
+  onCursor: (t: number | null) => void;
 }
 
 interface HitBox {
@@ -35,10 +46,17 @@ interface HitBox {
   slug: string;
 }
 
-export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) {
+export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCursor }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hits = useRef<HitBox[]>([]);
-  const drag = useRef<{ x: number; t0: number; t1: number; moved: boolean } | null>(null);
+  const drag = useRef<{
+    x: number;
+    t0: number;
+    t1: number;
+    moved: boolean;
+    mode: "pan" | "cursor";
+  } | null>(null);
+  const cursor = cursorTime({ t0, t1, tc });
   // Refs so the non-passive wheel listener (attached once) sees fresh state.
   const rangeRef = useRef({ t0, t1 });
   rangeRef.current = { t0, t1 };
@@ -197,7 +215,13 @@ export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) 
       });
       ctx.globalAlpha = 1;
     }
-  }, [t0, t1, items, selected]);
+
+    // ── time cursor ─────────────────────────────────────
+    // Drawn last so it stays legible over the lanes. A pinned cursor can be
+    // panned off-screen; it pins to the edge with an arrow rather than
+    // vanishing, because the map is still showing whatever time it holds.
+    drawCursor(ctx, x(cursor), w, h, formatTime(cursor, span), tc !== null);
+  }, [t0, t1, items, selected, cursor, tc]);
 
   useEffect(() => {
     const raf = requestAnimationFrame(draw);
@@ -241,9 +265,21 @@ export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) 
     return () => canvas.removeEventListener("wheel", onWheel);
   }, []);
 
+  /** Cursor time under the pointer, clamped to the visible range. */
+  const cursorAt = (clientX: number, rect: DOMRect) =>
+    Math.max(t0, Math.min(t1, t0 + ((clientX - rect.left) / rect.width) * (t1 - t0)));
+
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
-    drag.current = { x: e.clientX, t0, t1, moved: false };
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    const py = e.clientY - rect.top;
+    const cx = ((cursor - t0) / (t1 - t0)) * rect.width;
+    // Only the handle in the axis strip grabs the cursor. A grab zone along
+    // the whole line would swallow clicks on the lane items behind it.
+    const mode = py <= AXIS_H && Math.abs(px - cx) <= CURSOR_GRAB ? "cursor" : "pan";
+    drag.current = { x: e.clientX, t0, t1, moved: false, mode };
+    if (mode === "cursor") onCursor(cursorAt(e.clientX, rect));
   };
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const d = drag.current;
@@ -251,6 +287,10 @@ export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) 
     const dx = e.clientX - d.x;
     if (Math.abs(dx) > 3) d.moved = true;
     const rect = e.currentTarget.getBoundingClientRect();
+    if (d.mode === "cursor") {
+      onCursor(cursorAt(e.clientX, rect));
+      return;
+    }
     const dt = (dx / rect.width) * (d.t1 - d.t0);
     const [a, b] = clampRange(d.t0 - dt, d.t1 - dt);
     onRange(a, b);
@@ -258,8 +298,8 @@ export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) 
   const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const d = drag.current;
     drag.current = null;
-    if (d?.moved) return;
-    // click: hit-test
+    // A cursor drag is never also a selection click.
+    if (!d || d.moved || d.mode === "cursor") return;
     const rect = e.currentTarget.getBoundingClientRect();
     const px = e.clientX - rect.left;
     const py = e.clientY - rect.top;
@@ -267,15 +307,89 @@ export function Timeline({ t0, t1, items, selected, onRange, onSelect }: Props) 
     onSelect(hit ? hit.slug : null);
   };
 
+  // Arrow keys nudge the cursor (FE-9's accessibility floor asks for keyboard
+  // timeline navigation; the cursor is the part of it this change owns).
+  const onKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
+    const dir = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
+    if (!dir) return;
+    e.preventDefault();
+    const step = ((t1 - t0) / (e.shiftKey ? 10 : 100)) * dir;
+    onCursor(Math.max(t0, Math.min(t1, cursor + step)));
+  };
+
   return (
     <canvas
       ref={canvasRef}
       className="timeline-canvas"
+      tabIndex={0}
+      aria-label="Timeline. Arrow keys move the time cursor."
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onKeyDown={onKeyDown}
     />
   );
+}
+
+/**
+ * Vertical line + grab handle + date pill at `cx`. When the cursor is outside
+ * the canvas only the edge marker and the pill are drawn: a line at the border
+ * would read as a cursor sitting at the edge of the view, which it is not.
+ */
+function drawCursor(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  w: number,
+  h: number,
+  label: string,
+  pinned: boolean,
+) {
+  const off = cx < 0 ? -1 : cx > w ? 1 : 0;
+  const px = Math.max(6, Math.min(w - 6, cx));
+
+  ctx.save();
+  ctx.strokeStyle = CURSOR_COLOR;
+  ctx.fillStyle = CURSOR_COLOR;
+  ctx.globalAlpha = off ? 0.55 : pinned ? 1 : 0.7;
+
+  if (!off) {
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px + 0.5, AXIS_H);
+    ctx.lineTo(px + 0.5, h);
+    ctx.stroke();
+  }
+
+  // Handle: a downward triangle in the axis strip, or an arrow when off-view.
+  ctx.beginPath();
+  if (off < 0) {
+    ctx.moveTo(px - 6, AXIS_H - 7);
+    ctx.lineTo(px + 5, AXIS_H - 13);
+    ctx.lineTo(px + 5, AXIS_H - 1);
+  } else if (off > 0) {
+    ctx.moveTo(px + 6, AXIS_H - 7);
+    ctx.lineTo(px - 5, AXIS_H - 13);
+    ctx.lineTo(px - 5, AXIS_H - 1);
+  } else {
+    ctx.moveTo(px - 6, AXIS_H - 13);
+    ctx.lineTo(px + 6, AXIS_H - 13);
+    ctx.lineTo(px, AXIS_H - 2);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.font = "10px ui-monospace, monospace";
+  const tw = ctx.measureText(label).width;
+  // Flip the pill to the left rather than let it run off the right edge.
+  const lx = px + 10 + tw + 6 > w ? px - 10 - tw - 6 : px + 10;
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "rgba(11,15,23,0.85)";
+  ctx.beginPath();
+  ctx.roundRect(lx - 4, AXIS_H - 17, tw + 8, 15, 3);
+  ctx.fill();
+  ctx.fillStyle = CURSOR_COLOR;
+  ctx.fillText(label, lx, AXIS_H - 6);
+  ctx.restore();
 }
 
 function clampRange(a: number, b: number): [number, number] {

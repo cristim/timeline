@@ -202,6 +202,7 @@ body {
 .tl-toggle:hover { color: var(--amber); border-color: var(--hair-2); }
 .timeline-canvas { flex: 1; width: 100%; min-height: 0; cursor: grab; touch-action: none; display: block; }
 .timeline-canvas:active { cursor: grabbing; }
+.timeline-canvas:focus-visible { outline: 1px solid var(--amber); outline-offset: -1px; }
 .tl-status {
   display: flex; align-items: center; gap: 14px;
   height: 32px; padding: 0 14px; border-top: 1px solid var(--hair);
@@ -213,6 +214,19 @@ body {
   border-radius: 5px; padding: 2px 8px;
 }
 .range-label { font-family: var(--mono); font-size: 10.5px; }
+.cursor-readout { display: flex; align-items: center; gap: 4px; }
+.cursor-readout .cur-label {
+  font: 600 10.5px var(--mono); color: var(--text-1);
+  border: 1px solid var(--hair-2); border-radius: 5px; padding: 2px 7px;
+}
+/* Unpinned: the cursor is only tracking the middle of the view, so it reads
+   as ambient state rather than a choice the user made. */
+.cursor-readout.unpinned .cur-label { color: var(--text-3); border-color: var(--hair); font-weight: 500; }
+.cur-unpin {
+  background: none; border: 0; color: var(--text-3); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 1px 3px;
+}
+.cur-unpin:hover { color: var(--amber); }
 .count { color: var(--text-3); }
 .imp { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 10.5px; }
 .imp input { width: 90px; accent-color: var(--amber); }

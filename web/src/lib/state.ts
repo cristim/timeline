@@ -9,6 +9,13 @@ export interface ViewState {
   selected: string | null;
   /** Cosmic zoom (SpaceView): 0 = normal map, up to SPACE_MAX. */
   space: number;
+  /**
+   * The time cursor: the single moment the map is showing (FE-3/FE-5).
+   * null means unpinned, in which case it follows the centre of the visible
+   * range - so the map answers "what did the world look like in the middle of
+   * what I am looking at?" until the user drags the cursor somewhere.
+   */
+  tc: number | null;
 }
 
 export const DEFAULT_VIEW: ViewState = {
@@ -19,7 +26,13 @@ export const DEFAULT_VIEW: ViewState = {
   minImportance: 0,
   selected: null,
   space: 0,
+  tc: null,
 };
+
+/** Where the cursor actually is: pinned tc, else the centre of the view. */
+export function cursorTime(v: Pick<ViewState, "t0" | "t1" | "tc">): number {
+  return v.tc ?? (v.t0 + v.t1) / 2;
+}
 
 export function parseView(search: string): ViewState {
   const q = new URLSearchParams(search);
@@ -37,6 +50,8 @@ export function parseView(search: string): ViewState {
   v.selected = q.get("sel");
   const space = Number(q.get("space"));
   if (Number.isFinite(space) && space > 0) v.space = Math.min(space, 4);
+  const tc = Number(q.get("tc"));
+  if (q.has("tc") && Number.isFinite(tc)) v.tc = tc;
   return v;
 }
 
@@ -48,6 +63,7 @@ export function serializeView(v: ViewState): string {
   if (v.minImportance > 0) q.set("imp", `${v.minImportance}`);
   if (v.selected) q.set("sel", v.selected);
   if (v.space > 0) q.set("space", v.space.toFixed(2));
+  if (v.tc !== null) q.set("tc", compactNum(v.tc));
   return `?${q.toString()}`;
 }
 

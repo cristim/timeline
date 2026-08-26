@@ -7,7 +7,7 @@ import { Timeline } from "./components/Timeline";
 import { Inspector, focusEntity } from "./components/Inspector";
 import { SearchBox } from "./components/SearchBox";
 import { useEntity, useManifest, useViewportItems } from "./lib/hooks";
-import { DEFAULT_VIEW, parseView, serializeView, type ViewState } from "./lib/state";
+import { cursorTime, DEFAULT_VIEW, parseView, serializeView, type ViewState } from "./lib/state";
 import { laneItems } from "./lib/visible";
 import { formatTime } from "./lib/timefmt";
 import { categoryColor } from "./lib/colors";
@@ -127,6 +127,7 @@ export function App() {
     (slug: string | null) => setView((v) => ({ ...v, selected: slug })),
     [],
   );
+  const setCursor = useCallback((t: number | null) => setView((v) => ({ ...v, tc: t })), []);
   const setSpace = useCallback(
     (next: number) => setView((v) => ({ ...v, space: Math.max(0, Math.min(SPACE_MAX, next)) })),
     [],
@@ -149,6 +150,10 @@ export function App() {
     const span = view.t1 - view.t0;
     return `${formatTime(view.t0, span)} — ${formatTime(view.t1, span)}`;
   }, [view.t0, view.t1]);
+
+  // The cursor is the moment the map is showing (FE-3/FE-5).
+  const tc = cursorTime(view);
+  const cursorLabel = formatTime(tc, view.t1 - view.t0);
 
   // The status-bar count matches what the timeline lanes actually consider
   // (top-100 starting/ending in view), not the raw chunk union.
@@ -236,8 +241,10 @@ export function App() {
             t1={view.t1}
             items={items}
             selected={view.selected}
+            tc={view.tc}
             onRange={setRange}
             onSelect={setSelected}
+            onCursor={setCursor}
           />
         )}
         <div className="tl-status">
@@ -250,6 +257,20 @@ export function App() {
           </button>
           <span className="bucket-badge">{manifest.buckets[bucket]?.id}</span>
           <span className="range-label">{rangeLabel}</span>
+          <span className={`cursor-readout ${view.tc === null ? "unpinned" : ""}`}>
+            <span className="cur-label" title="The moment the map is showing">
+              ▾ {cursorLabel}
+            </span>
+            {view.tc !== null && (
+              <button
+                className="cur-unpin"
+                title="Unpin the cursor: it follows the middle of the view again"
+                onClick={() => setCursor(null)}
+              >
+                ×
+              </button>
+            )}
+          </span>
           <span className="count">{loading ? "…" : `${laneCount} shown`}</span>
           <label className="imp">
             importance ≥ {view.minImportance.toFixed(2)}
