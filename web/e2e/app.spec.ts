@@ -25,10 +25,16 @@ async function booted(page: Page) {
 
 test("boots the whole-universe view with zero console errors", async ({ page }) => {
   const w = watch(page);
+  // The map worker fetches basemap tiles; a dead worker leaves an empty
+  // sphere with a clean console, so require at least one tile request.
+  const tileLoaded = page.waitForRequest(/demotiles\.maplibre\.org\/tiles\/\d/, {
+    timeout: 15_000,
+  });
   await page.goto("./");
   await booted(page);
   await expect(page.locator(".bucket-badge")).toHaveText("T0");
   await expect(page.locator(".count")).toContainText("shown");
+  await tileLoaded;
   expect(w.errors, "console errors").toEqual([]);
   expect(w.notFound, "same-origin 404s").toEqual([]);
 });

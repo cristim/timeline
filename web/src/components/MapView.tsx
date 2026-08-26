@@ -2,7 +2,15 @@
 // MapLibre demotiles world basemap; PMTiles layers arrive with M4.
 import { useEffect, useRef } from "react";
 import * as maplibregl from "maplibre-gl";
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
+
+// MapLibre v6 resolves its worker (and the worker's ./maplibre-gl-shared.mjs
+// import) as siblings of import.meta.url, which only holds when served from
+// node_modules (dev). In the bundled build those files don't exist and the map
+// silently never loads tiles; ?worker&url makes Vite bundle the worker with
+// its dependency and hand back a servable URL.
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 import type { FeatureCollection, Point } from "geojson";
 import type { ChunkItem } from "../lib/data";
 import { categoryColor, FALLBACK_COLOR } from "../lib/colors";
