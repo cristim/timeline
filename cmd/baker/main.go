@@ -24,6 +24,14 @@ func main() {
 		err = runBake(ctx, os.Args[2:])
 	case "fetch-wikidata":
 		err = runFetchWikidata(ctx)
+	case "fetch-borders":
+		err = runFetchBorders(ctx, os.Args[2:])
+	case "fetch-paleo":
+		err = runFetchPaleo(ctx, os.Args[2:])
+	case "geo-fingerprint":
+		err = runGeoFingerprint()
+	case "geo-verify":
+		err = runGeoVerify(os.Args[2:])
 	case "census":
 		err = runCensus(ctx, os.Args[2:])
 	default:
@@ -44,6 +52,14 @@ func usage() {
                                curated geometry (default data/geo)
   fetch-wikidata               pull the bounded Wikidata event slice into
                                wk-dumps (raw) + wk-warm (normalized)
+  fetch-borders [--out <dir>]  pull + simplify the historical-basemaps world
+                               border slices into data/geo/borders
+  fetch-paleo [--out <dir>]    pull + simplify GPlates reconstructed coastlines
+                               into data/geo/paleo
+  geo-fingerprint              hash of the pinned upstreams; the CI cache key
+                               for the two fetched layers
+  geo-verify [--geo <dir>]     prove both fetched layers tile their range with
+                               no gaps (fails a partial or stale fetch)
   census [--seed <dir>]        per-era/type counts + coverage report (ROAD-2)`)
 }
 

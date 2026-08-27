@@ -5,7 +5,7 @@
 S3_ENV = S3_ENDPOINT=http://localhost:9000 S3_FORCE_PATH_STYLE=true \
          AWS_ACCESS_KEY_ID=wkadmin AWS_SECRET_ACCESS_KEY=wk-dev-minio AWS_REGION=us-east-1
 
-.PHONY: up down bake bake-full bake-docker fetch-wikidata census smoke test vet fmt web-install e2e e2e-static
+.PHONY: up down bake bake-full bake-docker fetch-wikidata fetch-geo verify-geo census smoke test vet fmt web-install e2e e2e-static
 
 up:
 	docker compose up -d minio minio-init gateway web
@@ -21,6 +21,18 @@ bake-full:
 
 fetch-wikidata:
 	$(S3_ENV) go run ./cmd/baker fetch-wikidata
+
+# The two big map layers are derived from pinned upstreams, not committed.
+# Run once after cloning; re-run only when a pin moves. CI caches the result
+# on `baker geo-fingerprint`.
+fetch-geo:
+	go run ./cmd/baker fetch-borders
+	go run ./cmd/baker fetch-paleo
+
+# Fails unless both layers tile their whole range - how a partial or stale
+# fetch is caught before a bake trusts it.
+verify-geo:
+	go run ./cmd/baker geo-verify
 
 census:
 	$(S3_ENV) go run ./cmd/baker census
@@ -45,7 +57,9 @@ e2e:
 	cd web && npx playwright test
 
 # Same suite against the built static artifact (what GitHub Pages serves).
-e2e-static:
+# verify-geo first, so the suite exercises the real layers rather than
+# passing against an atlas the fetch left half-empty.
+e2e-static: verify-geo
 	cd web && VITE_BASE=/timeline/ npm run build
 	go run ./cmd/baker bake --seed data/seed --out web/dist
 	cd web && E2E_STATIC=1 E2E_BASE_URL=http://localhost:4173/timeline/ npx playwright test

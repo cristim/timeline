@@ -15,7 +15,10 @@ func ValidLonLat(lon, lat float64) bool {
 // GeoSet is everything data/geo holds, resolved against the entity table.
 type GeoSet struct {
 	Borders []BorderLayer // ascending by Year, non-overlapping windows
-	Fronts  map[string][]FrontPosition
+	// Paleo holds reconstructed coastlines for deep time, in the same shape
+	// as Borders and covering the span before the political record starts.
+	Paleo  []BorderLayer
+	Fronts map[string][]FrontPosition
 }
 
 // BorderLayer is one time-step of the borders layer, baked to

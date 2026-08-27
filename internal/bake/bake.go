@@ -97,13 +97,24 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 	}
 	layers := []string{}
 	timesteps := map[string][]int{}
-	steps, err := bakeAreaLayer(w, dataset, BordersLayer, geo.Borders)
-	if err != nil {
-		return nil, stats, err
-	}
-	if len(steps) > 0 {
-		layers = append(layers, BordersLayer)
-		timesteps[BordersLayer] = steps
+	// Two area layers of the same shape covering disjoint spans of time:
+	// political borders through recorded history, reconstructed coastlines
+	// before it. The client picks whichever one's window holds the cursor.
+	for _, l := range []struct {
+		name   string
+		slices []model.BorderLayer
+	}{
+		{BordersLayer, geo.Borders},
+		{PaleoLayer, geo.Paleo},
+	} {
+		steps, err := bakeAreaLayer(w, dataset, l.name, l.slices)
+		if err != nil {
+			return nil, stats, err
+		}
+		if len(steps) > 0 {
+			layers = append(layers, l.name)
+			timesteps[l.name] = steps
+		}
 	}
 	if err := w.putJSON(fmt.Sprintf("v/%s/aliases.json", dataset), map[string]string{}); err != nil {
 		return nil, stats, err

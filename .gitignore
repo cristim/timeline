@@ -6,6 +6,13 @@ data/*
 !data/geo/
 !data/goldens.json
 
+# The two fetched map layers are rebuilt from pinned upstreams by
+# `make fetch-geo` and cached in CI, not carried in the repo: together they are
+# ~23 MB of derived data. Their provenance and licence notices ARE committed,
+# which is why this excludes the slices rather than the directories.
+data/geo/borders/*.geojson
+data/geo/paleo/*.geojson
+
 # environment
 .env
 .env.local

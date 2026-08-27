@@ -109,13 +109,67 @@ func reduceRing(ring [][]float64, tolDeg float64, ccw bool) [][]float64 {
 		// in one winding and not the other. Testing the ring geo.go will
 		// actually see is the only way the two checks agree; testing the other
 		// one lets a pinched ring through to fail the bake instead.
-		out = orientRing(out, ccw)
-		if i, _ := selfIntersection(out); i >= 0 {
+		out = unloop(orientRing(out, ccw))
+		if out == nil {
 			continue // finer tolerance, or eventually the original
 		}
 		return out
 	}
 	return nil
+}
+
+// unloop excises self-intersection loops until the ring is clean, or returns
+// nil if it cannot be. Where segment i crosses segment j, the vertices between
+// them fold back over the rest of the ring; cutting at the crossing point
+// splits the ring into that loop and the remainder, and the larger of the two
+// is the shape the source meant.
+//
+// Dropping the whole ring instead is not an option at this scale. The upstream
+// Carolingian Empire outline crosses itself once in 271 vertices, and refusing
+// it erased the empire's entire main body - Aachen, Paris and Milan with it.
+func unloop(ring [][]float64) [][]float64 {
+	// One excision per crossing; the bound stops a pathological ring from
+	// spinning here, and such a ring is better dropped than nursed.
+	for pass := 0; pass < 32; pass++ {
+		i, j := selfIntersection(ring)
+		if i < 0 {
+			return ring
+		}
+		x, ok := intersection(ring[i], ring[i+1], ring[j], ring[j+1])
+		if !ok {
+			return nil
+		}
+		// loop: the span between the crossing segments, closed through x.
+		loop := append(append([][]float64{x}, ring[i+1:j+1]...), x)
+		rest := append(append(append([][]float64{}, ring[:i+1]...), x), ring[j+1:]...)
+		switch {
+		case len(rest) >= 4 && ringArea(rest) >= ringArea(loop):
+			ring = rest
+		case len(loop) >= 4:
+			ring = loop
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// intersection returns the crossing point of segments ab and cd. The caller
+// has already established that they properly cross, so the denominator is
+// non-zero for anything but a floating-point degeneracy.
+func intersection(a, b, c, d []float64) ([]float64, bool) {
+	r0, r1 := b[0]-a[0], b[1]-a[1]
+	s0, s1 := d[0]-c[0], d[1]-c[1]
+	den := r0*s1 - r1*s0
+	if den == 0 {
+		return nil, false
+	}
+	t := ((c[0]-a[0])*s1 - (c[1]-a[1])*s0) / den
+	scale := math.Pow(10, coordDecimals)
+	return []float64{
+		math.Round((a[0]+t*r0)*scale) / scale,
+		math.Round((a[1]+t*r1)*scale) / scale,
+	}, true
 }
 
 // normalizeRing drops the closing repeat, truncates positions to [lon,lat],

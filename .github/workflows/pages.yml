@@ -24,6 +24,29 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The border and paleo layers are derived from pinned upstreams rather
+      # than committed (~23 MB). The cache key is a hash of those pins, so an
+      # unchanged pin never touches the network and a bumped one refetches
+      # without anyone editing a key by hand.
+      - name: Geo fingerprint
+        id: geofp
+        run: echo "key=$(go run ./cmd/baker geo-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Restore fetched map layers
+        id: geocache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/geo/borders
+            data/geo/paleo
+          key: geo-${{ steps.geofp.outputs.key }}
+      - name: Fetch map layers
+        if: steps.geocache.outputs.cache-hit != 'true'
+        run: make fetch-geo
+      # A half-fetched atlas must never deploy. The bake rejects a layer whose
+      # coverage windows do not tile, so this proves the layers are whole
+      # before anything downstream trusts them.
+      - name: Verify map layer coverage
+        run: make verify-geo
       - name: Test
         run: go test ./...
       - name: Build web app

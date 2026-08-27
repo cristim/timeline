@@ -13,7 +13,14 @@ import (
 // plain GeoJSON. The key scheme, the manifest timesteps and the client's
 // nearest-step snap are the parts M4 has to keep, and they are the parts
 // built here.
-const BordersLayer = "borders"
+const (
+	BordersLayer = "borders"
+	// PaleoLayer carries reconstructed coastlines for the deep past, where the
+	// basemap's countries are meaningless. Same artifact shape as the borders
+	// layer, same nearest-step snap; only the time-steps differ, being years in
+	// the hundreds of millions rather than the thousands.
+	PaleoLayer = "paleocoast"
+)
 
 // layerDoc is the served body: a GeoJSON FeatureCollection carrying the
 // era's own metadata. MapLibre ignores the extra top-level member; the client

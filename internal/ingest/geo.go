@@ -74,8 +74,21 @@ func LoadGeo(dir string, entities []*model.Entity) (*model.GeoSet, error) {
 		bySeedID[e.SeedID] = e
 	}
 	set := &model.GeoSet{Fronts: map[string][]model.FrontPosition{}}
-	if err := loadBorders(filepath.Join(dir, "borders"), bySeedID, set); err != nil {
+	var err error
+	if set.Borders, err = loadAreaSlices(filepath.Join(dir, "borders"), bySeedID); err != nil {
 		return nil, err
+	}
+	if set.Paleo, err = loadAreaSlices(filepath.Join(dir, "paleo"), bySeedID); err != nil {
+		return nil, err
+	}
+	// The two layers answer for disjoint spans, and the client picks between
+	// them by coverage window alone. An overlap would make that choice
+	// arbitrary, so it is fatal here rather than a rendering surprise.
+	if len(set.Borders) > 0 && len(set.Paleo) > 0 {
+		if last := set.Paleo[len(set.Paleo)-1]; last.TTo >= set.Borders[0].TFrom {
+			return nil, fmt.Errorf("paleo coverage runs to %d but the political layer starts at %d; the two layers must not overlap",
+				last.TTo, set.Borders[0].TFrom)
+		}
 	}
 	if err := loadFronts(filepath.Join(dir, "fronts"), bySeedID, set); err != nil {
 		return nil, err
@@ -83,36 +96,40 @@ func LoadGeo(dir string, entities []*model.Entity) (*model.GeoSet, error) {
 	return set, nil
 }
 
-func loadBorders(dir string, bySeedID map[string]*model.Entity, set *model.GeoSet) error {
+// loadAreaSlices reads one directory of <year>.geojson world-state snapshots,
+// ascending by year with non-overlapping coverage windows. Both area layers
+// use this format, so both get the same validation.
+func loadAreaSlices(dir string, bySeedID map[string]*model.Entity) ([]model.BorderLayer, error) {
+	var slices []model.BorderLayer
 	paths, err := geojsonPaths(dir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, path := range paths {
 		name := filepath.Base(path)
 		year, err := strconv.Atoi(strings.TrimSuffix(name, ".geojson"))
 		if err != nil {
-			return fmt.Errorf("border file %s: name must be <year>.geojson", name)
+			return nil, fmt.Errorf("slice file %s: name must be <year>.geojson", name)
 		}
 		var f borderFile
 		if err := readJSON(path, &f); err != nil {
-			return err
+			return nil, err
 		}
 		if f.Type != "FeatureCollection" {
-			return fmt.Errorf("border file %s: type %q, want FeatureCollection", name, f.Type)
+			return nil, fmt.Errorf("slice file %s: type %q, want FeatureCollection", name, f.Type)
 		}
 		p := f.Properties
 		switch {
 		case p.Year == nil || p.TFrom == nil || p.TTo == nil:
-			return fmt.Errorf("border file %s: properties need year, t_from and t_to", name)
+			return nil, fmt.Errorf("slice file %s: properties need year, t_from and t_to", name)
 		case *p.Year != year:
-			return fmt.Errorf("border file %s: properties.year is %d", name, *p.Year)
+			return nil, fmt.Errorf("slice file %s: properties.year is %d", name, *p.Year)
 		case *p.TFrom > year || year > *p.TTo:
-			return fmt.Errorf("border file %s: year %d outside its own window %d..%d", name, year, *p.TFrom, *p.TTo)
+			return nil, fmt.Errorf("slice file %s: year %d outside its own window %d..%d", name, year, *p.TFrom, *p.TTo)
 		case p.Label == "" || p.Source == "":
-			return fmt.Errorf("border file %s: properties need a label and a source", name)
+			return nil, fmt.Errorf("slice file %s: properties need a label and a source", name)
 		case len(f.Features) == 0:
-			return fmt.Errorf("border file %s: no features", name)
+			return nil, fmt.Errorf("slice file %s: no features", name)
 		}
 
 		layer := model.BorderLayer{
@@ -121,13 +138,13 @@ func loadBorders(dir string, bySeedID map[string]*model.Entity, set *model.GeoSe
 		for i, feat := range f.Features {
 			where := fmt.Sprintf("border file %s feature %d", name, i)
 			if err := checkFeature(where, feat, bySeedID); err != nil {
-				return err
+				return nil, err
 			}
 			if feat.Properties.Name == "" {
-				return fmt.Errorf("%s: properties.name is required", where)
+				return nil, fmt.Errorf("%s: properties.name is required", where)
 			}
 			if err := checkPolygons(where, feat.Geometry); err != nil {
-				return err
+				return nil, err
 			}
 			bf := model.BorderFeature{
 				Name:           feat.Properties.Name,
@@ -140,19 +157,28 @@ func loadBorders(dir string, bySeedID map[string]*model.Entity, set *model.GeoSe
 			}
 			layer.Features = append(layer.Features, bf)
 		}
-		set.Borders = append(set.Borders, layer)
+		slices = append(slices, layer)
 	}
 
-	sort.Slice(set.Borders, func(i, j int) bool { return set.Borders[i].Year < set.Borders[j].Year })
-	// Comparing adjacent pairs is enough: every file already satisfies
-	// TFrom <= Year <= TTo, which makes disjointness transitive once sorted.
-	for i := 1; i < len(set.Borders); i++ {
-		if prev, cur := set.Borders[i-1], set.Borders[i]; cur.TFrom <= prev.TTo {
-			return fmt.Errorf("border windows overlap: %d covers %d..%d, %d covers %d..%d",
-				prev.Year, prev.TFrom, prev.TTo, cur.Year, cur.TFrom, cur.TTo)
+	sort.Slice(slices, func(i, j int) bool { return slices[i].Year < slices[j].Year })
+	// Windows must TILE, not merely avoid each other: every year between the
+	// first and last slice belongs to exactly one of them. Scrubbing the cursor
+	// has to walk the whole layer without the map blanking between slices, and
+	// a gap here is also how a half-finished fetch would show up - the ingest
+	// is the last place that can tell a missing slice from a real silence.
+	for i := 1; i < len(slices); i++ {
+		prev, cur := slices[i-1], slices[i]
+		if cur.TFrom == prev.TTo+1 {
+			continue
 		}
+		verb := "leave a gap"
+		if cur.TFrom <= prev.TTo {
+			verb = "overlap"
+		}
+		return nil, fmt.Errorf("%s: coverage windows %s: %d covers %d..%d, %d covers %d..%d (each slice must run to the year before the next)",
+			dir, verb, prev.Year, prev.TFrom, prev.TTo, cur.Year, cur.TFrom, cur.TTo)
 	}
-	return nil
+	return slices, nil
 }
 
 func loadFronts(dir string, bySeedID map[string]*model.Entity, set *model.GeoSet) error {
@@ -383,10 +409,10 @@ func geojsonPaths(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Glob returns nothing for a missing directory. A mis-mounted volume or a
-	// wrong --geo must not bake as an empty layer.
+	// Glob returns nothing for a missing directory. A mis-mounted volume, a
+	// wrong --geo or an unfetched layer must not bake as an empty layer.
 	if len(paths) == 0 {
-		return nil, fmt.Errorf("geo dir %s holds no .geojson files", dir)
+		return nil, fmt.Errorf("geo dir %s holds no .geojson files; the fetched layers are not in the repo - run `make fetch-geo`", dir)
 	}
 	sort.Strings(paths) // deterministic ingest order (SRC-3)
 	return paths, nil
