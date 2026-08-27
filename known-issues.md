@@ -23,30 +23,46 @@
   the time cursor; FE-9 also asks for arrow-to-pan and +/- to zoom, which have
   no binding. Whatever lands for those has to share the arrow keys with the
   cursor, probably by making pan the modified chord.
-- **The borders layer is GeoJSON, not PMTiles.** `layers/borders/<year>.json`
+- **The area layers are GeoJSON, not PMTiles.** `layers/<layer>/<year>.json`
   matches the API-4 key shape and the manifest carries the time-steps
   (API-0), but the bodies are plain FeatureCollections rather than the tile
-  archives ARCH-3 specifies. M4 replaces the body format and the ingest
-  source; the key scheme, the coverage-window index and the client's
-  nearest-step snap and crossfade all carry over unchanged.
-- **Curated era coverage is five windows wide, so most dates show nothing.**
-  98-180, 1260-1300, 1900-1918, 1939-1945 and 1946-1991 have extents; every
-  other date honestly reports "no border data". Modern borders are absent on
-  purpose: hand-tracing them would be neither feasible nor honest, and the
-  real answer is the OpenHistoricalMap ingest in M4.
-- **Era extents are coarse blocks, and enclose sea.** Each empire is a handful
-  of ~20-vertex outlines, so frontiers are off by up to a couple of hundred
-  kilometres and small enclaves inside a block are not distinguished. Blocks
-  are notched where a neighbour belonged to somebody else (Liberia, the Gold
-  Coast, Togo and Cameroon out of French Africa; East Prussia out of Russia;
-  neutral Sweden as a hole in Axis Europe), so no territory is claimed for the
-  wrong power, but smaller neutrals inside an envelope are not cut out and
-  neither is the sea. **Do not read areas off these shapes**: the Roman
-  outline encloses the whole Mediterranean and is about 50% larger than the
-  land area the seed itself cites for the same entity.
-  `internal/ingest/geo_plausibility_test.go` pins each outline against places
-  whose status on the stated date is not in dispute; add a case there rather
-  than trusting an eyeball.
+  archives ARCH-3 specifies. M4 replaces the body format; the key scheme, the
+  coverage-window index, the covering-slice lookup and the crossfade all carry
+  over unchanged. At 89 slices the bodies are 200-600 KB each, which the
+  client offsets by fetching lazily and evicting past 24 cached slices.
+- **No future plate motion.** The timeline runs into the far future but the
+  paleo layer stops at the present. This is an upstream limit, not an
+  oversight: the GPlates Web Service rejects every negative (future) time on
+  all 15 of its models with `small_time: 0`, verified live; Scotese's Pangea
+  Proxima future reconstructions exist only as atlas figures, not as a
+  fetchable rotation dataset; and the published future-supercontinent
+  scenarios (Davies & Duarte) are bespoke desktop-GPlates constructions with
+  no citable, downloadable geometry. Extrapolating plate velocities ourselves
+  would be fabrication, so the far future simply reports no map data. Revisit
+  if EarthByte ever publishes a future model as a citable artifact.
+- **Upstream border slices carry degenerate polygons, and we drop them.**
+  41 distinct polity names across the 53 slices are lost because their
+  upstream geometry is a 4-vertex, zero-area rectangle: Switzerland in 1994,
+  2000 and 2010, Jordan and Kuwait in 1938, the Bahmani Kingdom in 1500,
+  Algiers and Tunis in 1650. Everything else lost is either an obscure
+  archaeological culture or one of ~30 modern US/Canadian reservations
+  anachronistically present in the 1492 slice, which fall under that slice's
+  coarser area threshold. 192 of 193 names survive in 2010. Fixing this means
+  repairing the upstream file, not weakening the validator.
+- **Coastal and strait points fall outside their own polity.** The slices are
+  coarse enough that Alexandria, Constantinople and Chicago-on-its-lake sit
+  just offshore of the polygon that should contain them - in the upstream data
+  as much as in our simplified copy. Point-in-polygon checks against this
+  layer must use inland points;
+  `internal/ingest/geo_plausibility_test.go` says so and does.
+- **At 540 Ma the default camera looks at open ocean.** The land centroid is
+  at latitude -52 (Gondwana over the south pole) while the map opens centred on
+  35N, so the oldest slices look empty until the globe is rotated. The data is
+  right and the layer is drawn; nothing points the camera at the land.
+- **Fetched border shapes are not clickable.** The hand-traced eras resolved a
+  seed id per feature, so clicking an empire opened its entity. Nothing
+  reconciles an upstream polity name against the seed, so the fetched layers
+  set no `entity` and the map-click-to-inspector path is dead for them.
 - **Front-line interpolation needs matching vertex counts, and vertex *n* has
   to mean the same thing at every date.** The baker enforces the count; it
   cannot enforce the meaning, and getting it wrong is not a small error. An

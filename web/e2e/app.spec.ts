@@ -120,8 +120,8 @@ test("timeline resizes via the drag handle and collapses below the minimum", asy
   expect((await shell.boundingBox())!.height).toBeGreaterThanOrEqual(140);
 });
 
-// A 1900-1995 view with the cursor pinned to 1942, inside the curated Axis
-// era window. Exponents are written without a "+" because a literal plus in a
+// A 1900-1995 view with the cursor pinned to 1942, inside the 1938 slice's
+// window. Exponents are written without a "+" because a literal plus in a
 // query string decodes as a space.
 const CENTURY_VIEW = "?t0=-2.209e9&t1=7.889e8&tc=-8.558e8";
 const V_T0 = -2.209e9;
@@ -155,8 +155,9 @@ test("the time cursor restores from a URL, drags, nudges, and unpins", async ({ 
   // Drag the handle from 1942 towards 1985.
   await dragCursorTo(page, -8.558e8, 4.7335e8);
   await expect(page.locator(".cur-label")).toContainText("198");
-  await page.waitForTimeout(400); // the URL write is debounced
-  expect(page.url()).toContain("tc=");
+  // The URL write is debounced, and settles behind whatever layer the new
+  // cursor position pulls in - so poll for it rather than assuming an SLA.
+  await expect.poll(() => page.url()).toContain("tc=");
 
   // Arrow keys nudge it while the timeline has focus.
   const before = await page.locator(".cur-label").textContent();
@@ -168,8 +169,7 @@ test("the time cursor restores from a URL, drags, nudges, and unpins", async ({ 
   // parameter from the URL.
   await page.locator(".cur-unpin").click();
   await expect(page.locator(".cursor-readout")).toHaveClass(/unpinned/);
-  await page.waitForTimeout(400);
-  expect(page.url()).not.toContain("tc=");
+  await expect.poll(() => page.url()).not.toContain("tc=");
   expect(w.errors, "console errors").toEqual([]);
   expect(w.notFound, "same-origin 404s").toEqual([]);
 });
@@ -180,26 +180,171 @@ test("dragging the cursor swaps the historical border overlay", async ({ page })
   const w = watch(page);
   await page.goto(`./${CENTURY_VIEW}`);
   await booted(page);
-  await expect(page.locator(".era-chip")).toContainText("Axis");
+  await expect(page.locator(".era-chip")).toContainText("1938");
   await expect(page.locator(".era-chip")).not.toHaveClass(/empty/);
   // Let the basemap settle so the comparison below cannot be decided by a
   // tile that arrived late.
   await page.waitForTimeout(4000);
   const axis = await page.locator(".map-container").screenshot();
 
-  // 1985 falls in the Soviet Union era window instead.
+  // 1985 falls in the 1960 slice's window instead.
   await dragCursorTo(page, -8.558e8, 4.7335e8);
-  await expect(page.locator(".era-chip")).toContainText("Soviet Union");
+  await expect(page.locator(".era-chip")).toContainText("1960");
   await page.waitForTimeout(1500); // crossfade
   const soviet = await page.locator(".map-container").screenshot();
   expect(Buffer.compare(axis, soviet), "the map must visibly change").not.toBe(0);
-
-  // 1751 has no curated era, and the map says so instead of staying modern.
-  await dragCursorTo(page, 4.7335e8, -6.9e9);
-  await expect(page.locator(".era-chip")).toContainText("no border data");
-  await expect(page.locator(".era-chip")).toHaveClass(/empty/);
   expect(w.errors).toEqual([]);
   expect(w.notFound).toEqual([]);
+});
+
+const SECONDS_PER_YEAR = 31_556_952;
+/** The cursor time for a calendar year, matching web/src/lib/keyscheme.ts. */
+function tcForYear(year: number) {
+  return (year - 1970) * SECONDS_PER_YEAR;
+}
+
+/** Loads the app with the cursor pinned to `year`, view framed around it. */
+async function gotoYear(page: Page, year: number, span: number) {
+  const tc = tcForYear(year);
+  await page.goto(`./?t0=${tc - span}&t1=${tc + span}&tc=${tc}`);
+  await booted(page);
+}
+
+/**
+ * Records which layer artifacts the client actually fetched. The dev-only
+ * window hooks are stripped from the built bundle, so what the map is showing
+ * is asserted through the two things that survive a production build: the URLs
+ * requested, and the chip.
+ */
+function watchLayers(page: Page) {
+  const fetched: string[] = [];
+  page.on("response", (res) => {
+    const m = /\/layers\/([a-z]+)\/(-?\d+)\.json$/.exec(new URL(res.url()).pathname);
+    if (m && res.ok()) fetched.push(`${m[1]}/${m[2]}`);
+  });
+  return fetched;
+}
+
+// The whole point of replacing five hand-traced eras with a tiling dataset:
+// there is no longer a date in recorded history that shows nothing.
+test("every date in recorded history shows a map", async ({ page }) => {
+  const w = watch(page);
+  for (const year of [-5000, -500, 800, 1200, 1500, 1751, 1900, 1960, 2005]) {
+    const layers = watchLayers(page);
+    await gotoYear(page, year, 50 * SECONDS_PER_YEAR);
+    const chip = page.locator(".era-chip");
+    await expect(chip, `chip at ${year}`).not.toHaveClass(/empty/);
+    await expect(chip, `chip at ${year}`).toContainText("world borders");
+    await expect(chip, `chip at ${year}`).not.toHaveClass(/paleo/);
+    // A political slice was actually downloaded, and deep time was not.
+    await expect
+      .poll(() => layers.filter((l) => l.startsWith("borders/")).length, {
+        message: `borders fetched at ${year}`,
+      })
+      .toBeGreaterThan(0);
+    expect(layers.filter((l) => l.startsWith("paleocoast/")), `paleo at ${year}`).toEqual([]);
+  }
+  expect(w.errors, "console errors").toEqual([]);
+  expect(w.notFound, "same-origin 404s").toEqual([]);
+});
+
+// 1751 used to be the canonical "no curated era" date. It is covered now, so
+// the empty state has to be tested somewhere it is still honest: past the end
+// of the dataset entirely.
+test("dates outside every layer say so instead of staying modern", async ({ page }) => {
+  const layers = watchLayers(page);
+  await gotoYear(page, 9000, 50 * SECONDS_PER_YEAR);
+  await expect(page.locator(".era-chip")).toContainText("no map data");
+  await expect(page.locator(".era-chip")).toHaveClass(/empty/);
+  // The index answers "nothing covers this" without downloading a slice body.
+  expect(layers).toEqual([]);
+});
+
+test("deep time renders reconstructed coastlines and hides the modern world", async ({ page }) => {
+  const w = watch(page);
+  const layers = watchLayers(page);
+  await gotoYear(page, -250_000_000, 20_000_000 * SECONDS_PER_YEAR);
+
+  const chip = page.locator(".era-chip");
+  await expect(chip).toContainText("Ma");
+  await expect(chip).toContainText("GPlates");
+  await expect(chip).toHaveClass(/paleo/);
+
+  await expect
+    .poll(() => layers.filter((l) => l.startsWith("paleocoast/")).length)
+    .toBeGreaterThan(0);
+  // Political borders are meaningless here and must not be drawn.
+  expect(layers.filter((l) => l.startsWith("borders/"))).toEqual([]);
+
+  // The opaque ocean is what actually hides the modern basemap. Sample the
+  // rendered canvas: with the globe filling the view, the centre pixel must be
+  // paleo ocean or reconstructed land, never the basemap's pale pastel.
+  await page.waitForTimeout(2500); // crossfade + first paint
+  const centre = await mapCentrePixel(page);
+  expect(centre.r, `centre pixel ${JSON.stringify(centre)}`).toBeLessThan(190);
+  expect(centre.g, `centre pixel ${JSON.stringify(centre)}`).toBeLessThan(190);
+  expect(w.errors, "console errors").toEqual([]);
+  expect(w.notFound, "same-origin 404s").toEqual([]);
+});
+
+/** The RGB of the map's centre pixel, read off a screenshot. */
+async function mapCentrePixel(page: Page) {
+  const shot = await page.locator(".map-container").screenshot();
+  const png = await page.evaluate(
+    ([b64]) =>
+      new Promise<[number, number, number]>((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const ctx = c.getContext("2d")!;
+          ctx.drawImage(img, 0, 0);
+          const d = ctx.getImageData(Math.round(img.width / 2), Math.round(img.height / 2), 1, 1).data;
+          resolve([d[0], d[1], d[2]]);
+        };
+        img.src = `data:image/png;base64,${b64}`;
+      }),
+    [shot.toString("base64")],
+  );
+  return { r: png[0], g: png[1], b: png[2] };
+}
+
+// The one moment the map changes kind. A gap here blanks the world; an
+// overlap would draw both at once.
+test("deep time hands over to recorded history at the boundary", async ({ page }) => {
+  // 123001 BC is the last year of the paleo layer's youngest slice.
+  const before = watchLayers(page);
+  await gotoYear(page, -123_001, 1000 * SECONDS_PER_YEAR);
+  await expect(page.locator(".era-chip")).toHaveClass(/paleo/);
+  await expect.poll(() => before.filter((l) => l.startsWith("paleocoast/")).length).toBeGreaterThan(0);
+  expect(before.filter((l) => l.startsWith("borders/"))).toEqual([]);
+
+  // 123000 BC is the first year of the political layer's oldest slice.
+  const after = watchLayers(page);
+  await gotoYear(page, -123_000, 1000 * SECONDS_PER_YEAR);
+  const chip = page.locator(".era-chip");
+  await expect(chip).not.toHaveClass(/paleo/);
+  await expect(chip).not.toHaveClass(/empty/);
+  await expect(chip).toContainText("123000 BC");
+  await expect.poll(() => after.filter((l) => l.startsWith("borders/")).length).toBeGreaterThan(0);
+});
+
+// Scrubbing must walk the slices, not jump between a favoured few: each
+// distinct slice the cursor passes through has to actually be shown.
+test("scrubbing backwards visits each slice in turn", async ({ page }) => {
+  const seen: string[] = [];
+  for (const year of [2005, 1975, 1950, 1935, 1925, 1918, 1910, 1890]) {
+    await gotoYear(page, year, 50 * SECONDS_PER_YEAR);
+    const chip = page.locator(".era-chip");
+    // The chip starts empty and fills once the slice settles and loads; read
+    // it only after it has, or this races the fetch rather than testing it.
+    await expect(chip, `chip at ${year}`).not.toHaveClass(/empty/);
+    const label = await chip.textContent();
+    seen.push(label!.replace(/^world borders · /, "").replace(/ · .*$/, ""));
+  }
+  // Strictly older at every step: none repeated, none skipped past.
+  expect(seen).toEqual(["2000", "1960", "1945", "1930", "1920", "1914", "1900", "1880"]);
 });
 
 test("a war with curated fronts animates against the cursor", async ({ page }) => {

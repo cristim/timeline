@@ -1,19 +1,41 @@
-# Curated geometry
+# Map geometry
 
-Hand-curated GeoJSON the baker turns into serving artifacts. Unlike
-`data/seed/`, this directory is **not** covered by `seed_version`, so editing
-it does not force a golden-view review (`data/goldens.json` is pinned to the
-seed). It has its own validation instead: `internal/ingest/geo.go` rejects the
-bake outright on a malformed file, an unknown entity reference, overlapping
-era windows, or a front sequence whose positions do not share a vertex count.
+GeoJSON the baker turns into serving artifacts. Unlike `data/seed/`, this
+directory is **not** covered by `seed_version`, so editing it does not force a
+golden-view review (`data/goldens.json` is pinned to the seed). It has its own
+validation instead: `internal/ingest/geo.go` rejects the bake outright on a
+malformed file, an unknown entity reference, coverage windows that do not tile,
+or a front sequence whose positions do not share a vertex count.
 
-## `borders/<year>.geojson` — world-state snapshots
+Two of the three layers are **fetched, not committed**:
+
+| directory | origin | in git? |
+|---|---|---|
+| `borders/` | `baker fetch-borders` from historical-basemaps (GPL-3.0) | no, ~16 MB |
+| `paleo/` | `baker fetch-paleo` from the GPlates Web Service (CC-BY 4.0) | no, ~6.6 MB |
+| `fronts/` | hand-curated | yes |
+
+Run `make fetch-geo` once after cloning; `make verify-geo` proves both fetched
+layers are whole. CI caches them on `baker geo-fingerprint`, a hash of the
+pinned upstream commit, plate model and slice list, so an unchanged pin never
+touches the network. Each fetched directory keeps a committed `NOTICE.md`
+recording its provenance, licence and the modifications the fetch applies.
+
+## `borders/<year>.geojson` and `paleo/<year>.geojson` — world-state snapshots
+
+Both use the format below, and the baker treats them as two instances of one
+layer kind. They cover disjoint spans that meet exactly at 123000 BC: political
+borders from there to AD 2035, reconstructed coastlines from 540 Ma back to it.
+A paleo slice's year is its reconstruction time in years, so 250 Ma is
+`-250000000.geojson`; nothing about bucket or window maths changes for it.
 
 One GeoJSON `FeatureCollection` per time-step, baked to
-`/v/<dataset>/layers/borders/<year>.json` (the API-4 key shape) and listed in
-the manifest under `layers` / `timesteps` (API-0). The client snaps the time
-cursor to the nearest step (ARCH-3) and renders it as a fill + outline that
-crossfades when the cursor crosses an era boundary (FE-3, FE-4).
+`/v/<dataset>/layers/<layer>/<year>.json` (the API-4 key shape) and listed in
+the manifest under `layers` / `timesteps` (API-0). The client renders the
+covering slice as a fill + outline that crossfades when the cursor crosses a
+slice boundary (FE-3, FE-4). Deep time additionally paints an opaque ocean
+under its landmasses, because there the modern basemap is not background, it
+is wrong.
 
 Top-level `properties`:
 
@@ -24,14 +46,22 @@ Top-level `properties`:
 | `label` | what the map chip shows |
 | `source` | where the outlines were traced from |
 
-`t_from`/`t_to` exist so the client can say "no border data for 1750" instead
-of silently drawing the nearest era at a date it never covered. Windows may
-not overlap between files.
+`t_from`/`t_to` decide which slice the client draws. Windows must **tile**:
+each slice runs to the year before the next, so every moment between the first
+and last slice belongs to exactly one of them and none is unreachable. A gap
+would blank the map mid-scrub, and is also how a half-finished fetch shows up
+- which is why the loader treats one as fatal rather than as silence.
+
+The client picks the slice whose window *covers* the cursor, not the nearest
+one. With slices this unevenly spaced - 113,000 years between the first two,
+six between two of the last - the nearest slice year is routinely one whose
+window ended long before.
 
 Per-feature `properties`: `name`, `representation` (the DM-7 vocabulary), and
 an optional `entity` naming a **seed id** — the baker resolves it to the
 entity's slug so clicking the shape opens that entity. An unknown seed id
-fails the bake.
+fails the bake. The fetched layers set no `entity`: nothing reconciles an
+upstream polity name against the seed, so their shapes are not clickable.
 
 ## `fronts/<name>.geojson` — dated front positions
 
@@ -50,13 +80,14 @@ they vanished dragged the front line through neutral Sweden.
 
 ## Accuracy
 
-Everything here is a coarse approximation traced by eye from published
-historical atlases, at roughly 10-50 vertices per shape. It is good enough to
-show *that* territory changed and roughly where; it is not survey data, it
-carries no claim about disputed or fuzzy frontiers, and it is marked
-`representation: "estimated"` (DM-7) so the client draws it dashed rather than
-as a hard border. Replacing it with a real OpenHistoricalMap extract baked to
-PMTiles is milestone M4 (DEV-6).
+Everything here is approximate and marked `representation: "estimated"`
+(DM-7). The fetched layers are simplified copies of upstream approximations
+(see each `NOTICE.md` for what the simplification does and what it costs); the
+front lines are traced by eye from published atlases at 10-50 vertices. All of
+it is good enough to show *that* territory changed and roughly where. None of
+it is survey data, and none of it carries a claim about disputed frontiers.
+Baking the area layers to PMTiles rather than GeoJSON is still milestone M4
+(DEV-6); the key scheme and coverage index already match what that needs.
 
 There is a line between a simplification and an error, and it is worth naming.
 A frontier drawn 200km off is a simplification. An empire that excludes its

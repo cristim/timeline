@@ -65,19 +65,32 @@ const PALEO_OCEAN = "#16384f";
 const OCEAN_SOURCE = "wk-paleo-ocean";
 
 /**
- * A lon/lat rectangle covering the globe, densified so that globe projection
- * bends its edges instead of chording them. Used as the deep-time ocean: a
+ * The globe, as four 90-degree longitude bands. Used as the deep-time ocean: a
  * `background` layer would paint the space around the sphere too.
+ *
+ * Four bands rather than one -180..180 rectangle because a polygon spanning
+ * the entire longitude range is ambiguous - it describes both the sphere and
+ * its complement - and globe projection resolved it by leaving a wedge near
+ * the antimeridian unpainted, through which the modern basemap showed. Each
+ * band is also densified, so projection bends its edges instead of chording
+ * them across the poles.
  */
 function worldPolygon(): FeatureCollection {
-  const ring: [number, number][] = [];
-  for (let lon = -180; lon <= 180; lon += 5) ring.push([lon, -90]);
-  for (let lat = -90; lat <= 90; lat += 5) ring.push([180, lat]);
-  for (let lon = 180; lon >= -180; lon -= 5) ring.push([lon, 90]);
-  for (let lat = 90; lat >= -90; lat -= 5) ring.push([-180, lat]);
+  const band = (west: number, east: number): [number, number][] => {
+    const ring: [number, number][] = [];
+    for (let lon = west; lon <= east; lon += 5) ring.push([lon, -90]);
+    for (let lat = -90; lat <= 90; lat += 5) ring.push([east, lat]);
+    for (let lon = east; lon >= west; lon -= 5) ring.push([lon, 90]);
+    for (let lat = 90; lat >= -90; lat -= 5) ring.push([west, lat]);
+    return ring;
+  };
   return {
     type: "FeatureCollection",
-    features: [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } }],
+    features: [-180, -90, 0, 90].map((west) => ({
+      type: "Feature",
+      properties: {},
+      geometry: { type: "Polygon", coordinates: [band(west, west + 90)] },
+    })),
   };
 }
 

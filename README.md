@@ -19,8 +19,9 @@ uncertainty ranges that coexist rather than overwrite each other, so
 Prerequisites: Docker, Go 1.26+, Node 22+.
 
 ```sh
-make up      # MinIO (S3 stand-in) + Caddy gateway (CDN stand-in) + web dev server
-make bake    # bake the seed dataset (142 curated entities) and publish it
+make up        # MinIO (S3 stand-in) + Caddy gateway (CDN stand-in) + web dev server
+make fetch-geo # pull the border + paleo map layers from their pinned upstreams
+make bake      # bake the seed dataset (142 curated entities) and publish it
 open http://localhost:8080
 ```
 
@@ -30,6 +31,8 @@ so local behavior is production behavior. Useful targets:
 ```sh
 make test            # Go unit + data tests (golden views gate the bake)
 make smoke           # end-to-end: bake, headers, serving, web app
+make fetch-geo       # pull + simplify the border and paleo-coastline layers
+make verify-geo      # prove both fetched layers tile their range with no gaps
 make fetch-wikidata  # pull ~10k battles/wars/sieges from Wikidata (CC0)
 make bake-full       # bake seed + the fetched Wikidata events
 make census          # per-era coverage report over the merged dataset
@@ -65,6 +68,24 @@ sources. Bulk events come from [Wikidata](https://www.wikidata.org/) (CC0);
 raw fetch responses are archived for provenance and curated seed entries win
 over bulk imports on conflict. The map basemap is © OpenStreetMap
 contributors via MapLibre demotiles.
+
+The two time-sliced map layers are fetched from pinned upstreams by
+`make fetch-geo` rather than committed, and cached in CI:
+
+| layer | source | licence |
+|---|---|---|
+| Political borders, 123000 BC – AD 2010 | [aourednik/historical-basemaps](https://github.com/aourednik/historical-basemaps) at `62d8f1a` | **GPL-3.0** |
+| Reconstructed coastlines, 540 Ma – 1 Ma | [GPlates Web Service](https://gws.gplates.org), MERDITH2021 plate model | CC-BY 4.0 |
+
+**The border data is GPL-3.0**, and the simplified copies this project builds
+are a modified version of it, so they carry the same terms — including for
+anyone redistributing a built site. `data/geo/borders/NOTICE.md` records the
+pin and every modification; `data/geo/borders/LICENSE` is the licence itself.
+
+The plate model is CC-BY 4.0 and asks to be cited: Merdith et al. (2021),
+*Extending full-plate tectonic models into deep time*, Earth-Science Reviews
+214, [doi:10.1016/j.earscirev.2020.103477](https://doi.org/10.1016/j.earscirev.2020.103477).
+Both sources are named in the map's attribution control.
 
 ## Where things live
 

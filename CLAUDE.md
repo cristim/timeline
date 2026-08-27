@@ -31,12 +31,22 @@ found-but-deferred items - check it before starting, prune what you resolve.
   regenerating that fixture and keeping both sides green.
 - Seed edits: run `./scripts/seed-manifest.sh`, then re-bake; golden views
   (`data/goldens.json`) are pinned to the seed version and will demand review.
-- Curated geometry lives in `data/geo/` (see its README), deliberately outside
+- Map geometry lives in `data/geo/` (see its README), deliberately outside
   `data/seed/` and so outside `seed_version` - editing it does not force a
   golden review. It has its own fail-loud validation instead: entity
-  references resolve against the seed, era windows may not overlap, rings must
-  be closed and wound per RFC 7946, and front positions must share a vertex
-  count. Re-bake after editing.
+  references resolve against the seed, coverage windows must TILE (a gap is
+  fatal, and is how a partial fetch is caught), rings must be closed and wound
+  per RFC 7946, and front positions must share a vertex count. Re-bake after
+  editing.
+- `data/geo/borders/` and `data/geo/paleo/` are **fetched, not committed**:
+  run `make fetch-geo` once after cloning or the bake fails loudly. CI caches
+  them on `baker geo-fingerprint`. The border data is GPL-3.0 - see
+  `data/geo/borders/NOTICE.md` before moving or relicensing it.
+- The client draws the slice whose coverage window CONTAINS the cursor, not
+  the nearest slice. Slice spacing is uneven enough that those differ across
+  most of prehistory.
 - Dev-only browser hooks for e2e: `window.__wkmap`, `window.__wkhits`,
-  `window.__wkera`, `window.__wkfront`
-  (stripped from prod builds).
+  `window.__wkera`, `window.__wkpaleo`, `window.__wkfront` (stripped from prod
+  builds - the suite runs against the static artifact too, so a test that
+  needs one of these will pass locally and fail in CI; assert on the DOM or on
+  the requests instead).
