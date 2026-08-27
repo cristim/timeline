@@ -12,6 +12,22 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # The ingest tests validate the fetched atlas, so ci needs the same
+      # fetch-or-cache dance as the pages build.
+      - name: Geo fingerprint
+        id: geofp
+        run: echo "key=$(go run ./cmd/baker geo-fingerprint)" >> "$GITHUB_OUTPUT"
+      - name: Restore fetched map layers
+        id: geocache
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/geo/borders
+            data/geo/paleo
+          key: geo-${{ steps.geofp.outputs.key }}
+      - name: Fetch map layers
+        if: steps.geocache.outputs.cache-hit != 'true'
+        run: make fetch-geo
       - run: go vet ./...
       - run: go test ./...
 
