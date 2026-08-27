@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  coversCursor,
   laneItems,
   mapItems,
+  mapVisible,
   nearCursor,
   pointLike,
   startsOrEndsWithin,
-  visibleAt,
   type Visibility,
 } from "./visible";
 import type { ChunkItem } from "./data";
@@ -91,25 +92,65 @@ describe("nearCursor", () => {
   });
 });
 
-describe("visibleAt", () => {
+describe("coversCursor", () => {
+  it("is true throughout an item's own lifetime", () => {
+    expect(coversCursor(item("city", -1000, 5000), view())).toBe(true);
+  });
+  it("includes the endpoints", () => {
+    expect(coversCursor(item("a", 500, 900), view())).toBe(true);
+    expect(coversCursor(item("b", 100, 500), view())).toBe(true);
+  });
+  it("is false before founding and after the end", () => {
+    expect(coversCursor(item("later", 600, 900), view())).toBe(false);
+    expect(coversCursor(item("earlier", 100, 400), view())).toBe(false);
+  });
+});
+
+describe("mapVisible", () => {
   it("hides an off-cursor instant that is nonetheless in view", () => {
-    expect(visibleAt(item("far", 900, 900), view())).toBe(false);
+    expect(mapVisible(item("far", 900, 900), view())).toBe(false);
   });
   it("shows the same instant once the cursor moves to it", () => {
-    expect(visibleAt(item("far", 900, 900), view({ cursor: 880 }))).toBe(true);
+    expect(mapVisible(item("far", 900, 900), view({ cursor: 880 }))).toBe(true);
   });
-  it("shows real intervals regardless of the cursor", () => {
-    expect(visibleAt(item("era", 700, 900), view())).toBe(true);
+  it("shows real intervals that start or end in view", () => {
+    expect(mapVisible(item("era", 700, 900), view())).toBe(true);
   });
-  it("still hides anything outside the view", () => {
-    expect(visibleAt(item("gone", 5000, 5000), view({ cursor: 5000 }))).toBe(false);
+
+  // The rule the map turns on: a place is on the map for as long as it existed.
+  it("keeps a long-lived place spanning the whole view", () => {
+    // Founded long before the view, still standing long after it: it starts and
+    // ends outside, so only covering the cursor can admit it.
+    const rome = item("rome", -1e6, 1e6);
+    expect(startsOrEndsWithin(rome, 0, 1000)).toBe(false);
+    expect(mapVisible(rome, view())).toBe(true);
+  });
+  it("keeps a long-lived place even far from the cursor's band", () => {
+    // Cursor at 950, band [850,1050]; the place began at 20, nowhere near it.
+    expect(mapVisible(item("old-city", 20, 5000), view({ cursor: 950 }))).toBe(true);
+  });
+  it("hides a place founded past the view, at a cursor before its founding", () => {
+    // Founded at 5000, view 0..1000, cursor 100: covers nothing here, starts
+    // and ends outside, and is nowhere near the band.
+    expect(mapVisible(item("not-yet", 5000, 9000), view({ cursor: 100 }))).toBe(false);
+  });
+  it("admits a place founded inside the view by the start-in-view rule", () => {
+    // Founded at 700 and still standing. The cursor at 100 predates it, but a
+    // real interval that starts in view is lane and map content either way -
+    // the cursor rule governs point-like items, not these.
+    expect(mapVisible(item("founded-later", 700, 5000), view({ cursor: 100 }))).toBe(true);
+  });
+  it("still hides a moment in another era entirely", () => {
+    // Constantinople at a 250 Ma cursor: its interval covers nothing here and
+    // it is nowhere near the view.
+    expect(mapVisible(item("constantinople", 5000, 5000), view())).toBe(false);
   });
   it("never hides the selected item", () => {
     const off = item("chosen", 900, 900);
-    expect(visibleAt(off, view())).toBe(false);
-    expect(visibleAt(off, view({ selected: "chosen" }))).toBe(true);
+    expect(mapVisible(off, view())).toBe(false);
+    expect(mapVisible(off, view({ selected: "chosen" }))).toBe(true);
     // even when it is nowhere near the view at all
-    expect(visibleAt(item("chosen", 9e9, 9e9), view({ selected: "chosen" }))).toBe(true);
+    expect(mapVisible(item("chosen", 9e9, 9e9), view({ selected: "chosen" }))).toBe(true);
   });
 });
 
@@ -196,5 +237,13 @@ describe("mapItems", () => {
     const items = [item("chosen", 900, 900)];
     expect(mapItems(items, view())).toHaveLength(0);
     expect(mapItems(items, view({ selected: "chosen" }))).toHaveLength(1);
+  });
+
+  // The one place the map and the lanes deliberately disagree: a pass-through
+  // item is map subject and lane background.
+  it("shows pass-through places the lanes leave out", () => {
+    const rome = [item("rome", -1e6, 1e6)];
+    expect(mapItems(rome, view()).map((i) => i.slug)).toEqual(["rome"]);
+    expect(laneItems(rome, view())).toHaveLength(0);
   });
 });

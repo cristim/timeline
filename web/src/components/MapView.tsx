@@ -1,6 +1,6 @@
 // FE-3: MapLibre map, time-synchronized with the timeline. M3 uses the free
 // MapLibre demotiles world basemap; PMTiles layers arrive with M4.
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -14,7 +14,8 @@ maplibregl.setWorkerUrl(maplibreWorkerUrl);
 import type { FeatureCollection, Point } from "geojson";
 import type { BorderLayerDoc, ChunkItem } from "../lib/data";
 import type { FrontSample } from "../lib/fronts";
-import { categoryColor, FALLBACK_COLOR } from "../lib/colors";
+import type { MapMode } from "../lib/mapmode";
+import { categoryColor, FALLBACK_COLOR, polityColor } from "../lib/colors";
 import { devHook } from "../lib/devhook";
 
 // The globe-ready demotiles style (projection: globe baked in). The plain
@@ -22,9 +23,6 @@ import { devHook } from "../lib/devhook";
 const STYLE_URL = "https://demotiles.maplibre.org/globe.json";
 const SOURCE = "wk-items";
 
-// Historical extents get a deep version of the politics palette colour,
-// because that is what they are. It has to be dark: the demotiles basemap is
-// bright pastel, and the category-palette periwinkle disappears against it.
 // Two source slots so one slice can fade out while the next fades in (FE-2
 // asks for crossfades between datasets, not hard cuts).
 const SLOTS = ["a", "b"] as const;
@@ -33,27 +31,30 @@ const EMPTY_FC: FeatureCollection = { type: "FeatureCollection", features: [] };
 
 /** How one time-sliced area layer is painted. */
 interface LayerStyle {
-  fill: string;
+  /** A colour, or a MapLibre expression reading one off each feature. */
+  fill: NonNullable<maplibregl.AllPaintProperties["fill-color"]>;
   line: string;
   fillOpacity: number;
   lineOpacity: number;
   lineWidth: number;
 }
 
-// Political borders sit over a legible modern basemap, so they are a
-// translucent wash with a dashed frontier.
+// A political slice REPLACES the modern political map rather than washing over
+// it: opaque polities, each its own colour off the name hash, on a neutral land
+// base. A translucent overlay left modern Germany legible under the 1500 map
+// and gave no way to tell which borders were which.
 const ERA_STYLE: LayerStyle = {
-  fill: "#2f4487",
-  line: "#16224a",
-  fillOpacity: 0.38,
-  lineOpacity: 0.9,
-  lineWidth: 2,
+  fill: ["get", "color"],
+  line: "#101726",
+  fillOpacity: 1,
+  lineOpacity: 0.85,
+  lineWidth: 1.2,
 };
 
-// Deep time is the opposite problem. The basemap's coastlines and countries
-// are not merely decoration there, they are wrong: none of that geography
-// existed. So the paleo layer paints an opaque ocean over the whole globe and
-// puts the reconstructed landmasses on top, hiding the modern world entirely.
+// Deep time is the same problem, one step further: none of the modern
+// geography existed, not even the coastlines. Reconstructed landmasses on the
+// same opaque ocean, in one colour because the source knows of only one thing
+// ("land" - the GPlates coastlines carry no names).
 const PALEO_STYLE: LayerStyle = {
   fill: "#9a8c66",
   line: "#6d6144",
@@ -61,12 +62,46 @@ const PALEO_STYLE: LayerStyle = {
   lineOpacity: 0.85,
   lineWidth: 1,
 };
-const PALEO_OCEAN = "#16384f";
-const OCEAN_SOURCE = "wk-paleo-ocean";
+
+// The globe's own surface, under everything we draw and over everything the
+// basemap draws.
+const OCEAN = "#16384f";
+/** No reconstruction exists: a dead slate sphere, deliberately not ocean blue. */
+const VOID_SURFACE = "#222a37";
+/** Modern coastlines as a neutral base for the political slices to sit on. */
+const LAND = "#3b4455";
+const OCEAN_SOURCE = "wk-base-ocean";
+const OCEAN_LAYER = "wk-base-ocean-fill";
+const MODERN_LAND_LAYER = "wk-modern-land";
+
+// The demotiles source and source-layer that hold modern country polygons.
+// Reused as the neutral land base: they are the right geometry for recorded
+// history, they are already downloaded, and coastlines have barely moved.
+const BASEMAP_SOURCE = "maplibre";
+const BASEMAP_COUNTRIES = "countries";
 
 /**
- * The globe, as four 90-degree longitude bands. Used as the deep-time ocean: a
- * `background` layer would paint the space around the sphere too.
+ * The basemap layers that assert something about the *modern* world, and the
+ * paint property that hides each. Zeroed whenever a slice is on screen, so a
+ * modern label or frontier cannot read as part of the historical map.
+ *
+ * Opacity rather than `visibility: none` on purpose: a hidden layer stops its
+ * source loading tiles, and `countries-fill` - which stays live under the
+ * opaque ocean - is what keeps the vector tiles coming for the land layer.
+ */
+const MODERN_ASSERTIONS: [layer: string, paint: keyof maplibregl.AllPaintProperties][] = [
+  ["coastline", "line-opacity"],
+  ["countries-boundary", "line-opacity"],
+  ["countries-label", "text-opacity"],
+  ["geolines", "line-opacity"],
+  ["geolines-label", "text-opacity"],
+  ["crimea-fill", "fill-opacity"],
+];
+
+/**
+ * The globe, as four 90-degree longitude bands. This is the sphere's surface
+ * whenever the basemap is not it: a `background` layer would paint the space
+ * around the sphere too.
  *
  * Four bands rather than one -180..180 rectangle because a polygon spanning
  * the entire longitude range is ambiguous - it describes both the sphere and
@@ -101,6 +136,8 @@ const FRONT_COLOR = "#c96b4a";
 interface Props {
   items: ChunkItem[];
   selected: string | null;
+  /** What kind of world to draw at the cursor (lib/mapmode.ts). */
+  mode: MapMode;
   /** Political extents for the cursor time, or null outside recorded history. */
   era: BorderLayerDoc | null;
   /** Reconstructed coastlines when the cursor is in deep time, else null. */
@@ -219,6 +256,11 @@ class SlotPair {
     return SLOTS.map((s) => `wk-${this.kind}-${s}-fill`);
   }
 
+  /** The slot currently faded in - the one a hover should be read against. */
+  liveFillLayerId(): string {
+    return `wk-${this.kind}-${this.live}-fill`;
+  }
+
   private setOpacity(map: maplibregl.Map, slot: string, on: boolean) {
     map.setPaintProperty(
       `wk-${this.kind}-${slot}-fill`,
@@ -275,6 +317,35 @@ class SlotPair {
   }
 }
 
+/**
+ * Gives every polity in a slice its own fill colour, so a political map reads
+ * as many countries rather than one wash. Done here rather than in the baker:
+ * it is a rendering choice, and the artifacts are immutable and cached for a
+ * year.
+ */
+function withPolityColors(doc: BorderLayerDoc): BorderLayerDoc {
+  return {
+    ...doc,
+    features: doc.features.map((f) => ({
+      ...f,
+      properties: { ...f.properties, color: polityColor(f.properties.name) },
+    })),
+  };
+}
+
+/** Paints the globe's surface and the basemap for one mode. */
+function applyMode(map: maplibregl.Map, mode: MapMode) {
+  const modern = mode === "modern";
+  map.setPaintProperty(OCEAN_LAYER, "fill-color", mode === "void" ? VOID_SURFACE : OCEAN);
+  map.setPaintProperty(OCEAN_LAYER, "fill-opacity", modern ? 0 : 1);
+  if (map.getLayer(MODERN_LAND_LAYER)) {
+    map.setPaintProperty(MODERN_LAND_LAYER, "fill-opacity", mode === "political" ? 1 : 0);
+  }
+  for (const [layer, paint] of MODERN_ASSERTIONS) {
+    if (map.getLayer(layer)) map.setPaintProperty(layer, paint, modern ? 1 : 0);
+  }
+}
+
 /** GeoJSON for the front sample, or an empty collection when there is none. */
 function frontFC(front: FrontSample | null): FeatureCollection {
   if (!front) return EMPTY_FC;
@@ -290,9 +361,17 @@ function frontFC(front: FrontSample | null): FeatureCollection {
   };
 }
 
+/** A polity name pinned under the pointer, in map-container pixels. */
+interface Tip {
+  x: number;
+  y: number;
+  name: string;
+}
+
 export function MapView({
   items,
   selected,
+  mode,
   era,
   paleo,
   front,
@@ -304,25 +383,18 @@ export function MapView({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const readyRef = useRef(false);
   const dataRef = useRef<FeatureCollection>({ type: "FeatureCollection", features: [] });
-  const eraRef = useRef<BorderLayerDoc | null>(era);
+  const painted = useMemo(() => (era ? withPolityColors(era) : null), [era]);
+  const eraRef = useRef<BorderLayerDoc | null>(painted);
   const paleoRef = useRef<BorderLayerDoc | null>(paleo);
+  const modeRef = useRef<MapMode>(mode);
   const eraSlots = useRef(new SlotPair("era", ERA_STYLE, true));
   const paleoSlots = useRef(new SlotPair("paleo", PALEO_STYLE, false));
   const frontRef = useRef<FeatureCollection>(frontFC(front));
+  const [tip, setTip] = useState<Tip | null>(null);
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
   const onZoomPastGlobeRef = useRef(onZoomPastGlobe);
   onZoomPastGlobeRef.current = onZoomPastGlobe;
-
-  // The ocean fades with the layer it belongs to, so the handoff between deep
-  // time and recorded history is a dissolve back to the modern basemap rather
-  // than the world blinking.
-  const applyPaleo = useCallback((map: maplibregl.Map, next: BorderLayerDoc | null) => {
-    map.setPaintProperty("wk-paleo-ocean-fill", "fill-opacity", next ? 1 : 0);
-    paleoSlots.current.apply(map, next);
-  }, []);
-  const applyPaleoRef = useRef(applyPaleo);
-  applyPaleoRef.current = applyPaleo;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -364,22 +436,45 @@ export function MapView({
     );
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     map.on("load", () => {
-      // Deep time goes down first: the ocean hides the modern basemap, the
-      // reconstructed land sits on it, and the political layers, item dots and
-      // halos all draw above. The two area layers never show together (their
-      // coverage windows are disjoint), so the order between them only decides
-      // what happens mid-crossfade at the boundary.
+      // The globe's surface goes down first: an opaque sphere over the whole
+      // basemap. Then the neutral modern land for political mode, then the two
+      // area layers, then the front, the halos and the dots. The two area
+      // layers never show together (their coverage windows are disjoint), so
+      // the order between them only decides what happens mid-crossfade at the
+      // boundary.
       map.addSource(OCEAN_SOURCE, { type: "geojson", data: worldPolygon() });
       map.addLayer({
-        id: "wk-paleo-ocean-fill",
+        id: OCEAN_LAYER,
         type: "fill",
         source: OCEAN_SOURCE,
         paint: {
-          "fill-color": PALEO_OCEAN,
+          "fill-color": VOID_SURFACE,
           "fill-opacity": 0,
+          "fill-color-transition": { duration: FADE_MS },
           "fill-opacity-transition": { duration: FADE_MS },
         },
       });
+      // Recorded history needs a land base under the polities, and modern
+      // coastlines are the right one at this scale. If the upstream style ever
+      // drops the source, say so rather than silently reverting to a modern
+      // political map under the historical one - the exact bug this replaces.
+      if (map.getSource(BASEMAP_SOURCE)) {
+        map.addLayer({
+          id: MODERN_LAND_LAYER,
+          type: "fill",
+          source: BASEMAP_SOURCE,
+          "source-layer": BASEMAP_COUNTRIES,
+          paint: {
+            "fill-color": LAND,
+            "fill-opacity": 0,
+            "fill-opacity-transition": { duration: FADE_MS },
+          },
+        });
+      } else {
+        console.error(
+          `basemap source "${BASEMAP_SOURCE}" is missing: political slices will draw on bare ocean`,
+        );
+      }
       paleoSlots.current.add(map);
       eraSlots.current.add(map);
       for (const id of eraSlots.current.fillLayerIds()) {
@@ -441,11 +536,32 @@ export function MapView({
         },
         "wk-halo",
       );
+      // Polity names are the only thing the border slices carry beyond
+      // geometry, and a coloured blob nobody can name is not much of a map.
+      // Read against the live slot only: the outgoing one is still queryable
+      // while it fades, and would answer with the previous century's polity.
+      const onHover = (e: maplibregl.MapMouseEvent) => {
+        const fill = eraSlots.current.liveFillLayerId();
+        if (modeRef.current !== "political" || !map.getLayer(fill)) return setTip(null);
+        // A dot is the more specific target, as it is for clicks.
+        if (map.queryRenderedFeatures(e.point, { layers: ["wk-dots"] }).length) {
+          return setTip(null);
+        }
+        const name = map.queryRenderedFeatures(e.point, { layers: [fill] })[0]?.properties
+          ?.name;
+        setTip(typeof name === "string" ? { x: e.point.x, y: e.point.y, name } : null);
+      };
+      map.on("mousemove", onHover);
+      map.on("mouseout", () => setTip(null));
+      // A drag is a pan, not a hover; the tooltip must not ride along.
+      map.on("dragstart", () => setTip(null));
+
       readyRef.current = true;
       // A slice can resolve before the style finishes loading; apply whatever
       // the latest render handed us rather than waiting for the next change.
+      applyMode(map, modeRef.current);
       eraSlots.current.apply(map, eraRef.current);
-      applyPaleoRef.current(map, paleoRef.current);
+      paleoSlots.current.apply(map, paleoRef.current);
     });
     mapRef.current = map;
     liveMap = map;
@@ -464,18 +580,27 @@ export function MapView({
   }, []);
 
   useEffect(() => {
-    eraRef.current = era;
+    modeRef.current = mode;
     const map = mapRef.current;
-    if (map && readyRef.current) eraSlots.current.apply(map, era);
+    if (map && readyRef.current) applyMode(map, mode);
+    // Leaving political mode strands whatever name was under the pointer.
+    if (mode !== "political") setTip(null);
+    devHook("__wkmode", mode);
+  }, [mode]);
+
+  useEffect(() => {
+    eraRef.current = painted;
+    const map = mapRef.current;
+    if (map && readyRef.current) eraSlots.current.apply(map, painted);
     devHook("__wkera", era);
-  }, [era]);
+  }, [painted, era]);
 
   useEffect(() => {
     paleoRef.current = paleo;
     const map = mapRef.current;
-    if (map && readyRef.current) applyPaleo(map, paleo);
+    if (map && readyRef.current) paleoSlots.current.apply(map, paleo);
     devHook("__wkpaleo", paleo);
-  }, [paleo, applyPaleo]);
+  }, [paleo]);
 
   useEffect(() => {
     dataRef.current = toGeoJSON(items, selected);
@@ -512,5 +637,14 @@ export function MapView({
     }
   }, [selected, focusBounds]);
 
-  return <div ref={containerRef} className="map-container" />;
+  return (
+    <>
+      <div ref={containerRef} className="map-container" />
+      {tip && (
+        <div className="map-tooltip" style={{ left: tip.x + 14, top: tip.y + 16 }}>
+          {tip.name}
+        </div>
+      )}
+    </>
+  );
 }

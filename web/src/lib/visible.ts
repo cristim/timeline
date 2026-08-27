@@ -60,6 +60,16 @@ export function pointLike(item: ChunkItem, span: number): boolean {
   return item.t1 - item.t0 < span * MIN_INTERVAL_FRACTION;
 }
 
+/**
+ * True when the item's own interval contains the cursor - it existed at the
+ * moment the map is showing. Type-agnostic on purpose: a city founded in 300 BC
+ * and still standing qualifies at a 1500 cursor for the same reason a war does
+ * mid-war, without either being special-cased by entity type.
+ */
+export function coversCursor(item: ChunkItem, v: Visibility): boolean {
+  return item.t0 <= v.cursor && item.t1 >= v.cursor;
+}
+
 /** True when the item's extent reaches into the cursor's proximity band. */
 export function nearCursor(item: ChunkItem, v: Visibility): boolean {
   const band = (v.t1 - v.t0) * CURSOR_NEAR;
@@ -67,32 +77,49 @@ export function nearCursor(item: ChunkItem, v: Visibility): boolean {
 }
 
 /**
- * The gate both the map and the lanes apply. The selected entity is exempt:
- * a selection that vanishes because the cursor moved is a bug, not declutter.
+ * What the map may draw: covers the cursor, or sits near it.
+ *
+ * Covering the cursor is its own admission ticket, ahead of the in-view test,
+ * because the long-lived things are exactly the ones that span the whole view
+ * and so "start or end within" it - a rule written for lane content, where
+ * pass-through items are background rather than rows. On the map they are the
+ * subject: at a 1500 cursor, Rome is what a map of 1500 should have on it.
+ *
+ * Everything else has to start or end in view, and anything point-like at this
+ * zoom additionally has to sit inside the cursor's band. The selected entity is
+ * exempt from all of it: a selection that vanishes because the cursor moved is
+ * a bug, not declutter.
  */
-export function visibleAt(item: ChunkItem, v: Visibility): boolean {
+export function mapVisible(item: ChunkItem, v: Visibility): boolean {
   if (item.slug === v.selected) return true;
+  if (coversCursor(item, v)) return true;
   if (!startsOrEndsWithin(item, v.t0, v.t1)) return false;
   if (pointLike(item, v.t1 - v.t0)) return nearCursor(item, v);
   return true;
 }
 
-/** Markers the map may draw. No cap: the map declutters by geography, not rows. */
-export function mapItems(items: ChunkItem[], v: Visibility): ChunkItem[] {
-  return items.filter((i) => visibleAt(i, v));
+/**
+ * What the lanes may hold. Unlike the map, an item that merely passes through
+ * the whole view stays background context rather than taking a row (that is
+ * what the map is for), so there is no covers-the-cursor bypass here - and none
+ * is needed for point-like items, whose interval containing the cursor already
+ * puts them inside its band.
+ *
+ * Periphery declutter applies only to real intervals: a point-like item has
+ * been judged against the cursor already, and a cursor pinned near an edge puts
+ * its own band inside the edge band, where declutter would hide exactly what
+ * the user pinned.
+ */
+export function laneVisible(item: ChunkItem, v: Visibility): boolean {
+  if (item.slug === v.selected) return true;
+  if (!startsOrEndsWithin(item, v.t0, v.t1)) return false;
+  if (pointLike(item, v.t1 - v.t0)) return nearCursor(item, v);
+  return !whollyInPeriphery(item, v.t0, v.t1);
 }
 
-/**
- * Lane eligibility: `visibleAt` plus the periphery declutter, which applies
- * only to real intervals. A point-like item has already been judged against the
- * cursor, and a cursor pinned near an edge puts its own band inside the edge
- * band - declutter would then hide exactly what the user pinned.
- */
-function laneEligible(item: ChunkItem, v: Visibility): boolean {
-  if (item.slug === v.selected) return true;
-  if (!visibleAt(item, v)) return false;
-  if (pointLike(item, v.t1 - v.t0)) return true;
-  return !whollyInPeriphery(item, v.t0, v.t1);
+/** Markers the map may draw. No cap: the map declutters by geography, not rows. */
+export function mapItems(items: ChunkItem[], v: Visibility): ChunkItem[] {
+  return items.filter((i) => mapVisible(i, v));
 }
 
 /**
@@ -105,7 +132,7 @@ export function laneItems(
   cap: number = LANE_CAP,
 ): ChunkItem[] {
   return items
-    .filter((i) => laneEligible(i, v))
+    .filter((i) => laneVisible(i, v))
     .sort(
       (a, b) =>
         Number(b.slug === v.selected) - Number(a.slug === v.selected) ||

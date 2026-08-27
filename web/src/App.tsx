@@ -11,6 +11,8 @@ import { cursorTime, DEFAULT_VIEW, parseView, serializeView, type ViewState } fr
 import { laneItems, mapItems } from "./lib/visible";
 import { frontAt, frontBounds } from "./lib/fronts";
 import { formatTime } from "./lib/timefmt";
+import { secondsToYear } from "./lib/keyscheme";
+import { mapMode, voidChipLabel } from "./lib/mapmode";
 import { categoryColor } from "./lib/colors";
 import type { SearchEntry } from "./lib/data";
 
@@ -128,8 +130,17 @@ export function App() {
   // The cursor is the moment the map is showing (FE-3/FE-5), and the map
   // follows it wherever curated data exists (DEV-6 M4).
   const tc = cursorTime(view);
-  const era = useTimeLayer(manifest, tc, BORDERS_LAYER);
-  const paleo = useTimeLayer(manifest, tc, PALEO_LAYER);
+  const eraLayer = useTimeLayer(manifest, tc, BORDERS_LAYER);
+  const paleoLayer = useTimeLayer(manifest, tc, PALEO_LAYER);
+  const era = eraLayer.doc;
+  const paleo = paleoLayer.doc;
+  const cursorYear = secondsToYear(tc);
+  const mode = mapMode({
+    year: cursorYear,
+    hasPaleo: !!paleo,
+    hasEra: !!era,
+    eraTo: eraLayer.coverage?.to ?? null,
+  });
 
   // War focus: a selected entity carrying dated front positions (DM-7) gets
   // its front interpolated to the cursor and the map framed on the theatre.
@@ -184,6 +195,9 @@ export function App() {
   const cursorLabel = formatTime(tc, view.t1 - view.t0);
   // At most one area layer covers any moment, so the chip has one subject.
   const mapLayer = paleo ?? era;
+  // Older than every reconstruction the globe says so, and says why.
+  const voidLabel =
+    mode === "void" ? voidChipLabel(cursorYear, paleoLayer.coverage?.from ?? null) : null;
 
   // One visibility judgement, shared by the map, the lanes and the count.
   const visibility = useMemo(
@@ -240,6 +254,7 @@ export function App() {
           <MapView
             items={mapVisible}
             selected={view.selected}
+            mode={mode}
             era={era}
             paleo={paleo}
             front={front}
@@ -250,8 +265,14 @@ export function App() {
           {/* Say what the overlay is, and say when there is nothing to show
               rather than leaving the map silently modern. */}
           <div className="map-chips">
-            <div className={`era-chip ${mapLayer ? "" : "empty"} ${paleo ? "paleo" : ""}`}>
-              {mapLayer ? mapLayer.properties.label : `no map data for ${cursorLabel}`}
+            <div
+              className={`era-chip ${mapLayer ? "" : "empty"} ${paleo ? "paleo" : ""} ${
+                mode === "void" ? "void" : ""
+              }`}
+            >
+              {mapLayer
+                ? mapLayer.properties.label
+                : (voidLabel ?? `no map data for ${cursorLabel}`)}
             </div>
             {front && (
               <div className={`front-chip ${front.held ? "held" : ""}`}>
