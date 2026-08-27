@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { bucketForSpan, chunkKey, nearestTimestep, secondsToYear, windowsInRange } from "./keyscheme";
+import { bucketForSpan, chunkKey, coveringTimestep, secondsToYear, windowsInRange } from "./keyscheme";
 import {
   fetchBorderLayer,
   fetchChunk,
@@ -94,21 +94,35 @@ export function useViewportItems(
 }
 
 /**
- * The borders snapshot for the cursor time (FE-3: moving the timeline
- * re-requests the time-dependent layers).
+ * How long the cursor must settle before its slice is fetched. The layers tile
+ * the whole timeline in 89 slices, so a fast drag crosses dozens of windows;
+ * without this, each one would start a download the next instantly obsoletes.
+ * Well under the crossfade, so a deliberate scrub still lands on every slice.
+ */
+const STEP_SETTLE_MS = 120;
+
+/**
+ * The snapshot of one time-sliced map layer for the cursor time (FE-3: moving
+ * the timeline re-requests the time-dependent layers).
  *
- * The index is fetched once and answers "does any era cover this date?"; only
- * then is a snapshot downloaded. Booting the whole-universe view therefore
+ * The index is fetched once and answers "does any slice cover this date?";
+ * only then is a body downloaded. Booting the whole-universe view therefore
  * costs one small fetch and correctly shows nothing, instead of pulling down
  * Roman Britain to render at 6 billion BCE.
+ *
+ * Used once per area layer: political borders through recorded history,
+ * reconstructed coastlines before it. Their coverage windows are disjoint, so
+ * at most one of them ever returns a document.
  */
-export function useEraLayer(
+export function useTimeLayer(
   manifest: Manifest | null,
   tc: number,
   layer: string,
 ): BorderLayerDoc | null {
   const [index, setIndex] = useState<LayerIndexDoc | null>(null);
   const [doc, setDoc] = useState<BorderLayerDoc | null>(null);
+  // The cursor the fetch follows, a beat behind the one the map follows.
+  const [settledTc, setSettledTc] = useState(tc);
 
   useEffect(() => {
     if (!manifest || !manifest.layers.includes(layer)) {
@@ -128,35 +142,36 @@ export function useEraLayer(
     };
   }, [manifest, layer]);
 
-  const step = useMemo(() => {
-    if (!index) return null;
-    const year = nearestTimestep(
-      index.steps.map((s) => s.year),
-      secondsToYear(tc),
-    );
-    return index.steps.find((s) => s.year === year) ?? null;
-  }, [index, tc]);
+  useEffect(() => {
+    const id = window.setTimeout(() => setSettledTc(tc), STEP_SETTLE_MS);
+    return () => window.clearTimeout(id);
+  }, [tc]);
 
-  const year = secondsToYear(tc);
-  const covered = step !== null && year >= step.t_from && year <= step.t_to;
+  const step = useMemo(
+    () => (index ? coveringTimestep(index.steps, secondsToYear(settledTc)) : null),
+    [index, settledTc],
+  );
 
   useEffect(() => {
-    if (!manifest || !step || !covered) {
+    if (!manifest || !step) {
       setDoc(null);
       return;
     }
+    // `live` is the latest-wins guard: React tears down the previous effect
+    // before running this one, so a slower earlier response cannot land after
+    // a faster later one.
     let live = true;
     fetchBorderLayer(manifest, layer, step.year).then(
       (d) => live && setDoc(d),
       (e: unknown) => {
-        console.error("border layer load failed:", e);
+        console.error("map layer load failed:", e);
         if (live) setDoc(null);
       },
     );
     return () => {
       live = false;
     };
-  }, [manifest, layer, step, covered]);
+  }, [manifest, layer, step]);
 
   return doc;
 }

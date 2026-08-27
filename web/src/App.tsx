@@ -6,7 +6,7 @@ import { SpaceView, SPACE_MAX } from "./components/SpaceView";
 import { Timeline } from "./components/Timeline";
 import { Inspector, focusEntity } from "./components/Inspector";
 import { SearchBox } from "./components/SearchBox";
-import { useEntity, useEraLayer, useManifest, useViewportItems } from "./lib/hooks";
+import { useEntity, useManifest, useTimeLayer, useViewportItems } from "./lib/hooks";
 import { cursorTime, DEFAULT_VIEW, parseView, serializeView, type ViewState } from "./lib/state";
 import { laneItems } from "./lib/visible";
 import { frontAt, frontBounds } from "./lib/fronts";
@@ -22,8 +22,11 @@ const TL_COLLAPSED = 33;
 const TL_DEFAULT = 240;
 const tlMax = () => Math.round(window.innerHeight * 0.6);
 
-// The one time-aware map layer the baker currently produces (API-4).
+// The two time-aware area layers the baker produces (API-4). Their coverage
+// windows are disjoint and tile the whole timeline: political borders through
+// recorded history, reconstructed coastlines before it.
 const BORDERS_LAYER = "borders";
+const PALEO_LAYER = "paleocoast";
 
 export function App() {
   const { manifest, error } = useManifest();
@@ -125,7 +128,8 @@ export function App() {
   // The cursor is the moment the map is showing (FE-3/FE-5), and the map
   // follows it wherever curated data exists (DEV-6 M4).
   const tc = cursorTime(view);
-  const era = useEraLayer(manifest, tc, BORDERS_LAYER);
+  const era = useTimeLayer(manifest, tc, BORDERS_LAYER);
+  const paleo = useTimeLayer(manifest, tc, PALEO_LAYER);
 
   // War focus: a selected entity carrying dated front positions (DM-7) gets
   // its front interpolated to the cursor and the map framed on the theatre.
@@ -178,6 +182,8 @@ export function App() {
   }, [view.t0, view.t1]);
 
   const cursorLabel = formatTime(tc, view.t1 - view.t0);
+  // At most one area layer covers any moment, so the chip has one subject.
+  const mapLayer = paleo ?? era;
 
   // The status-bar count matches what the timeline lanes actually consider
   // (top-100 starting/ending in view), not the raw chunk union.
@@ -232,6 +238,7 @@ export function App() {
             items={items}
             selected={view.selected}
             era={era}
+            paleo={paleo}
             front={front}
             focusBounds={focusBounds}
             onSelect={setSelected}
@@ -240,8 +247,8 @@ export function App() {
           {/* Say what the overlay is, and say when there is nothing to show
               rather than leaving the map silently modern. */}
           <div className="map-chips">
-            <div className={`era-chip ${era ? "" : "empty"}`}>
-              {era ? era.properties.label : `no border data for ${cursorLabel}`}
+            <div className={`era-chip ${mapLayer ? "" : "empty"} ${paleo ? "paleo" : ""}`}>
+              {mapLayer ? mapLayer.properties.label : `no map data for ${cursorLabel}`}
             </div>
             {front && (
               <div className={`front-chip ${front.held ? "held" : ""}`}>

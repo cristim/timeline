@@ -25,15 +25,61 @@ const SOURCE = "wk-items";
 // Historical extents get a deep version of the politics palette colour,
 // because that is what they are. It has to be dark: the demotiles basemap is
 // bright pastel, and the category-palette periwinkle disappears against it.
-// Two source slots so one era can fade out while the next fades in (FE-2 asks
-// for crossfades between datasets, not hard cuts).
-const ERA_SLOTS = ["a", "b"] as const;
-const ERA_FILL = "#2f4487";
-const ERA_LINE = "#16224a";
-const ERA_FADE_MS = 450;
-const ERA_FILL_OPACITY = 0.38;
-const ERA_LINE_OPACITY = 0.9;
+// Two source slots so one slice can fade out while the next fades in (FE-2
+// asks for crossfades between datasets, not hard cuts).
+const SLOTS = ["a", "b"] as const;
+const FADE_MS = 450;
 const EMPTY_FC: FeatureCollection = { type: "FeatureCollection", features: [] };
+
+/** How one time-sliced area layer is painted. */
+interface LayerStyle {
+  fill: string;
+  line: string;
+  fillOpacity: number;
+  lineOpacity: number;
+  lineWidth: number;
+}
+
+// Political borders sit over a legible modern basemap, so they are a
+// translucent wash with a dashed frontier.
+const ERA_STYLE: LayerStyle = {
+  fill: "#2f4487",
+  line: "#16224a",
+  fillOpacity: 0.38,
+  lineOpacity: 0.9,
+  lineWidth: 2,
+};
+
+// Deep time is the opposite problem. The basemap's coastlines and countries
+// are not merely decoration there, they are wrong: none of that geography
+// existed. So the paleo layer paints an opaque ocean over the whole globe and
+// puts the reconstructed landmasses on top, hiding the modern world entirely.
+const PALEO_STYLE: LayerStyle = {
+  fill: "#9a8c66",
+  line: "#6d6144",
+  fillOpacity: 1,
+  lineOpacity: 0.85,
+  lineWidth: 1,
+};
+const PALEO_OCEAN = "#16384f";
+const OCEAN_SOURCE = "wk-paleo-ocean";
+
+/**
+ * A lon/lat rectangle covering the globe, densified so that globe projection
+ * bends its edges instead of chording them. Used as the deep-time ocean: a
+ * `background` layer would paint the space around the sphere too.
+ */
+function worldPolygon(): FeatureCollection {
+  const ring: [number, number][] = [];
+  for (let lon = -180; lon <= 180; lon += 5) ring.push([lon, -90]);
+  for (let lat = -90; lat <= 90; lat += 5) ring.push([180, lat]);
+  for (let lon = 180; lon >= -180; lon -= 5) ring.push([lon, 90]);
+  for (let lat = 90; lat >= -90; lat -= 5) ring.push([-180, lat]);
+  return {
+    type: "FeatureCollection",
+    features: [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [ring] } }],
+  };
+}
 
 // The front line uses the war category colour, since that is what it is.
 const FRONT_SOURCE = "wk-front";
@@ -42,8 +88,10 @@ const FRONT_COLOR = "#c96b4a";
 interface Props {
   items: ChunkItem[];
   selected: string | null;
-  /** Historical extents for the cursor time, or null when none are curated. */
+  /** Political extents for the cursor time, or null outside recorded history. */
   era: BorderLayerDoc | null;
+  /** Reconstructed coastlines when the cursor is in deep time, else null. */
+  paleo: BorderLayerDoc | null;
   /** The selected war's front at the cursor time, or null for everything else. */
   front: FrontSample | null;
   /** Bounds framing the selection's geometry, when it has any. */
@@ -103,40 +151,115 @@ function toGeoJSON(items: ChunkItem[], selected: string | null): FeatureCollecti
   };
 }
 
-/** Adds the fill + outline layers for one era slot. */
-function addEraLayers(map: maplibregl.Map, slot: string) {
-  const source = `wk-era-${slot}`;
-  map.addSource(source, { type: "geojson", data: EMPTY_FC });
-  map.addLayer({
-    id: `${source}-fill`,
-    type: "fill",
-    source,
-    paint: {
-      "fill-color": ERA_FILL,
-      "fill-opacity": 0,
-      "fill-opacity-transition": { duration: ERA_FADE_MS },
-    },
-  });
-  map.addLayer({
-    id: `${source}-line`,
-    type: "line",
-    source,
-    paint: {
-      "line-color": ERA_LINE,
-      "line-width": 2,
-      // Every curated extent is representation=estimated (DM-7), and FE-3
-      // wants that drawn as a hedge, not a hard border. An exact layer would
-      // need its own solid line layer: line-dasharray is not data-driven.
-      "line-dasharray": [3, 2],
-      "line-opacity": 0,
-      "line-opacity-transition": { duration: ERA_FADE_MS },
-    },
-  });
-}
+/**
+ * The two-slot crossfade for one time-sliced area layer. Both area layers
+ * (political borders, paleo coastlines) behave identically: load the incoming
+ * slice into the idle slot, and swap opacities only once it has actually
+ * parsed. Raising the incoming slot straight after setData would fade in an
+ * empty layer and pop the shapes in afterwards, which is the hard cut the two
+ * slots exist to avoid.
+ */
+class SlotPair {
+  private live: (typeof SLOTS)[number] = "a";
+  private shown: number | null = null;
+  private pendingFade: (() => void) | null = null;
 
-function setEraOpacity(map: maplibregl.Map, slot: string, on: boolean) {
-  map.setPaintProperty(`wk-era-${slot}-fill`, "fill-opacity", on ? ERA_FILL_OPACITY : 0);
-  map.setPaintProperty(`wk-era-${slot}-line`, "line-opacity", on ? ERA_LINE_OPACITY : 0);
+  constructor(
+    private readonly kind: string,
+    private readonly style: LayerStyle,
+    private readonly dashed: boolean,
+  ) {}
+
+  add(map: maplibregl.Map) {
+    for (const slot of SLOTS) {
+      const source = `wk-${this.kind}-${slot}`;
+      map.addSource(source, { type: "geojson", data: EMPTY_FC });
+      map.addLayer({
+        id: `${source}-fill`,
+        type: "fill",
+        source,
+        paint: {
+          "fill-color": this.style.fill,
+          "fill-opacity": 0,
+          "fill-opacity-transition": { duration: FADE_MS },
+        },
+      });
+      map.addLayer({
+        id: `${source}-line`,
+        type: "line",
+        source,
+        paint: {
+          "line-color": this.style.line,
+          "line-width": this.style.lineWidth,
+          // Every slice is representation=estimated (DM-7), and FE-3 wants
+          // that drawn as a hedge, not a hard border. An exact layer would
+          // need its own solid line layer: line-dasharray is not data-driven.
+          ...(this.dashed ? { "line-dasharray": [3, 2] } : {}),
+          "line-opacity": 0,
+          "line-opacity-transition": { duration: FADE_MS },
+        },
+      });
+    }
+  }
+
+  fillLayerIds(): string[] {
+    return SLOTS.map((s) => `wk-${this.kind}-${s}-fill`);
+  }
+
+  private setOpacity(map: maplibregl.Map, slot: string, on: boolean) {
+    map.setPaintProperty(
+      `wk-${this.kind}-${slot}-fill`,
+      "fill-opacity",
+      on ? this.style.fillOpacity : 0,
+    );
+    map.setPaintProperty(
+      `wk-${this.kind}-${slot}-line`,
+      "line-opacity",
+      on ? this.style.lineOpacity : 0,
+    );
+  }
+
+  /**
+   * The `shown` guard keeps a re-render from restarting a fade already
+   * running; `pendingFade` keeps a fast drag across two slice boundaries from
+   * leaving both slots visible.
+   */
+  apply(map: maplibregl.Map, next: BorderLayerDoc | null) {
+    const year = next?.properties.year ?? null;
+    if (year === this.shown) return;
+    this.shown = year;
+    this.pendingFade?.(); // settle any half-finished swap first
+    this.pendingFade = null;
+
+    if (!next) {
+      for (const slot of SLOTS) this.setOpacity(map, slot, false);
+      return;
+    }
+    const slot = this.live === "a" ? "b" : "a";
+    const outgoing = this.live;
+    this.live = slot;
+
+    const swap = () => {
+      map.off("sourcedata", onSourceData);
+      this.pendingFade = null;
+      this.setOpacity(map, slot, true);
+      this.setOpacity(map, outgoing, false);
+    };
+    const sourceId = `wk-${this.kind}-${slot}`;
+    const onSourceData = (e: maplibregl.MapSourceDataEvent) => {
+      if (e.sourceId === sourceId && e.isSourceLoaded) swap();
+    };
+    this.pendingFade = swap;
+    map.on("sourcedata", onSourceData);
+    (map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined)?.setData(next);
+  }
+
+  /** A new map starts with both slots empty and transparent. */
+  reset() {
+    this.live = "a";
+    this.shown = null;
+    this.pendingFade = null;
+  }
 }
 
 /** GeoJSON for the front sample, or an empty collection when there is none. */
@@ -158,6 +281,7 @@ export function MapView({
   items,
   selected,
   era,
+  paleo,
   front,
   focusBounds,
   onSelect,
@@ -168,55 +292,24 @@ export function MapView({
   const readyRef = useRef(false);
   const dataRef = useRef<FeatureCollection>({ type: "FeatureCollection", features: [] });
   const eraRef = useRef<BorderLayerDoc | null>(era);
-  const liveEraSlot = useRef<(typeof ERA_SLOTS)[number]>("a");
-  const shownEra = useRef<number | null>(null);
-  const pendingFade = useRef<(() => void) | null>(null);
+  const paleoRef = useRef<BorderLayerDoc | null>(paleo);
+  const eraSlots = useRef(new SlotPair("era", ERA_STYLE, true));
+  const paleoSlots = useRef(new SlotPair("paleo", PALEO_STYLE, false));
   const frontRef = useRef<FeatureCollection>(frontFC(front));
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
   const onZoomPastGlobeRef = useRef(onZoomPastGlobe);
   onZoomPastGlobeRef.current = onZoomPastGlobe;
 
-  /**
-   * Crossfades to `next` by loading it into the idle slot and swapping the
-   * opacities once the new data is actually parsed. Raising the incoming slot
-   * immediately after setData would fade in an empty layer and pop the shapes
-   * in afterwards, which is the hard cut the two slots exist to avoid.
-   *
-   * The shownEra guard keeps a re-render from restarting a fade already
-   * running; pendingFade keeps a fast drag across two era boundaries from
-   * leaving both slots visible.
-   */
-  const applyEra = useCallback((map: maplibregl.Map, next: BorderLayerDoc | null) => {
-    const year = next?.properties.year ?? null;
-    if (year === shownEra.current) return;
-    shownEra.current = year;
-    pendingFade.current?.(); // settle any half-finished swap first
-    pendingFade.current = null;
-
-    if (!next) {
-      for (const slot of ERA_SLOTS) setEraOpacity(map, slot, false);
-      return;
-    }
-    const slot = liveEraSlot.current === "a" ? "b" : "a";
-    const outgoing = liveEraSlot.current;
-    liveEraSlot.current = slot;
-
-    const swap = () => {
-      map.off("sourcedata", onSourceData);
-      pendingFade.current = null;
-      setEraOpacity(map, slot, true);
-      setEraOpacity(map, outgoing, false);
-    };
-    function onSourceData(e: maplibregl.MapSourceDataEvent) {
-      if (e.sourceId === `wk-era-${slot}` && e.isSourceLoaded) swap();
-    }
-    pendingFade.current = swap;
-    map.on("sourcedata", onSourceData);
-    (map.getSource(`wk-era-${slot}`) as maplibregl.GeoJSONSource | undefined)?.setData(next);
+  // The ocean fades with the layer it belongs to, so the handoff between deep
+  // time and recorded history is a dissolve back to the modern basemap rather
+  // than the world blinking.
+  const applyPaleo = useCallback((map: maplibregl.Map, next: BorderLayerDoc | null) => {
+    map.setPaintProperty("wk-paleo-ocean-fill", "fill-opacity", next ? 1 : 0);
+    paleoSlots.current.apply(map, next);
   }, []);
-  const applyEraRef = useRef(applyEra);
-  applyEraRef.current = applyEra;
+  const applyPaleoRef = useRef(applyPaleo);
+  applyPaleoRef.current = applyPaleo;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -242,18 +335,42 @@ export function MapView({
       }
     };
     container.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
+    // Both fetched layers carry licence conditions that require naming their
+    // source wherever the data is shown, so they are named here rather than
+    // only in the README. Full terms and citations: data/geo/*/NOTICE.md.
     map.addControl(
       new maplibregl.AttributionControl({
         compact: true,
-        customAttribution: "© OpenStreetMap contributors · Wikidata CC0",
+        customAttribution: [
+          "© OpenStreetMap contributors",
+          "Wikidata CC0",
+          '<a href="https://github.com/aourednik/historical-basemaps">historical-basemaps</a> GPL-3.0',
+          '<a href="https://doi.org/10.1016/j.earscirev.2020.103477">GPlates/Merdith et al. 2021</a> CC-BY 4.0',
+        ].join(" · "),
       }),
     );
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     map.on("load", () => {
-      // Era layers first, so the item dots and halos always draw over them.
-      for (const slot of ERA_SLOTS) addEraLayers(map, slot);
-      for (const slot of ERA_SLOTS) {
-        map.on("click", `wk-era-${slot}-fill`, (e: maplibregl.MapLayerMouseEvent) => {
+      // Deep time goes down first: the ocean hides the modern basemap, the
+      // reconstructed land sits on it, and the political layers, item dots and
+      // halos all draw above. The two area layers never show together (their
+      // coverage windows are disjoint), so the order between them only decides
+      // what happens mid-crossfade at the boundary.
+      map.addSource(OCEAN_SOURCE, { type: "geojson", data: worldPolygon() });
+      map.addLayer({
+        id: "wk-paleo-ocean-fill",
+        type: "fill",
+        source: OCEAN_SOURCE,
+        paint: {
+          "fill-color": PALEO_OCEAN,
+          "fill-opacity": 0,
+          "fill-opacity-transition": { duration: FADE_MS },
+        },
+      });
+      paleoSlots.current.add(map);
+      eraSlots.current.add(map);
+      for (const id of eraSlots.current.fillLayerIds()) {
+        map.on("click", id, (e: maplibregl.MapLayerMouseEvent) => {
           // A dot on top of an extent is the more specific target, and its own
           // handler will take the click.
           if (map.queryRenderedFeatures(e.point, { layers: ["wk-dots"] }).length) return;
@@ -312,9 +429,10 @@ export function MapView({
         "wk-halo",
       );
       readyRef.current = true;
-      // An era can resolve before the style finishes loading; apply whatever
+      // A slice can resolve before the style finishes loading; apply whatever
       // the latest render handed us rather than waiting for the next change.
-      applyEraRef.current(map, eraRef.current);
+      eraSlots.current.apply(map, eraRef.current);
+      applyPaleoRef.current(map, paleoRef.current);
     });
     mapRef.current = map;
     liveMap = map;
@@ -325,20 +443,26 @@ export function MapView({
       liveMap = null;
       map.remove();
       mapRef.current = null;
-      // The next map starts with both era slots empty and transparent, so the
+      // The next map starts with every slot empty and transparent, so the
       // "what is already shown" bookkeeping has to start over with it.
-      shownEra.current = null;
-      liveEraSlot.current = "a";
-      pendingFade.current = null;
+      eraSlots.current.reset();
+      paleoSlots.current.reset();
     };
   }, []);
 
   useEffect(() => {
     eraRef.current = era;
     const map = mapRef.current;
-    if (map && readyRef.current) applyEra(map, era);
+    if (map && readyRef.current) eraSlots.current.apply(map, era);
     devHook("__wkera", era);
-  }, [era, applyEra]);
+  }, [era]);
+
+  useEffect(() => {
+    paleoRef.current = paleo;
+    const map = mapRef.current;
+    if (map && readyRef.current) applyPaleo(map, paleo);
+    devHook("__wkpaleo", paleo);
+  }, [paleo, applyPaleo]);
 
   useEffect(() => {
     dataRef.current = toGeoJSON(items, selected);

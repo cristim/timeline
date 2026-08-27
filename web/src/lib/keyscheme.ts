@@ -52,22 +52,32 @@ export function layerIndexKey(layer: string): string {
   return `layers/${layer}/index.json`;
 }
 
+/** The shape of a layer index row that this module needs to choose a step. */
+export interface CoverageWindow {
+  t_from: number;
+  t_to: number;
+}
+
 /**
- * The time-step nearest to `year` (ARCH-3: "the client snaps the time cursor
- * to the nearest step"). Nearest, not covering: whether the step has anything
- * to say about that year is a separate question its coverage window answers.
+ * The time-step whose coverage window holds `year`, or null if none does.
+ *
+ * ARCH-3 describes this as snapping to the *nearest* step, which was right
+ * when the layer was five hand-traced eras far apart. It is wrong for a layer
+ * that tiles: slice spacing is wildly uneven - 113,000 years between the first
+ * two political slices, six between the last two - so the nearest slice year is
+ * routinely one whose window ends long before the cursor. Snapping to it and
+ * then testing coverage blanked the map across most of prehistory, because
+ * every year after 66500 BC is nearer to the 10000 BC slice than to the
+ * 123000 BC slice that actually covers it.
+ *
+ * Windows tile and are disjoint (enforced at ingest), so the covering step is
+ * unique where it exists.
  */
-export function nearestTimestep(steps: number[], year: number): number | null {
-  let best: number | null = null;
-  let bestGap = Infinity;
+export function coveringTimestep<T extends CoverageWindow>(steps: T[], year: number): T | null {
   for (const s of steps) {
-    const gap = Math.abs(s - year);
-    if (gap < bestGap) {
-      best = s;
-      bestGap = gap;
-    }
+    if (year >= s.t_from && year <= s.t_to) return s;
   }
-  return best;
+  return null;
 }
 
 /**

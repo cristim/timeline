@@ -78,8 +78,17 @@ func LoadGeo(dir string, entities []*model.Entity) (*model.GeoSet, error) {
 	if set.Borders, err = loadAreaSlices(filepath.Join(dir, "borders"), bySeedID); err != nil {
 		return nil, err
 	}
-	if set.Paleo, err = loadAreaSlices(filepath.Join(dir, "paleo"), bySeedID); err != nil {
-		return nil, err
+	// An absent paleo directory means the deep-time layer is not configured,
+	// which is a legitimate bake; a present but broken one is still fatal.
+	// Insisting both layers EXIST is `baker geo-verify`'s job, and CI runs it
+	// before it trusts a fetch.
+	paleoDir := filepath.Join(dir, "paleo")
+	if _, statErr := os.Stat(paleoDir); statErr == nil {
+		if set.Paleo, err = loadAreaSlices(paleoDir, bySeedID); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(statErr) {
+		return nil, statErr
 	}
 	// The two layers answer for disjoint spans, and the client picks between
 	// them by coverage window alone. An overlap would make that choice

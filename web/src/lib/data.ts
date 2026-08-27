@@ -112,7 +112,16 @@ export interface SearchEntry {
 
 const cache = new Map<string, Promise<unknown>>();
 
-function fetchArtifact<T>(dataset: string, relKey: string): Promise<T> {
+/**
+ * Layer bodies are the one artifact class worth evicting: ~200-500 KB each and
+ * there are 89 of them, so scrubbing the cursor across all of history would
+ * otherwise pin the entire atlas in memory. Chunks, entities and search shards
+ * stay cached for the session, being small and immutable.
+ */
+const LAYER_CACHE_MAX = 24;
+const layerCacheOrder: string[] = [];
+
+function fetchArtifact<T>(dataset: string, relKey: string, evictable = false): Promise<T> {
   const url = artifactURL(`/v/${dataset}/${relKey}`);
   let p = cache.get(url);
   if (!p) {
@@ -125,6 +134,12 @@ function fetchArtifact<T>(dataset: string, relKey: string): Promise<T> {
     });
     p.catch(() => cache.delete(url)); // don't cache failures
     cache.set(url, p);
+    if (evictable) {
+      layerCacheOrder.push(url);
+      while (layerCacheOrder.length > LAYER_CACHE_MAX) {
+        cache.delete(layerCacheOrder.shift()!);
+      }
+    }
   }
   return p as Promise<T>;
 }
@@ -150,5 +165,5 @@ export function fetchBorderLayer(
   layer: string,
   timestep: number,
 ): Promise<BorderLayerDoc> {
-  return fetchArtifact(m.dataset, layerKey(layer, timestep));
+  return fetchArtifact(m.dataset, layerKey(layer, timestep), true);
 }

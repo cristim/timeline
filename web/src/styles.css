@@ -94,6 +94,8 @@ body {
   font: 500 10.5px var(--ui); color: var(--text-1);
 }
 .era-chip.empty { color: var(--text-3); border-color: var(--hair); font-style: italic; }
+/* Deep time is a different kind of map, not a different era of the same one. */
+.era-chip.paleo { color: #e8d9a8; border-color: #6d6144; }
 .front-chip {
   background: rgba(11, 15, 23, 0.78); border: 1px solid rgba(201, 107, 74, 0.5);
   border-radius: 6px; padding: 4px 9px;

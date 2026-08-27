@@ -8,13 +8,19 @@ import (
 )
 
 // The structural checks in geo_test.go say a shape is well-formed GeoJSON.
-// They say nothing about whether it is the empire it claims to be, and a
-// coarse outline drifts into outright error easily: an empire that excludes
-// its own capital province, a union that has lost a republic, a neutral state
-// shaded as a belligerent. These cases pin the curated outlines against places
-// whose status on the stated date is not in dispute.
+// They say nothing about whether it is the polity it claims to be, and a
+// simplification pipeline drifts into outright error easily: an empire that
+// loses its capital because one ring self-intersected, a whole slice silently
+// coarsened, a continent dropped as a speck. These cases pin the fetched
+// outlines against places whose status on the stated date is not in dispute.
 //
 // "Approximate" covers a frontier drawn 200km off. It does not cover this.
+//
+// Test points are deliberately INLAND. The dataset's coastlines are coarse
+// enough that a coastal or strait city - Alexandria, Constantinople, Chicago
+// on its lake - falls outside its own polity's polygon, upstream as much as
+// here. That is a property of the coastline, not of the empire's extent, and
+// pinning it would test the wrong thing.
 
 type place struct {
 	name     string
@@ -22,127 +28,100 @@ type place struct {
 	in       bool // inside the named feature on that date
 }
 
-func TestCuratedExtentsCoverTheRightPlaces(t *testing.T) {
+func TestFetchedExtentsCoverTheRightPlaces(t *testing.T) {
 	cases := []struct {
 		year    int
 		feature string
 		places  []place
 	}{
-		{117, "Roman Empire", []place{
+		{-500, "Achaemenid Empire", []place{
+			{"Persepolis", 52.89, 29.94, true},
+			{"Babylon", 44.42, 32.54, true},
+			{"Sardis", 28.04, 38.49, true},
+			// Greece held; Persia never took the Italian peninsula.
+			{"Athens", 23.73, 37.98, false},
+			{"Rome", 12.5, 41.9, false},
+		}},
+		{100, "Roman Empire", []place{
 			{"Rome", 12.5, 41.9, true},
-			{"Alexandria", 29.9, 31.2, true},
 			{"Londinium", -0.1, 51.5, true},
-			{"Byzantium", 29.0, 41.0, true},
-			{"Carthage", 10.3, 36.9, true},
-			// Trajan reached the Persian Gulf; Germania and Hibernia never fell.
-			{"Ctesiphon", 44.6, 33.1, true},
-			{"free Germania (Berlin)", 13.4, 52.5, false},
-			{"Hibernia (Dublin)", -6.3, 53.3, false},
-			{"Caledonia (Inverness)", -4.2, 57.5, false},
-			{"Scandinavia (Stockholm)", 18.1, 59.3, false},
-		}},
-		{1279, "Mongol Empire", []place{
-			{"Karakorum", 102.8, 47.2, true},
-			{"Khanbaliq (Beijing)", 116.4, 39.9, true},
-			{"Baghdad", 44.4, 33.3, true},
-			{"Kyiv", 30.5, 50.5, true},
-			// Goryeo was a Yuan vassal and the base for the Japan invasions.
-			{"Kaesong", 126.6, 38.0, true},
-			{"Hungary (Budapest)", 19.0, 47.5, false}, // raided 1241, never held
-			{"Delhi", 77.2, 28.6, false},
-			{"Kyoto", 135.8, 35.0, false},
-			{"Cairo", 31.2, 30.0, false},
-		}},
-		{1914, "Russian Empire", []place{
-			{"St Petersburg", 30.3, 59.9, true},
-			{"Warsaw (Congress Poland)", 21.0, 52.2, true},
-			{"Helsinki (Grand Duchy)", 24.9, 60.2, true},
-			{"Yerevan (Transcaucasia)", 44.5, 40.2, true},
-			{"Vladivostok", 131.9, 43.1, true},
-			{"Konigsberg (German)", 20.5, 54.7, false},
+			{"Lugdunum (Lyon)", 4.83, 45.76, true},
+			{"Corduba", -4.78, 37.89, true},
+			// Free Germania and Hibernia never fell.
 			{"Berlin", 13.4, 52.5, false},
-			{"Stockholm", 18.1, 59.3, false},
-			{"Beijing", 116.4, 39.9, false},
+			{"Dublin", -6.3, 53.3, false},
 		}},
-		{1914, "British Empire", []place{
-			{"Ottawa", -75.7, 45.4, true},
-			{"Delhi", 77.2, 28.6, true},
-			{"Sydney", 151.2, -33.9, true},
-			{"Cape Town", 18.4, -33.9, true},
-			{"Lagos", 3.4, 6.5, true},
-			{"Accra (Gold Coast)", -0.2, 5.6, true},
-			{"Khartoum", 32.5, 15.6, true},
-			{"Paris", 2.3, 48.9, false},
-		}},
-		{1914, "French colonial empire", []place{
-			{"Dakar", -17.4, 14.7, true},
-			{"Algiers", 3.1, 36.8, true},
-			{"Antananarivo", 47.5, -18.9, true},
-			{"Hanoi", 105.8, 21.0, true},
-			{"Brazzaville", 15.3, -4.3, true},
-			// British, German and independent neighbours must not be claimed.
-			{"Accra (British)", -0.2, 5.6, false},
-			{"Lagos (British)", 3.4, 6.5, false},
-			{"Douala (German)", 9.7, 4.1, false},
-			{"Bangkok (independent Siam)", 100.5, 13.8, false},
-		}},
-		{1942, "Axis-held Europe", []place{
-			{"Berlin", 13.4, 52.5, true},
-			{"Paris", 2.3, 48.9, true},
-			{"Warsaw", 21.0, 52.2, true},
-			{"Kyiv", 30.5, 50.5, true},
-			{"Stalingrad", 44.5, 48.7, true},
-			{"Oslo", 10.8, 59.9, true},
-			// Neutrals and the unconquered.
-			{"Stockholm (neutral)", 18.1, 59.3, false},
-			{"Moscow", 37.6, 55.8, false},
+		{800, "Carolingian Empire", []place{
+			{"Aachen", 6.08, 50.78, true},
+			{"Paris", 2.35, 48.86, true},
+			{"Milan", 9.19, 45.46, true},
 			{"London", -0.1, 51.5, false},
-			{"Ankara (neutral)", 32.9, 39.9, false},
 		}},
-		{1942, "Japanese maximum sphere of control", []place{
-			{"Tokyo", 139.7, 35.7, true},
-			// The land empire is the largest part of what this names.
-			{"Shenyang (Manchukuo)", 123.4, 41.8, true},
+		{800, "Abbasid Caliphate", []place{
+			{"Baghdad", 44.4, 33.3, true},
+			{"Damascus", 36.29, 33.51, true},
+			{"Paris", 2.35, 48.86, false},
+		}},
+		{1279, "Great Khanate", []place{
+			// Kublai's realm at the fall of the Song, distinct from the
+			// Ilkhanate and Chagatai khanates the same slice names separately.
+			{"Khanbaliq (Beijing)", 116.4, 39.9, true},
+			{"Karakorum", 102.8, 47.2, true},
+			{"Baghdad (Ilkhanate)", 44.4, 33.3, false},
+			{"Delhi", 77.2, 28.6, false},
+		}},
+		{1500, "Aztec Empire", []place{
+			{"Tenochtitlan", -99.13, 19.43, true},
+			{"Cusco", -71.97, -13.53, false},
+		}},
+		{1500, "Inca Empire", []place{
+			{"Cusco", -71.97, -13.53, true},
+			{"Tenochtitlan", -99.13, 19.43, false},
+		}},
+		{1500, "Ming Chinese Empire", []place{
 			{"Beijing", 116.4, 39.9, true},
-			{"Shanghai", 121.5, 31.2, true},
-			{"Seoul", 127.0, 37.6, true},
-			{"Singapore", 103.8, 1.4, true},
-			{"Manila", 121.0, 14.6, true},
-			{"Jakarta", 106.8, -6.2, true},
-			{"Chongqing (Free China)", 106.6, 29.6, false},
-			{"Darwin", 130.8, -12.5, false},
-			{"Kolkata", 88.4, 22.6, false},
+			{"Xi'an", 108.9, 34.3, true},
+			{"Delhi", 77.2, 28.6, false},
 		}},
-		{1990, "Soviet Union", []place{
-			{"Moscow", 37.6, 55.8, true},
-			{"Tallinn (Estonian SSR)", 24.8, 59.4, true},
-			{"Riga", 24.1, 56.9, true},
-			{"Yerevan (Armenian SSR)", 44.5, 40.2, true},
-			{"Tashkent", 69.2, 41.3, true},
-			{"Vladivostok", 131.9, 43.1, true},
-			{"Warsaw (Warsaw Pact, not Soviet)", 21.0, 52.2, false},
-			{"Helsinki", 24.9, 60.2, false},
+		{1500, "Ottoman Empire", []place{
+			{"Ankara", 32.85, 39.93, true},
+			{"Bursa", 29.06, 40.19, true},
+			// Vienna was besieged in 1529, never held.
+			{"Vienna", 16.37, 48.21, false},
+		}},
+		{1900, "British Raj", []place{
+			{"Delhi", 77.2, 28.6, true},
+			{"Lahore", 74.35, 31.55, true},
 			{"Kabul", 69.2, 34.5, false},
+		}},
+		{1900, "Russian Empire", []place{
+			{"Moscow", 37.6, 55.8, true},
+			{"Kyiv", 30.5, 50.5, true},
+			{"Tashkent", 69.24, 41.3, true},
+			{"Berlin", 13.4, 52.5, false},
+		}},
+		{1900, "Germany", []place{
+			{"Berlin", 13.4, 52.5, true},
+			{"Munich", 11.58, 48.14, true},
+			{"Paris", 2.35, 48.86, false},
+		}},
+		{1960, "United States", []place{
+			{"Denver", -104.99, 39.74, true},
+			{"Kansas City", -94.58, 39.1, true},
+			{"Toronto", -79.4, 43.65, false},
 		}},
 	}
 
-	res, err := LoadSeed("../../data/seed")
-	if err != nil {
-		t.Fatalf("load seed: %v", err)
-	}
-	set, err := LoadGeo("../../data/geo", res.Entities)
-	if err != nil {
-		t.Fatalf("load geo: %v", err)
-	}
+	slices := loadLayerOrSkip(t, "../../data/geo/borders")
 	byYear := map[int]model.BorderLayer{}
-	for _, l := range set.Borders {
+	for _, l := range slices {
 		byYear[l.Year] = l
 	}
 
 	for _, tc := range cases {
 		layer, ok := byYear[tc.year]
 		if !ok {
-			t.Errorf("no border layer for %d", tc.year)
+			t.Errorf("no border slice for %d", tc.year)
 			continue
 		}
 		polys := featurePolygons(t, layer, tc.feature)
@@ -162,33 +141,89 @@ func TestCuratedExtentsCoverTheRightPlaces(t *testing.T) {
 	}
 }
 
+// TestPaleoSlicesHoldTheRightAmountOfWorld is the deep-time equivalent. There
+// are no polities to name and no fixed places to test - the whole point is
+// that the ground moved - so what is pinned instead is that every slice still
+// carries a plausible amount of land, spread over both hemispheres. A
+// simplification bug that ate continents, or a reconstruction that collapsed
+// to a blob, shows up here.
+func TestPaleoSlicesHoldTheRightAmountOfWorld(t *testing.T) {
+	slices := loadLayerOrSkip(t, "../../data/geo/paleo")
+
+	// Earth's land is ~29% of a 64800 sq-deg sphere in lon/lat, but lon/lat
+	// area over-counts high latitudes badly, so these bounds are deliberately
+	// loose: they catch "a continent vanished", not a percent of drift.
+	const minArea, maxArea = 2000.0, 40000.0
+	for _, s := range slices {
+		var total float64
+		var minLon, maxLon = 180.0, -180.0
+		var minLat, maxLat = 90.0, -90.0
+		for _, f := range s.Features {
+			for _, poly := range decodePolygons(t, f.Geometry) {
+				total += shoelace(poly[0])
+				for _, c := range poly[0] {
+					minLon, maxLon = min(minLon, c[0]), max(maxLon, c[0])
+					minLat, maxLat = min(minLat, c[1]), max(maxLat, c[1])
+				}
+			}
+		}
+		switch {
+		case total < minArea:
+			t.Errorf("%s: only %.0f sq deg of land left; a landmass was lost", s.Label, total)
+		case total > maxArea:
+			t.Errorf("%s: %.0f sq deg of land is more world than exists", s.Label, total)
+		case maxLon-minLon < 180:
+			t.Errorf("%s: land spans only %.0f deg of longitude", s.Label, maxLon-minLon)
+		case maxLat-minLat < 90:
+			t.Errorf("%s: land spans only %.0f deg of latitude", s.Label, maxLat-minLat)
+		}
+	}
+}
+
+func shoelace(ring [][]float64) float64 {
+	sum := 0.0
+	for i := 0; i+1 < len(ring); i++ {
+		sum += ring[i][0]*ring[i+1][1] - ring[i+1][0]*ring[i][1]
+	}
+	if sum < 0 {
+		return -sum / 2
+	}
+	return sum / 2
+}
+
+func decodePolygons(t *testing.T, raw json.RawMessage) [][][][]float64 {
+	t.Helper()
+	var g struct {
+		Type        string          `json:"type"`
+		Coordinates json.RawMessage `json:"coordinates"`
+	}
+	if err := json.Unmarshal(raw, &g); err != nil {
+		t.Fatal(err)
+	}
+	if g.Type == "Polygon" {
+		var p [][][]float64
+		if err := json.Unmarshal(g.Coordinates, &p); err != nil {
+			t.Fatal(err)
+		}
+		return [][][][]float64{p}
+	}
+	var mp [][][][]float64
+	if err := json.Unmarshal(g.Coordinates, &mp); err != nil {
+		t.Fatal(err)
+	}
+	return mp
+}
+
 func featurePolygons(t *testing.T, layer model.BorderLayer, name string) [][][][]float64 {
 	t.Helper()
+	var out [][][][]float64
 	for _, f := range layer.Features {
 		if f.Name != name {
 			continue
 		}
-		var g struct {
-			Type        string          `json:"type"`
-			Coordinates json.RawMessage `json:"coordinates"`
-		}
-		if err := json.Unmarshal(f.Geometry, &g); err != nil {
-			t.Fatal(err)
-		}
-		if g.Type == "Polygon" {
-			var p [][][]float64
-			if err := json.Unmarshal(g.Coordinates, &p); err != nil {
-				t.Fatal(err)
-			}
-			return [][][][]float64{p}
-		}
-		var mp [][][][]float64
-		if err := json.Unmarshal(g.Coordinates, &mp); err != nil {
-			t.Fatal(err)
-		}
-		return mp
+		out = append(out, decodePolygons(t, f.Geometry)...)
 	}
-	return nil
+	return out
 }
 
 // inAny: inside any polygon's exterior ring and outside all of its holes.

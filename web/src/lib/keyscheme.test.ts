@@ -6,7 +6,7 @@ import {
   windowIndex,
   bucketForSpan,
   layerKey,
-  nearestTimestep,
+  coveringTimestep,
   SECONDS_PER_YEAR,
 } from "./keyscheme";
 import type { Bucket } from "./manifest";
@@ -43,22 +43,43 @@ describe("windowIndex fixture parity", () => {
 });
 
 describe("layer time-steps", () => {
-  const steps = [117, 1279, 1914, 1942, 1990];
+  // A tiling layer, spaced as unevenly as the real one: a 113,000-year window
+  // followed by century and decade windows.
+  const steps = [
+    { year: -123000, t_from: -123000, t_to: -10001 },
+    { year: -10000, t_from: -10000, t_to: -8001 },
+    { year: 1900, t_from: 1900, t_to: 1913 },
+    { year: 1914, t_from: 1914, t_to: 1919 },
+    { year: 1920, t_from: 1920, t_to: 2035 },
+  ];
 
   it("builds the API-4 layer key", () => {
     expect(layerKey("borders", 1942)).toBe("layers/borders/1942.json");
     expect(layerKey("borders", -500)).toBe("layers/borders/-500.json");
   });
 
-  it("snaps to the nearest step, forwards or backwards", () => {
-    expect(nearestTimestep(steps, 1943)).toBe(1942);
-    expect(nearestTimestep(steps, 1900)).toBe(1914);
-    expect(nearestTimestep(steps, -3000)).toBe(117); // far outside: still nearest
-    expect(nearestTimestep(steps, 1928)).toBe(1914); // exact midpoint: earlier wins
+  it("picks the step whose window covers the year", () => {
+    expect(coveringTimestep(steps, 1916)?.year).toBe(1914);
+    expect(coveringTimestep(steps, 1900)?.year).toBe(1900); // first year of a window
+    expect(coveringTimestep(steps, 1913)?.year).toBe(1900); // last year of a window
+    expect(coveringTimestep(steps, 2035)?.year).toBe(1920);
   });
 
-  it("has no answer when a layer has no steps", () => {
-    expect(nearestTimestep([], 1942)).toBeNull();
+  it("covers a long window rather than snapping to a nearer step", () => {
+    // The regression this replaced nearest-step snapping for: 66500 BC is
+    // nearer to the 10000 BC step, but only the 123000 BC step covers it, and
+    // snapping to the nearer one blanked the map across most of prehistory.
+    expect(coveringTimestep(steps, -66500)?.year).toBe(-123000);
+    expect(coveringTimestep(steps, -10001)?.year).toBe(-123000);
+    expect(coveringTimestep(steps, -10000)?.year).toBe(-10000);
+  });
+
+  it("has no answer outside every window, rather than the nearest one", () => {
+    expect(coveringTimestep(steps, -500000)).toBeNull(); // before the layer
+    expect(coveringTimestep(steps, -9000)).not.toBeNull();
+    expect(coveringTimestep(steps, -5000)).toBeNull(); // in the layer's own gap
+    expect(coveringTimestep(steps, 3000)).toBeNull(); // after the layer
+    expect(coveringTimestep([], 1942)).toBeNull();
   });
 });
 
