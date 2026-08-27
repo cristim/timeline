@@ -128,8 +128,9 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
     }
 
     // ── items: greedy row packing, importance first ────
-    // Lanes hold the top items that start or end inside the view; items that
-    // merely pass through the whole view are skipped (lib/visible.ts).
+    // Lanes hold the top items that start or end inside the view; pass-through
+    // items are skipped, and anything point-like at this zoom has to sit near
+    // the time cursor to earn a row (lib/visible.ts).
     hits.current = [];
     const rows: number[] = []; // per-row rightmost occupied x
     const maxRows = Math.floor((h - AXIS_H - 6) / ROW_H);
@@ -139,7 +140,7 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
     }
     ctx.font = "11px system-ui, sans-serif";
 
-    for (const item of laneItems(items, t0, t1)) {
+    for (const item of laneItems(items, { t0, t1, cursor, selected })) {
       const isSpan = item.t1 > item.t0 && x(item.t1) - x(item.t0) > 8;
       const x0 = Math.max(-200, x(item.t0));
       const x1 = isSpan ? Math.min(w + 200, x(item.t1)) : x0;

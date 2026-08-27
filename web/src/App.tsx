@@ -8,7 +8,7 @@ import { Inspector, focusEntity } from "./components/Inspector";
 import { SearchBox } from "./components/SearchBox";
 import { useEntity, useManifest, useTimeLayer, useViewportItems } from "./lib/hooks";
 import { cursorTime, DEFAULT_VIEW, parseView, serializeView, type ViewState } from "./lib/state";
-import { laneItems } from "./lib/visible";
+import { laneItems, mapItems } from "./lib/visible";
 import { frontAt, frontBounds } from "./lib/fronts";
 import { formatTime } from "./lib/timefmt";
 import { categoryColor } from "./lib/colors";
@@ -185,12 +185,15 @@ export function App() {
   // At most one area layer covers any moment, so the chip has one subject.
   const mapLayer = paleo ?? era;
 
-  // The status-bar count matches what the timeline lanes actually consider
-  // (top-100 starting/ending in view), not the raw chunk union.
-  const laneCount = useMemo(
-    () => laneItems(items, view.t0, view.t1).length,
-    [items, view.t0, view.t1],
+  // One visibility judgement, shared by the map, the lanes and the count.
+  const visibility = useMemo(
+    () => ({ t0: view.t0, t1: view.t1, cursor: tc, selected: view.selected }),
+    [view.t0, view.t1, tc, view.selected],
   );
+  const mapVisible = useMemo(() => mapItems(items, visibility), [items, visibility]);
+  // The status-bar count matches what the timeline lanes actually show
+  // (top-100 after declutter), not the raw chunk union.
+  const laneCount = useMemo(() => laneItems(items, visibility).length, [items, visibility]);
 
   if (error) {
     return (
@@ -235,7 +238,7 @@ export function App() {
       <div className="mid">
         <div className="stage">
           <MapView
-            items={items}
+            items={mapVisible}
             selected={view.selected}
             era={era}
             paleo={paleo}
