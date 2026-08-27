@@ -81,18 +81,23 @@ body {
   background: transparent; cursor: crosshair;
   /* opacity is driven per-frame by the eased zoom (fade over the globe) */
 }
-.era-chip {
+/* Stacked rather than individually positioned, so a wrapping era label pushes
+   the front chip down instead of colliding with it. */
+.map-chips {
   position: absolute; top: 10px; left: 12px; z-index: 3; pointer-events: none;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  max-width: 46%;
+}
+.era-chip {
   background: rgba(11, 15, 23, 0.78); border: 1px solid var(--hair-2);
   border-radius: 6px; padding: 4px 9px;
-  font: 500 10.5px var(--ui); color: var(--text-1); max-width: 46%;
+  font: 500 10.5px var(--ui); color: var(--text-1);
 }
 .era-chip.empty { color: var(--text-3); border-color: var(--hair); font-style: italic; }
 .front-chip {
-  position: absolute; top: 40px; left: 12px; z-index: 3; pointer-events: none;
   background: rgba(11, 15, 23, 0.78); border: 1px solid rgba(201, 107, 74, 0.5);
   border-radius: 6px; padding: 4px 9px;
-  font: 500 10.5px var(--ui); color: #e0a68f; max-width: 46%;
+  font: 500 10.5px var(--ui); color: #e0a68f;
 }
 .front-chip .fc-near, .front-chip .fc-held { color: var(--text-3); }
 .front-chip.held { border-color: var(--hair); }

@@ -129,13 +129,19 @@ export function App() {
 
   // War focus: a selected entity carrying dated front positions (DM-7) gets
   // its front interpolated to the cursor and the map framed on the theatre.
-  const frontPositions = selectedDoc?.geometry;
+  // Only line geometry is a front. A future polygon record on the same entity
+  // (a battlefield extent, say) is a different thing and must not be
+  // interpolated as one.
+  const frontPositions = useMemo(
+    () => selectedDoc?.geometry?.filter((g) => g.geometry.type === "LineString"),
+    [selectedDoc],
+  );
   const front = useMemo(
-    () => (frontPositions ? frontAt(frontPositions, tc) : null),
+    () => (frontPositions?.length ? frontAt(frontPositions, tc) : null),
     [frontPositions, tc],
   );
   const focusBounds = useMemo(
-    () => (frontPositions ? frontBounds(frontPositions) : null),
+    () => (frontPositions?.length ? frontBounds(frontPositions) : null),
     [frontPositions],
   );
 
@@ -233,16 +239,18 @@ export function App() {
           />
           {/* Say what the overlay is, and say when there is nothing to show
               rather than leaving the map silently modern. */}
-          <div className={`era-chip ${era ? "" : "empty"}`}>
-            {era ? era.properties.label : `no border data for ${cursorLabel}`}
-          </div>
-          {front && (
-            <div className={`front-chip ${front.held ? "held" : ""}`}>
-              <b>{cursorLabel}</b> front line
-              {front.label && <span className="fc-near"> · nearest trace: {front.label}</span>}
-              {front.held && <span className="fc-held"> · held: cursor is outside the war</span>}
+          <div className="map-chips">
+            <div className={`era-chip ${era ? "" : "empty"}`}>
+              {era ? era.properties.label : `no border data for ${cursorLabel}`}
             </div>
-          )}
+            {front && (
+              <div className={`front-chip ${front.held ? "held" : ""}`}>
+                <b>{cursorLabel}</b> front line
+                {front.label && <span className="fc-near"> · nearest trace: {front.label}</span>}
+                {front.held && <span className="fc-held"> · held: cursor is outside the war</span>}
+              </div>
+            )}
+          </div>
           {view.space > 0 && (
             <SpaceView s={view.space} onZoom={setSpace} onSelect={setSelected} />
           )}

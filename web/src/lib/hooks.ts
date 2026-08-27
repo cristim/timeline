@@ -118,7 +118,10 @@ export function useEraLayer(
     let live = true;
     fetchLayerIndex(manifest, layer).then(
       (d) => live && setIndex(d),
-      (e: unknown) => console.error("layer index load failed:", e),
+      (e: unknown) => {
+        console.error("layer index load failed:", e);
+        if (live) setIndex(null); // no index means no overlay, not a stale one
+      },
     );
     return () => {
       live = false;

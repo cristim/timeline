@@ -8,6 +8,7 @@ import { formatTime } from "../lib/timefmt";
 import { laneItems } from "../lib/visible";
 import { SECONDS_PER_YEAR } from "../lib/keyscheme";
 import { cursorTime } from "../lib/state";
+import { devHook } from "../lib/devhook";
 
 // Hard clamps: a linear axis cannot reach the 1e100-year tail; far-future
 // items pin to a right-edge gutter instead (the deep-time overview strip in
@@ -208,10 +209,7 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
       }
     }
 
-    if (import.meta.env.DEV) {
-      // e2e test hook (dev server only)
-      (window as unknown as Record<string, unknown>).__wkhits = hits.current;
-    }
+    devHook("__wkhits", hits.current);
 
     // ── beyond-range future gutter ─────────────────────
     if (offRight.length) {

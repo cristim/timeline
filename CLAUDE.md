@@ -37,5 +37,6 @@ found-but-deferred items - check it before starting, prune what you resolve.
   references resolve against the seed, era windows may not overlap, rings must
   be closed and wound per RFC 7946, and front positions must share a vertex
   count. Re-bake after editing.
-- Dev-only browser hooks for e2e: `window.__wkmap`, `window.__wkhits`
+- Dev-only browser hooks for e2e: `window.__wkmap`, `window.__wkhits`,
+  `window.__wkera`, `window.__wkfront`
   (stripped from prod builds).

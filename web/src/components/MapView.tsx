@@ -15,6 +15,7 @@ import type { FeatureCollection, Point } from "geojson";
 import type { BorderLayerDoc, ChunkItem } from "../lib/data";
 import type { FrontSample } from "../lib/fronts";
 import { categoryColor, FALLBACK_COLOR } from "../lib/colors";
+import { devHook } from "../lib/devhook";
 
 // The globe-ready demotiles style (projection: globe baked in). The plain
 // style.json renders an empty pale sphere under globe projection.
@@ -151,13 +152,6 @@ function frontFC(front: FrontSample | null): FeatureCollection {
       },
     ],
   };
-}
-
-/** e2e hook, dev server only; stripped from prod builds. */
-function devHook(name: string, value: unknown) {
-  if (import.meta.env.DEV) {
-    (window as unknown as Record<string, unknown>)[name] = value;
-  }
 }
 
 export function MapView({
