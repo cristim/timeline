@@ -30,6 +30,13 @@
   coverage-window index, the covering-slice lookup and the crossfade all carry
   over unchanged. At 89 slices the bodies are 200-600 KB each, which the
   client offsets by fetching lazily and evicting past 24 cached slices.
+- **The paleo layer is pinned by model name, not by version.** `fetch-borders`
+  pins a git commit, and a re-fetch is byte-identical (verified). `fetch-paleo`
+  can only ask the GPlates Web Service for `MERDITH2021`, so if EarthByte
+  revises that model's data the output changes silently while
+  `baker geo-fingerprint` stays the same, and CI would keep serving the cached
+  old copy until the key changes for some other reason. The coverage and
+  plausibility tests would catch a gross change; a subtle one would pass.
 - **No future plate motion.** The timeline runs into the far future but the
   paleo layer stops at the present. This is an upstream limit, not an
   oversight: the GPlates Web Service rejects every negative (future) time on
