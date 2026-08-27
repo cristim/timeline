@@ -114,11 +114,22 @@ const STEP_SETTLE_MS = 120;
  * reconstructed coastlines before it. Their coverage windows are disjoint, so
  * at most one of them ever returns a document.
  */
+export interface TimeLayerState {
+  /** The slice covering the cursor, or null when none does. */
+  doc: BorderLayerDoc | null;
+  /**
+   * The years this layer speaks for at all, across every slice; null until the
+   * index lands. What separates "no reconstruction exists this far back" from
+   * "past the end of the atlas", which the map has to answer differently.
+   */
+  coverage: { from: number; to: number } | null;
+}
+
 export function useTimeLayer(
   manifest: Manifest | null,
   tc: number,
   layer: string,
-): BorderLayerDoc | null {
+): TimeLayerState {
   const [index, setIndex] = useState<LayerIndexDoc | null>(null);
   const [doc, setDoc] = useState<BorderLayerDoc | null>(null);
   // The cursor the fetch follows, a beat behind the one the map follows.
@@ -173,7 +184,18 @@ export function useTimeLayer(
     };
   }, [manifest, layer, step]);
 
-  return doc;
+  const coverage = useMemo(() => {
+    if (!index?.steps.length) return null;
+    let from = index.steps[0].t_from;
+    let to = index.steps[0].t_to;
+    for (const s of index.steps) {
+      from = Math.min(from, s.t_from);
+      to = Math.max(to, s.t_to);
+    }
+    return { from, to };
+  }, [index]);
+
+  return useMemo(() => ({ doc, coverage }), [doc, coverage]);
 }
 
 export function useEntity(manifest: Manifest | null, slug: string | null): EntityDoc | null {
