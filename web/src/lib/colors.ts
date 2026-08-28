@@ -27,19 +27,7 @@ export function colorFor(categories: string[]): string {
   return FALLBACK_COLOR;
 }
 
-/**
- * A stable colour for one historical polity, keyed by its name.
- *
- * Neighbouring polities have to be told apart, and there is nothing to colour
- * by: historical-basemaps carries a name and a representation, no region, no
- * culture, no successor chain. So the name picks the hue. Saturation and
- * lightness are fixed to the band the category palette above occupies, which
- * is what keeps a hashed hue looking like part of this design rather than a
- * random-colour map.
- *
- * FNV-1a, for the usual reason: short names differing in one letter land far
- * apart, so France and Francia do not come out the same colour.
- */
+/** Stable polity colour when the source provides no thematic attribute. */
 export function polityColor(name: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < name.length; i++) {

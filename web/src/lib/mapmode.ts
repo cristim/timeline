@@ -1,11 +1,3 @@
-// What kind of world the globe is showing at the cursor.
-//
-// The map has exactly one honest answer for any moment, and three of the four
-// are not "modern Earth". Before the oldest reconstruction there is no map at
-// all; through recorded history the political slices replace the modern
-// political map rather than sitting on top of it; in deep time the paleo
-// coastlines do the same.
-
 export type MapMode =
   /** Reconstructed coastlines: deep time. */
   | "paleo"
@@ -16,11 +8,7 @@ export type MapMode =
   /** No reconstruction exists for this moment. Sphere, no geography. */
   | "void";
 
-/**
- * Earth's formation, 4.54 Ga - the lead-lead age of the solar system's
- * oldest solids, and the conventional figure. Before it there is not merely no
- * map, there is no planet to draw one of.
- */
+/** Conventional age of Earth's formation. */
 export const EARTH_FORMED_YEAR = -4.54e9;
 
 export interface MapModeInput {
@@ -44,11 +32,7 @@ export function mapMode({ year, hasPaleo, hasEra, eraTo }: MapModeInput): MapMod
   return "void";
 }
 
-/**
- * What to say on the chip when there is no map, or null when nothing more
- * specific than "no map data for <date>" is known - which is also the state
- * while the layer indexes are still loading.
- */
+/** Specific void-state copy, or null while coverage is unknown. */
 export function voidChipLabel(year: number, paleoFrom: number | null): string | null {
   if (year < EARTH_FORMED_YEAR) {
     return "no map: Earth does not exist yet (it forms ≈ 4.54 Ga)";

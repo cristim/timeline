@@ -39,10 +39,7 @@ interface LayerStyle {
   lineWidth: number;
 }
 
-// A political slice REPLACES the modern political map rather than washing over
-// it: opaque polities, each its own colour off the name hash, on a neutral land
-// base. A translucent overlay left modern Germany legible under the 1500 map
-// and gave no way to tell which borders were which.
+// Political slices replace the modern political map rather than overlay it.
 const ERA_STYLE: LayerStyle = {
   fill: ["get", "color"],
   line: "#101726",
@@ -51,10 +48,7 @@ const ERA_STYLE: LayerStyle = {
   lineWidth: 1.2,
 };
 
-// Deep time is the same problem, one step further: none of the modern
-// geography existed, not even the coastlines. Reconstructed landmasses on the
-// same opaque ocean, in one colour because the source knows of only one thing
-// ("land" - the GPlates coastlines carry no names).
+// GPlates carries no feature names, so reconstructed land uses one colour.
 const PALEO_STYLE: LayerStyle = {
   fill: "#9a8c66",
   line: "#6d6144",
@@ -317,12 +311,7 @@ class SlotPair {
   }
 }
 
-/**
- * Gives every polity in a slice its own fill colour, so a political map reads
- * as many countries rather than one wash. Done here rather than in the baker:
- * it is a rendering choice, and the artifacts are immutable and cached for a
- * year.
- */
+/** Add client-side rendering colours without changing immutable artifacts. */
 function withPolityColors(doc: BorderLayerDoc): BorderLayerDoc {
   return {
     ...doc,

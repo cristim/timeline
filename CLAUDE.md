@@ -46,7 +46,7 @@ found-but-deferred items - check it before starting, prune what you resolve.
   the nearest slice. Slice spacing is uneven enough that those differ across
   most of prehistory.
 - Dev-only browser hooks for e2e: `window.__wkmap`, `window.__wkhits`,
-  `window.__wkera`, `window.__wkpaleo`, `window.__wkfront` (stripped from prod
-  builds - the suite runs against the static artifact too, so a test that
+  `window.__wkera`, `window.__wkpaleo`, `window.__wkfront`, `window.__wkmode`
+  (stripped from prod builds - the suite runs against the static artifact too, so a test that
   needs one of these will pass locally and fail in CI; assert on the DOM or on
   the requests instead).

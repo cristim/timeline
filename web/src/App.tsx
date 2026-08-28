@@ -14,7 +14,7 @@ import { formatTime } from "./lib/timefmt";
 import { secondsToYear } from "./lib/keyscheme";
 import { mapMode, voidChipLabel } from "./lib/mapmode";
 import { categoryColor } from "./lib/colors";
-import type { SearchEntry } from "./lib/data";
+import type { ChunkItem, SearchEntry } from "./lib/data";
 
 // Timeline shell sizing: draggable between MIN and MAX; dragging below the
 // collapse threshold folds it down to just the status bar.
@@ -204,10 +204,30 @@ export function App() {
     () => ({ t0: view.t0, t1: view.t1, cursor: tc, selected: view.selected }),
     [view.t0, view.t1, tc, view.selected],
   );
-  const mapVisible = useMemo(() => mapItems(items, visibility), [items, visibility]);
+  const displayItems = useMemo<ChunkItem[]>(() => {
+    if (!selectedDoc || items.some((i) => i.slug === selectedDoc.slug)) return items;
+    return [
+      ...items,
+      {
+        slug: selectedDoc.slug,
+        type: selectedDoc.type,
+        name: selectedDoc.name,
+        t0: selectedDoc.temporal.t0,
+        t1: selectedDoc.temporal.t1,
+        precision: selectedDoc.temporal.precision,
+        status: selectedDoc.temporal.status,
+        point: selectedDoc.point,
+        categories: selectedDoc.categories,
+        importance: selectedDoc.importance,
+        media_thumb: selectedDoc.media_thumb,
+        child_count: selectedDoc.children?.length,
+      },
+    ];
+  }, [items, selectedDoc]);
+  const mapVisible = useMemo(() => mapItems(displayItems, visibility), [displayItems, visibility]);
   // The status-bar count matches what the timeline lanes actually show
   // (top-100 after declutter), not the raw chunk union.
-  const laneCount = useMemo(() => laneItems(items, visibility).length, [items, visibility]);
+  const laneCount = useMemo(() => laneItems(displayItems, visibility).length, [displayItems, visibility]);
 
   if (error) {
     return (
@@ -311,7 +331,7 @@ export function App() {
           <Timeline
             t0={view.t0}
             t1={view.t1}
-            items={items}
+            items={displayItems}
             selected={view.selected}
             tc={view.tc}
             onRange={setRange}

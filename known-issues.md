@@ -78,3 +78,7 @@
   they vanished walked the front line through neutral Sweden. The traces now
   cover only the German-Soviet front, north to south. A front that genuinely
   gains or loses a segment is still awkward to curate.
+- **Paleo shapes cannot be named on hover.** The political slices carry a
+  polity name per feature and the map tooltips read it. The GPlates coastlines
+  arrive with no properties at all and are all written as `land`
+  (`internal/ingest/paleo.go`), so there is nothing to show for deep time.

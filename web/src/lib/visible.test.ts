@@ -6,6 +6,7 @@ import {
   mapVisible,
   nearCursor,
   pointLike,
+  futureGutterItems,
   startsOrEndsWithin,
   type Visibility,
 } from "./visible";
@@ -245,5 +246,44 @@ describe("mapItems", () => {
     const rome = [item("rome", -1e6, 1e6)];
     expect(mapItems(rome, view()).map((i) => i.slug)).toEqual(["rome"]);
     expect(laneItems(rome, view())).toHaveLength(0);
+  });
+});
+
+describe("futureGutterItems", () => {
+  it("does not leak distant future events into the timeline", () => {
+    const items = [item("constantinople", 5000, 5000)];
+    expect(futureGutterItems(items, view()).map((i) => i.slug)).toEqual([]);
+  });
+
+  it("keeps near-future items when the cursor band reaches them", () => {
+    const items = [item("soon", 1040, 1040), item("far", 5000, 5000)];
+    expect(futureGutterItems(items, view({ cursor: 950 })).map((i) => i.slug)).toEqual([
+      "soon",
+    ]);
+  });
+
+  it("gates a short interval outside the cursor band", () => {
+    expect(futureGutterItems([item("short", 5000, 5009)], view())).toEqual([]);
+  });
+
+  it("keeps real intervals outside the cursor band", () => {
+    expect(futureGutterItems([item("era", 5000, 5100)], view()).map((i) => i.slug)).toEqual([
+      "era",
+    ]);
+  });
+
+  it("keeps the selected item even outside the cursor band", () => {
+    const items = [item("chosen", 5000, 5000)];
+    expect(futureGutterItems(items, view({ selected: "chosen" })).map((i) => i.slug)).toEqual([
+      "chosen",
+    ]);
+  });
+
+  it("does not let the cap drop the selected item", () => {
+    const items = Array.from({ length: 20 }, (_, i) => item(`near-${i}`, 1040, 1040));
+    items.push(item("chosen", 5000, 5000));
+    const out = futureGutterItems(items, view({ cursor: 950, selected: "chosen" }), 8);
+    expect(out).toHaveLength(8);
+    expect(out[0].slug).toBe("chosen");
   });
 });

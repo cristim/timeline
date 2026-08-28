@@ -1,15 +1,3 @@
-// What the map and the timeline are allowed to show at a given view + cursor.
-//
-// Two rules stack. The older one is about the *view*: lanes hold the top items
-// by importance that START or END inside the visible range, because items that
-// merely pass through (Christianity across a 1942 view) are background context,
-// not lane content.
-//
-// The newer one is about the *cursor*. A chunk window at deep-time zoom covers
-// all of human history, so at 250 Ma the raw union still contains the Fall of
-// Constantinople - a zero-length event 250 million years from anything on
-// screen. Anything point-like has to earn its place by sitting near the cursor,
-// the moment the map is actually showing.
 import type { ChunkItem } from "./data";
 
 export const LANE_CAP = 100;
@@ -23,11 +11,7 @@ export const PERIPHERY = 0.15;
  */
 export const CURSOR_NEAR = 0.1;
 
-/**
- * An interval shorter than this fraction of the visible span is indistinguishable
- * from a moment at this zoom, so it is treated as one - which is what subjects it
- * to the cursor rule. Frees the lanes to show the real intervals instead.
- */
+/** Intervals shorter than this fraction of the view are treated as moments. */
 export const MIN_INTERVAL_FRACTION = 0.01;
 
 /** The view and cursor an item's visibility is judged against. */
@@ -60,12 +44,7 @@ export function pointLike(item: ChunkItem, span: number): boolean {
   return item.t1 - item.t0 < span * MIN_INTERVAL_FRACTION;
 }
 
-/**
- * True when the item's own interval contains the cursor - it existed at the
- * moment the map is showing. Type-agnostic on purpose: a city founded in 300 BC
- * and still standing qualifies at a 1500 cursor for the same reason a war does
- * mid-war, without either being special-cased by entity type.
- */
+/** True when the item existed at the moment shown on the map. */
 export function coversCursor(item: ChunkItem, v: Visibility): boolean {
   return item.t0 <= v.cursor && item.t1 >= v.cursor;
 }
@@ -76,20 +55,7 @@ export function nearCursor(item: ChunkItem, v: Visibility): boolean {
   return item.t1 >= v.cursor - band && item.t0 <= v.cursor + band;
 }
 
-/**
- * What the map may draw: covers the cursor, or sits near it.
- *
- * Covering the cursor is its own admission ticket, ahead of the in-view test,
- * because the long-lived things are exactly the ones that span the whole view
- * and so "start or end within" it - a rule written for lane content, where
- * pass-through items are background rather than rows. On the map they are the
- * subject: at a 1500 cursor, Rome is what a map of 1500 should have on it.
- *
- * Everything else has to start or end in view, and anything point-like at this
- * zoom additionally has to sit inside the cursor's band. The selected entity is
- * exempt from all of it: a selection that vanishes because the cursor moved is
- * a bug, not declutter.
- */
+/** Map items cover the cursor, or start/end in view and pass the point gate. */
 export function mapVisible(item: ChunkItem, v: Visibility): boolean {
   if (item.slug === v.selected) return true;
   if (coversCursor(item, v)) return true;
@@ -98,18 +64,7 @@ export function mapVisible(item: ChunkItem, v: Visibility): boolean {
   return true;
 }
 
-/**
- * What the lanes may hold. Unlike the map, an item that merely passes through
- * the whole view stays background context rather than taking a row (that is
- * what the map is for), so there is no covers-the-cursor bypass here - and none
- * is needed for point-like items, whose interval containing the cursor already
- * puts them inside its band.
- *
- * Periphery declutter applies only to real intervals: a point-like item has
- * been judged against the cursor already, and a cursor pinned near an edge puts
- * its own band inside the edge band, where declutter would hide exactly what
- * the user pinned.
- */
+/** Lane items start/end in view; point-like items use the cursor gate. */
 export function laneVisible(item: ChunkItem, v: Visibility): boolean {
   if (item.slug === v.selected) return true;
   if (!startsOrEndsWithin(item, v.t0, v.t1)) return false;
@@ -120,6 +75,29 @@ export function laneVisible(item: ChunkItem, v: Visibility): boolean {
 /** Markers the map may draw. No cap: the map declutters by geography, not rows. */
 export function mapItems(items: ChunkItem[], v: Visibility): ChunkItem[] {
   return items.filter((i) => mapVisible(i, v));
+}
+
+/** Right-gutter items keep real intervals but cursor-gate point-like ones. */
+export function futureGutterItems(
+  items: ChunkItem[],
+  v: Visibility,
+  cap: number = 12,
+): ChunkItem[] {
+  const out: ChunkItem[] = [];
+  for (const item of items) {
+    if (item.t0 <= v.t1) continue;
+    if (
+      item.slug !== v.selected &&
+      pointLike(item, v.t1 - v.t0) &&
+      !nearCursor(item, v)
+    ) {
+      continue;
+    }
+    out.push(item);
+  }
+  return out
+    .sort((a, b) => Number(b.slug === v.selected) - Number(a.slug === v.selected))
+    .slice(0, cap);
 }
 
 /**

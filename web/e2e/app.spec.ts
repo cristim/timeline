@@ -379,9 +379,6 @@ test("a war with curated fronts animates against the cursor", async ({ page }) =
   expect(w.notFound).toEqual([]);
 });
 
-// ── honesty of the globe outside the atlas ───────────────────────────────
-// Falling back to the modern countries older than the oldest reconstruction
-// is a lie: none of that geography existed, and the app knows it.
 test("older than every reconstruction the globe says so and shows nothing", async ({ page }) => {
   const w = watch(page);
   const layers = watchLayers(page);
@@ -390,11 +387,8 @@ test("older than every reconstruction the globe says so and shows nothing", asyn
   const chip = page.locator(".era-chip");
   await expect(chip).toContainText("no reconstruction earlier than 540 Ma");
   await expect(chip).toHaveClass(/void/);
-  // Nothing covers the cursor, so no slice body is worth downloading.
   expect(layers).toEqual([]);
 
-  // The sphere is still there, painted the "no data" slate - neither the
-  // basemap's pale pastel nor the ocean blue of a real map.
   await page.waitForTimeout(2500);
   const centre = await mapCentrePixel(page);
   const px = JSON.stringify(centre);
@@ -410,17 +404,12 @@ test("before Earth exists the chip says that instead", async ({ page }) => {
   await expect(page.locator(".era-chip")).toHaveClass(/void/);
 });
 
-// The political layer has to REPLACE the modern political map, not wash over
-// it: modern Germany under the 1500 map made the overlay unreadable.
 test("recorded history replaces the modern basemap", async ({ page }) => {
   const w = watch(page);
   await gotoYear(page, 1500, 60 * SECONDS_PER_YEAR);
   await expect(page.locator(".era-chip")).toContainText("world borders · 1500");
   await page.waitForTimeout(3000); // slice + crossfade
 
-  // demotiles paints land and ocean in pale pastels. Nowhere on the globe may
-  // still be showing them: the opaque ocean, the neutral land base and the
-  // polities cover the lot.
   for (const [fx, fy] of [
     [0.5, 0.5], // Mediterranean: ocean
     [0.42, 0.55], // Africa: land base or a polity
@@ -442,7 +431,6 @@ test("hovering a polity names it", async ({ page }) => {
   const box = (await page.locator(".map-container").boundingBox())!;
   const cx = box.x + box.width / 2;
   const cy = box.y + box.height / 2;
-  // Land is not under every pixel of a globe; sweep a few until one answers.
   for (const [dx, dy] of [
     [60, 40],
     [0, 0],
@@ -458,12 +446,10 @@ test("hovering a polity names it", async ({ page }) => {
   await expect(tip).toBeVisible();
   await expect(tip).not.toBeEmpty();
 
-  // It follows the pointer and lets go of the map.
   await page.mouse.move(cx + 300, cy - 260); // off the globe, onto empty sky
   await expect(tip).toHaveCount(0);
 });
 
-// ── cursor proximity ─────────────────────────────────────────────────────
 // A 1450-1460 view. The 10% band around the cursor is +/-1 year, so 1451
 // excludes the fall of Constantinople (1453.4) and 1453.4 includes it. Both
 // cursors sit inside the 1400 slice's window, so the map's only difference
@@ -475,7 +461,6 @@ const TC_ON = "-1.6302321403e%2B10"; // 1453.4
 test("a point event shows only near the cursor, and a selected one always", async ({ page }) => {
   const w = watch(page);
 
-  // Cursor at 1451: the moment is in view but two years outside the band.
   await page.goto(`./?${NARROW}&tc=${TC_OFF}`);
   await booted(page);
   await expect(page.locator(".era-chip")).toContainText("world borders · 1400");
@@ -483,7 +468,6 @@ test("a point event shows only near the cursor, and a selected one always", asyn
   await expect(page.locator(".count")).toHaveText("0 shown");
   const without = await page.locator(".map-container").screenshot();
 
-  // Drag the cursor onto it and it comes back, on the lanes and the map.
   await page.goto(`./?${NARROW}&tc=${TC_ON}`);
   await booted(page);
   await expect(page.locator(".era-chip")).toContainText("world borders · 1400");
@@ -492,7 +476,6 @@ test("a point event shows only near the cursor, and a selected one always", asyn
   const withIt = await page.locator(".map-container").screenshot();
   expect(Buffer.compare(without, withIt), "the marker must appear on the map").not.toBe(0);
 
-  // Selected, it is exempt: same off-cursor position, still shown.
   await page.goto(`./?${NARROW}&tc=${TC_OFF}&sel=fall-of-constantinople`);
   await booted(page);
   await expect(page.locator(".inspector h2")).toHaveText("Fall of Constantinople");
@@ -501,8 +484,6 @@ test("a point event shows only near the cursor, and a selected one always", asyn
   expect(w.errors, "console errors").toEqual([]);
 });
 
-// The complaint this rule exists for: human history must not litter a view of
-// the Permian.
 test("deep time is not littered with events from other eras", async ({ page }) => {
   await gotoYear(page, -250_000_000, 20_000_000 * SECONDS_PER_YEAR);
   await expect(page.locator(".era-chip")).toHaveClass(/paleo/);
