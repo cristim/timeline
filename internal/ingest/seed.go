@@ -18,6 +18,13 @@ import (
 	"wk/internal/model"
 )
 
+type RejectSource string
+
+const (
+	RejectSourceSeed RejectSource = "seed"
+	RejectSourceWarm RejectSource = "warm"
+)
+
 // SeedManifest is data/seed/manifest.json (DEV-5).
 type SeedManifest struct {
 	SeedVersion string                `json:"seed_version"`
@@ -30,15 +37,22 @@ type SeedFileMD struct {
 }
 
 type Reject struct {
-	File   string `json:"file"`
-	Line   int    `json:"line"`
-	Reason string `json:"reason"`
+	Source RejectSource `json:"source"`
+	File   string       `json:"file"`
+	Line   int          `json:"line"`
+	Reason string       `json:"reason"`
 }
 
 type Result struct {
-	SeedVersion string
-	Entities    []*model.Entity
-	Rejects     []Reject
+	SeedVersion           string
+	SeedInputSHA256       string
+	Entities              []*model.Entity
+	Rejects               []Reject
+	SeedParsed            int
+	SeedAccepted          int
+	WarmParsed            int
+	WarmAccepted          int
+	WarmDuplicatesSkipped int
 }
 
 // LoadSeed reads every file listed in the seed manifest, verifies checksums
@@ -74,13 +88,19 @@ func LoadSeed(dir string) (*Result, error) {
 		if got := hex.EncodeToString(sum[:]); got != md.SHA256 {
 			return nil, fmt.Errorf("seed file %s: sha256 mismatch (manifest %s, actual %s)", name, md.SHA256, got)
 		}
-		n, err := res.loadFile(name, body)
+		n, accepted, err := res.loadFile(name, body)
 		if err != nil {
 			return nil, err
 		}
 		if n != md.Count {
 			return nil, fmt.Errorf("seed file %s: %d entities parsed, manifest says %d", name, n, md.Count)
 		}
+		res.SeedParsed += n
+		res.SeedAccepted += accepted
+	}
+	res.SeedInputSHA256, err = seedInputSHA256(sm)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := model.AssignSlugs(res.Entities); err != nil {
@@ -92,10 +112,11 @@ func LoadSeed(dir string) (*Result, error) {
 	return res, nil
 }
 
-func (r *Result) loadFile(name string, body []byte) (int, error) {
+func (r *Result) loadFile(name string, body []byte) (int, int, error) {
 	sc := bufio.NewScanner(strings.NewReader(string(body)))
 	sc.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	count := 0
+	accepted := 0
 	line := 0
 	for sc.Scan() {
 		line++
@@ -106,20 +127,21 @@ func (r *Result) loadFile(name string, body []byte) (int, error) {
 		count++
 		var se model.SeedEntity
 		if err := json.Unmarshal([]byte(text), &se); err != nil {
-			r.Rejects = append(r.Rejects, Reject{name, line, "invalid JSON: " + err.Error()})
+			r.Rejects = append(r.Rejects, Reject{Source: RejectSourceSeed, File: name, Line: line, Reason: "invalid JSON: " + err.Error()})
 			continue
 		}
 		e, reason := Validate(&se)
 		if reason != "" {
-			r.Rejects = append(r.Rejects, Reject{name, line, reason})
+			r.Rejects = append(r.Rejects, Reject{Source: RejectSourceSeed, File: name, Line: line, Reason: reason})
 			continue
 		}
 		r.Entities = append(r.Entities, e)
+		accepted++
 	}
 	if err := sc.Err(); err != nil {
-		return 0, fmt.Errorf("scan %s: %w", name, err)
+		return 0, 0, fmt.Errorf("scan %s: %w", name, err)
 	}
-	return count, nil
+	return count, accepted, nil
 }
 
 // Validate normalizes one seed record or returns a reject reason.
@@ -217,4 +239,34 @@ func (r *Result) checkRelTargets() error {
 		}
 	}
 	return nil
+}
+
+func seedInputSHA256(manifest SeedManifest) (string, error) {
+	files := make([]string, 0, len(manifest.Files))
+	for name := range manifest.Files {
+		files = append(files, name)
+	}
+	sort.Strings(files)
+
+	type seedInputFile struct {
+		File   string `json:"file"`
+		Count  int    `json:"count"`
+		SHA256 string `json:"sha256"`
+	}
+
+	entries := make([]seedInputFile, 0, len(files))
+	for _, name := range files {
+		md := manifest.Files[name]
+		entries = append(entries, seedInputFile{
+			File:   name,
+			Count:  md.Count,
+			SHA256: md.SHA256,
+		})
+	}
+	body, err := json.Marshal(entries)
+	if err != nil {
+		return "", fmt.Errorf("marshal seed input digest: %w", err)
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:]), nil
 }

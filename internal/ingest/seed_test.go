@@ -1,7 +1,11 @@
 package ingest
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -93,6 +97,15 @@ func TestLoadSeedRealDataset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSeed: %v", err)
 	}
+	if res.SeedParsed != len(res.Entities) {
+		t.Fatalf("SeedParsed = %d, want %d", res.SeedParsed, len(res.Entities))
+	}
+	if res.SeedAccepted != len(res.Entities) {
+		t.Fatalf("SeedAccepted = %d, want %d", res.SeedAccepted, len(res.Entities))
+	}
+	if res.SeedInputSHA256 == "" {
+		t.Fatal("SeedInputSHA256 is empty")
+	}
 	if len(res.Rejects) != 0 {
 		for _, r := range res.Rejects {
 			t.Errorf("seed reject %s:%d: %s", r.File, r.Line, r.Reason)
@@ -111,4 +124,119 @@ func TestLoadSeedRealDataset(t *testing.T) {
 		}
 		slugs[e.Slug] = true
 	}
+}
+
+func TestLoadSeedTracksSeedCountersAndSource(t *testing.T) {
+	t.Parallel()
+
+	dir := writeSeedFixture(t,
+		"seed-abc12345",
+		map[string]string{
+			"part1.ndjson": "\n# ignored comment\n" +
+				`{"id":"entity-1","type":"event","name":"Valid","t0":"1900-01-01","precision":"day","status":"documented","categories":["war"],"importance":0.5}` + "\n" +
+				`{"id":"entity-2","type":"event","name":"Broken","t0":"not-a-date","precision":"day","status":"documented","categories":["war"],"importance":0.5}` + "\n",
+		},
+	)
+
+	res, err := LoadSeed(dir)
+	if err != nil {
+		t.Fatalf("LoadSeed: %v", err)
+	}
+	if res.SeedParsed != 2 {
+		t.Fatalf("SeedParsed = %d, want 2", res.SeedParsed)
+	}
+	if res.SeedAccepted != 1 {
+		t.Fatalf("SeedAccepted = %d, want 1", res.SeedAccepted)
+	}
+	if len(res.Entities) != 1 {
+		t.Fatalf("entities = %d, want 1", len(res.Entities))
+	}
+	if len(res.Rejects) != 1 {
+		t.Fatalf("rejects = %d, want 1", len(res.Rejects))
+	}
+	reject := res.Rejects[0]
+	if reject.Source != RejectSourceSeed {
+		t.Fatalf("reject source = %q, want %q", reject.Source, RejectSourceSeed)
+	}
+	if reject.File != "part1.ndjson" || reject.Line != 4 {
+		t.Fatalf("reject location = %s:%d, want part1.ndjson:4", reject.File, reject.Line)
+	}
+	if !strings.Contains(reject.Reason, "unparseable") {
+		t.Fatalf("reject reason = %q, want unparseable parse error", reject.Reason)
+	}
+}
+
+func TestLoadSeedDifferentFullInputsChangeSeedInputSHA256(t *testing.T) {
+	t.Parallel()
+
+	first := writeSeedFixture(t,
+		"seed-deadbeef",
+		map[string]string{
+			"a.ndjson": `{"id":"entity-1","type":"event","name":"One","t0":"1900-01-01","precision":"day","status":"documented","categories":["war"],"importance":0.5}` + "\n",
+		},
+	)
+	second := writeSeedFixture(t,
+		"seed-deadbeef",
+		map[string]string{
+			"a.ndjson": `{"id":"entity-1","type":"event","name":"One updated","t0":"1900-01-01","precision":"day","status":"documented","categories":["war"],"importance":0.5}` + "\n",
+		},
+	)
+
+	firstRes, err := LoadSeed(first)
+	if err != nil {
+		t.Fatalf("LoadSeed(first): %v", err)
+	}
+	secondRes, err := LoadSeed(second)
+	if err != nil {
+		t.Fatalf("LoadSeed(second): %v", err)
+	}
+	if firstRes.SeedVersion != secondRes.SeedVersion {
+		t.Fatalf("seed versions differ: %q vs %q", firstRes.SeedVersion, secondRes.SeedVersion)
+	}
+	if firstRes.SeedInputSHA256 == secondRes.SeedInputSHA256 {
+		t.Fatalf("SeedInputSHA256 matched for different manifest inputs: %q", firstRes.SeedInputSHA256)
+	}
+}
+
+func writeSeedFixture(t *testing.T, seedVersion string, files map[string]string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	manifest := SeedManifest{
+		SeedVersion: seedVersion,
+		Files:       map[string]SeedFileMD{},
+	}
+	for name, body := range files {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write seed file %s: %v", name, err)
+		}
+		sum := sha256.Sum256([]byte(body))
+		manifest.Files[name] = SeedFileMD{
+			Count:  countSeedRecords(t, body),
+			SHA256: fmt.Sprintf("%x", sum[:]),
+		}
+	}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), manifestBytes, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	return dir
+}
+
+func countSeedRecords(t *testing.T, body string) int {
+	t.Helper()
+
+	count := 0
+	for _, line := range strings.Split(body, "\n") {
+		text := strings.TrimSpace(line)
+		if text == "" || strings.HasPrefix(text, "#") {
+			continue
+		}
+		count++
+	}
+	return count
 }

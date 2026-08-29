@@ -55,22 +55,25 @@ func MergeWarmEvents(res *Result, warm []byte) (added, skipped int, err error) {
 		if text == "" {
 			continue
 		}
+		res.WarmParsed++
 		var we WarmEvent
 		if err := json.Unmarshal([]byte(text), &we); err != nil {
-			res.Rejects = append(res.Rejects, Reject{"warm:events", line, "invalid JSON: " + err.Error()})
+			res.Rejects = append(res.Rejects, Reject{Source: RejectSourceWarm, File: "warm:events", Line: line, Reason: "invalid JSON: " + err.Error()})
 			continue
 		}
 		if _, dup := qidToSeedID[we.Wikidata]; dup && we.Wikidata != "" {
 			skipped++ // curated seed entry wins over the bulk import (DM-2a)
+			res.WarmDuplicatesSkipped++
 			continue
 		}
 		e, reason := Validate(&we.SeedEntity)
 		if reason != "" {
-			res.Rejects = append(res.Rejects, Reject{"warm:events", line, reason})
+			res.Rejects = append(res.Rejects, Reject{Source: RejectSourceWarm, File: "warm:events", Line: line, Reason: reason})
 			continue
 		}
 		qidToSeedID[e.Wikidata] = e.SeedID
 		pendings = append(pendings, pending{e, we.PartOfQID})
+		res.WarmAccepted++
 	}
 	if err := sc.Err(); err != nil {
 		return 0, 0, fmt.Errorf("scan warm events: %w", err)
