@@ -1,0 +1,6 @@
+CREATE TABLE reject (
+  source VARCHAR NOT NULL,
+  file VARCHAR NOT NULL,
+  line BIGINT NOT NULL,
+  reason VARCHAR NOT NULL
+);
