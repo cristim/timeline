@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -9,9 +11,26 @@ import (
 
 	"wk/internal/bake"
 	"wk/internal/blob"
+	"wk/internal/duck"
 	"wk/internal/ingest"
 	"wk/internal/rankzoom"
 )
+
+const parquetContentType = "application/vnd.apache.parquet"
+
+type warmModelFile struct {
+	Name   string `json:"name"`
+	Key    string `json:"key"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256"`
+	Rows   int    `json:"rows"`
+}
+
+type warmModelManifest struct {
+	SchemaVersion int             `json:"schema_version"`
+	ModelID       string          `json:"model_id"`
+	Files         []warmModelFile `json:"files"`
+}
 
 // runBake: seed NDJSON (+ optional warm Wikidata events) -> validate -> slugs
 // -> bucketize -> artifacts -> manifest publish. Artifacts go to S3/MinIO by
@@ -101,6 +120,27 @@ func runBake(ctx context.Context, args []string) error {
 		}
 	}
 
+	modelDir, err := os.MkdirTemp("", "world-knowledge-model-")
+	if err != nil {
+		return fmt.Errorf("create model directory: %w", err)
+	}
+	defer os.RemoveAll(modelDir)
+	modelFiles, err := duck.WriteModel(ctx, modelDir, res.Entities)
+	if err != nil {
+		return fmt.Errorf("materialize model: %w", err)
+	}
+	res.Entities, err = duck.ReadModel(ctx, modelDir)
+	if err != nil {
+		return fmt.Errorf("read model: %w", err)
+	}
+	dataset := datasetVersion()
+	if cli != nil {
+		modelSink := blob.BucketSink{Client: cli, Bucket: envOr("BUCKET_WARM", "wk-warm")}
+		if err := publishWarmModel(ctx, modelSink, dataset, modelFiles); err != nil {
+			return err
+		}
+	}
+
 	// Geometry resolves entity references against the ingested table, so it
 	// loads after the seed (and after any warm merge).
 	geo, err := ingest.LoadGeo(*geoDir, res.Entities)
@@ -114,7 +154,7 @@ func runBake(ctx context.Context, args []string) error {
 	}
 
 	start := time.Now()
-	manifest, stats, err := bake.Run(ctx, sink, datasetVersion(), res.SeedVersion, res.Entities, geo, goldens)
+	manifest, stats, err := bake.Run(ctx, sink, dataset, res.SeedVersion, res.Entities, geo, goldens)
 	if err != nil {
 		return err
 	}
@@ -123,4 +163,62 @@ func runBake(ctx context.Context, args []string) error {
 	fmt.Printf("bake: %d artifacts written, %d unchanged in %s\n", stats.Written, stats.Unchanged, time.Since(start).Round(time.Millisecond))
 
 	return publishManifest(ctx, sink, *manifest)
+}
+
+func publishWarmModel(ctx context.Context, sink bake.Sink, dataset string, files []duck.ModelFile) error {
+	if len(files) != 4 {
+		return fmt.Errorf("publish warm model: got %d files, want 4", len(files))
+	}
+	type publicationFile struct {
+		metadata warmModelFile
+		body     []byte
+	}
+	publication := make([]publicationFile, 0, len(files))
+	for _, file := range files {
+		body, err := os.ReadFile(file.Path)
+		if err != nil {
+			return fmt.Errorf("read model file %s: %w", file.Name, err)
+		}
+		digest := sha256.Sum256(body)
+		publication = append(publication, publicationFile{
+			metadata: warmModelFile{
+				Name: file.Name, Size: int64(len(body)), SHA256: fmt.Sprintf("%x", digest), Rows: file.Rows,
+			},
+			body: body,
+		})
+	}
+
+	identity := struct {
+		SchemaVersion int             `json:"schema_version"`
+		Files         []warmModelFile `json:"files"`
+	}{SchemaVersion: duck.SchemaVersion(), Files: make([]warmModelFile, len(publication))}
+	for i := range publication {
+		identity.Files[i] = publication[i].metadata
+	}
+	identityBody, err := json.Marshal(identity)
+	if err != nil {
+		return fmt.Errorf("encode model identity: %w", err)
+	}
+	modelDigest := sha256.Sum256(identityBody)
+	manifest := warmModelManifest{SchemaVersion: duck.SchemaVersion(), ModelID: fmt.Sprintf("%x", modelDigest)}
+	manifest.Files = make([]warmModelFile, len(publication))
+	for i := range publication {
+		publication[i].metadata.Key = fmt.Sprintf("model/%s/%s/%s", dataset, manifest.ModelID, publication[i].metadata.Name)
+		manifest.Files[i] = publication[i].metadata
+	}
+
+	for _, file := range publication {
+		if _, err := sink.Put(ctx, file.metadata.Key, file.body, parquetContentType); err != nil {
+			return fmt.Errorf("publish model file %s: %w", file.metadata.Name, err)
+		}
+	}
+	manifestBody, err := json.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("encode model manifest: %w", err)
+	}
+	manifestKey := fmt.Sprintf("model/%s/manifest.json", dataset)
+	if _, err := sink.Put(ctx, manifestKey, manifestBody, "application/json"); err != nil {
+		return fmt.Errorf("publish model manifest: %w", err)
+	}
+	return nil
 }
