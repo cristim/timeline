@@ -35,7 +35,7 @@ make fetch-geo       # pull + simplify the border and paleo-coastline layers
 make verify-geo      # prove both fetched layers tile their range with no gaps
 make fetch-wikidata  # pull ~10k battles/wars/sieges from Wikidata (CC0)
 make bake-full       # bake seed + the fetched Wikidata events
-make census          # per-era coverage report over the merged dataset
+make census          # deterministic century/type census over seed + warm events
 ```
 
 ## How it works
@@ -65,6 +65,13 @@ Wikidata (SPARQL)   ──┤   baker (Go)                          client (Reac
   duplicates, and reject reason groups. The mutable latest pointer
   `imports/<dataset>/manifest.json` is written last and is the only import
   diagnostics object that carries `generated_at`.
+- **Accepted-entity census**: `baker census` groups the validated seed and
+  normalized warm entities into sparse century and type rows, including date,
+  coordinate, English Wikipedia, combined-coverage, and precision counts. The
+  immutable report is written to `reports/census/<sha256>/report.json`; the
+  latest pointer at `reports/census/manifest.json` is written last and is the
+  only census object containing `generated_at`. The report identity depends
+  only on its exact deterministic JSON bytes.
 - Deploying is `bake --out` plus a static web build - GitHub Pages runs the
   whole product (see `.github/workflows/pages.yml`). Static `bake --out`
   exercises the same private import-diagnostics generation path, but it does
@@ -77,6 +84,15 @@ sources. Bulk events come from [Wikidata](https://www.wikidata.org/) (CC0);
 raw fetch responses are archived for provenance and curated seed entries win
 over bulk imports on conflict. The map basemap is © OpenStreetMap
 contributors via MapLibre demotiles.
+
+By default, `make census` requires the normalized
+`BUCKET_WARM/wikidata/events.ndjson` object and fails if it cannot be read. Use
+`go run ./cmd/baker census --seed-only` for an explicit seed-only report, or
+`go run ./cmd/baker census --warm-file <path>` to use a local normalized warm
+artifact. The report describes accepted normalized entities after source
+filters. The current bulk feed contains only battles, wars, and sieges, so it
+is a deterministic precursor to ROAD-2 rather than the complete dump-scale
+census.
 
 The two time-sliced map layers are fetched from pinned upstreams by
 `make fetch-geo` rather than committed, and cached in CI:
