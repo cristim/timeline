@@ -14,7 +14,7 @@ import (
 	"wk/internal/ingest"
 )
 
-type importObject struct {
+type publicationObject struct {
 	Key    string `json:"key"`
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
@@ -31,7 +31,7 @@ type importManifest struct {
 	SchemaVersion int                `json:"schema_version"`
 	ImportID      string             `json:"import_id"`
 	GeneratedAt   string             `json:"generated_at"`
-	Report        importObject       `json:"report"`
+	Report        publicationObject  `json:"report"`
 	Rejects       importRejectObject `json:"rejects"`
 }
 
@@ -96,7 +96,7 @@ func publishImportArtifacts(ctx context.Context, sink bake.Sink, dataset string,
 		SchemaVersion: report.SchemaVersion,
 		ImportID:      importID,
 		GeneratedAt:   generatedAt.UTC().Format(time.RFC3339),
-		Report: importObject{
+		Report: publicationObject{
 			Key:    fmt.Sprintf("imports/%s/%s/report.json", dataset, importID),
 			Size:   int64(len(reportBody)),
 			SHA256: fmt.Sprintf("%x", reportDigest),

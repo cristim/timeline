@@ -12,6 +12,26 @@ import (
 	"wk/internal/model"
 )
 
+const usageText = `usage: baker <command>
+  bake --seed <dir> [--warm]   full bake: validate, rank, bake artifacts,
+                               publish manifest; --warm merges the wk-warm
+                               Wikidata event set; --geo <dir> points at the
+                               curated geometry (default data/geo)
+  fetch-wikidata               pull the bounded Wikidata event slice into
+                               wk-dumps (raw) + wk-warm (normalized)
+  fetch-borders [--out <dir>]  pull + simplify the historical-basemaps world
+                               border slices into data/geo/borders
+  fetch-paleo [--out <dir>]    pull + simplify GPlates reconstructed coastlines
+                               into data/geo/paleo
+  geo-fingerprint              hash of the pinned upstreams; the CI cache key
+                               for the two fetched layers
+  geo-verify [--geo <dir>]     prove both fetched layers tile their range with
+                               no gaps (fails a partial or stale fetch)
+  census [--seed <dir>] [--seed-only | --warm-file <path>]
+                               deterministic census from seed plus default
+                               BUCKET_WARM/` + warmEventsKey + `, or explicit
+                               --seed-only / --warm-file input`
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -45,22 +65,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: baker <command>
-  bake --seed <dir> [--warm]   full bake: validate, rank, bake artifacts,
-                               publish manifest; --warm merges the wk-warm
-                               Wikidata event set; --geo <dir> points at the
-                               curated geometry (default data/geo)
-  fetch-wikidata               pull the bounded Wikidata event slice into
-                               wk-dumps (raw) + wk-warm (normalized)
-  fetch-borders [--out <dir>]  pull + simplify the historical-basemaps world
-                               border slices into data/geo/borders
-  fetch-paleo [--out <dir>]    pull + simplify GPlates reconstructed coastlines
-                               into data/geo/paleo
-  geo-fingerprint              hash of the pinned upstreams; the CI cache key
-                               for the two fetched layers
-  geo-verify [--geo <dir>]     prove both fetched layers tile their range with
-                               no gaps (fails a partial or stale fetch)
-  census [--seed <dir>]        per-era/type counts + coverage report (ROAD-2)`)
+	fmt.Fprintln(os.Stderr, usageText)
 }
 
 func artifactsBucket() string { return envOr("BUCKET_ARTIFACTS", "wk-artifacts") }

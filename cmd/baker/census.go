@@ -2,132 +2,207 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"flag"
 	"fmt"
-	"sort"
+	"io"
+	"os"
+	"strings"
 	"time"
 
+	"wk/internal/bake"
 	"wk/internal/blob"
 	"wk/internal/ingest"
-	"wk/internal/model"
 )
 
-// runCensus quantifies the raw material (ROAD-2): per-era and per-type counts
-// plus coverage (coordinates, precision) over seed + warm data. The report
-// lands in wk-warm/reports/ and prints as a table.
+const censusManifestKey = "reports/census/manifest.json"
+
+type censusOptions struct {
+	seedDir  string
+	seedOnly bool
+	warmFile string
+}
+
+type censusRunner struct {
+	stdout   io.Writer
+	now      func() time.Time
+	sink     bake.Sink
+	loadWarm func(context.Context, censusOptions) ([]byte, ingest.WarmSource, error)
+}
+
+type censusManifest struct {
+	SchemaVersion int               `json:"schema_version"`
+	ReportID      string            `json:"report_id"`
+	GeneratedAt   string            `json:"generated_at"`
+	Report        publicationObject `json:"report"`
+}
+
 func runCensus(ctx context.Context, args []string) error {
-	fs := flag.NewFlagSet("census", flag.ContinueOnError)
-	seedDir := fs.String("seed", "data/seed", "NDJSON seed directory")
-	if err := fs.Parse(args); err != nil {
+	opts, err := parseCensusArgs(args, os.Stderr)
+	if err != nil {
 		return err
 	}
+
 	cli, err := blob.New(ctx)
 	if err != nil {
 		return err
 	}
-	res, err := ingest.LoadSeed(*seedDir)
+	warmBucket := envOr("BUCKET_WARM", "wk-warm")
+	runner := censusRunner{
+		stdout: os.Stdout,
+		now:    time.Now,
+		sink:   blob.BucketSink{Client: cli, Bucket: warmBucket},
+		loadWarm: func(ctx context.Context, opts censusOptions) ([]byte, ingest.WarmSource, error) {
+			switch {
+			case opts.seedOnly:
+				return nil, ingest.WarmSourceNone, nil
+			case opts.warmFile != "":
+				body, err := os.ReadFile(opts.warmFile)
+				if err != nil {
+					return nil, "", fmt.Errorf("read --warm-file: %w", err)
+				}
+				return body, ingest.WarmSourceWarmFile, nil
+			default:
+				body, err := cli.Get(ctx, warmBucket, warmEventsKey)
+				if err != nil {
+					return nil, "", fmt.Errorf("load default warm input %s: %w", warmEventsKey, err)
+				}
+				return body, ingest.WarmSourceWikidataEvents, nil
+			}
+		},
+	}
+	return runCensusWithRunner(ctx, opts, runner)
+}
+
+func parseCensusArgs(args []string, output io.Writer) (censusOptions, error) {
+	fs := flag.NewFlagSet("census", flag.ContinueOnError)
+	fs.SetOutput(output)
+
+	seedDir := fs.String("seed", "data/seed", "NDJSON seed directory")
+	seedOnly := fs.Bool("seed-only", false, "publish a seed-only census; skip every warm input")
+	warmFile := fs.String("warm-file", "", "read warm-events NDJSON from this local file instead of BUCKET_WARM/"+warmEventsKey)
+	if err := fs.Parse(args); err != nil {
+		return censusOptions{}, err
+	}
+	if *seedOnly && *warmFile != "" {
+		return censusOptions{}, fmt.Errorf("--seed-only and --warm-file are mutually exclusive")
+	}
+	return censusOptions{
+		seedDir:  *seedDir,
+		seedOnly: *seedOnly,
+		warmFile: *warmFile,
+	}, nil
+}
+
+func runCensusWithRunner(ctx context.Context, opts censusOptions, runner censusRunner) error {
+	if runner.stdout == nil {
+		runner.stdout = io.Discard
+	}
+	if runner.now == nil {
+		runner.now = time.Now
+	}
+	if runner.sink == nil {
+		return fmt.Errorf("run census: nil sink")
+	}
+	if runner.loadWarm == nil {
+		return fmt.Errorf("run census: nil warm loader")
+	}
+
+	res, err := ingest.LoadSeed(opts.seedDir)
 	if err != nil {
 		return err
 	}
-	warmBucket := envOr("BUCKET_WARM", "wk-warm")
-	if warm, err := cli.Get(ctx, warmBucket, warmEventsKey); err == nil {
+
+	warm, warmSource, err := runner.loadWarm(ctx, opts)
+	if err != nil {
+		return err
+	}
+
+	warmSHA256 := ""
+	if warmSource != ingest.WarmSourceNone {
+		sum := sha256.Sum256(warm)
+		warmSHA256 = fmt.Sprintf("%x", sum[:])
 		added, skipped, err := ingest.MergeWarmEvents(res, warm)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("warm events: %d merged, %d deduped against seed\n", added, skipped)
-	} else {
-		fmt.Println("no warm events found (run fetch-wikidata first); census covers the seed only")
+		fmt.Fprintf(runner.stdout, "warm events: %d merged, %d deduped against seed\n", added, skipped)
 	}
 
-	type eraStat struct {
-		Era      string         `json:"era"`
-		Count    int            `json:"count"`
-		ByType   map[string]int `json:"by_type"`
-		HasPoint int            `json:"has_point"`
-		DayPrec  int            `json:"day_precision"`
-	}
-	eras := []struct {
-		name   string
-		y0, y1 float64
-	}{
-		{"deep time (<10 kyr BCE)", -14e9, -10000},
-		{"prehistory (10k-1000 BCE)", -10000, -1000},
-		{"ancient (1000 BCE-500 CE)", -1000, 500},
-		{"medieval (500-1500)", 500, 1500},
-		{"early modern (1500-1800)", 1500, 1800},
-		{"19th century", 1800, 1900},
-		{"20th century", 1900, 2000},
-		{"21st century", 2000, 2100},
-		{"future (>2100)", 2100, 2e103},
-	}
-	stats := make([]eraStat, len(eras))
-	for i, e := range eras {
-		stats[i] = eraStat{Era: e.name, ByType: map[string]int{}}
-	}
-	for _, ent := range res.Entities {
-		y := model.SecondsToYear(ent.T0)
-		for i, e := range eras {
-			if y >= e.y0 && y < e.y1 {
-				s := &stats[i]
-				s.Count++
-				s.ByType[ent.Type]++
-				if ent.Point != nil {
-					s.HasPoint++
-				}
-				if ent.Precision == "day" || ent.Precision == "hour" || ent.Precision == "minute" {
-					s.DayPrec++
-				}
-				break
-			}
-		}
-	}
-
-	fmt.Printf("\n%-28s %7s %9s %9s  top types\n", "ERA", "COUNT", "W/POINT", "DAY-PREC")
-	for _, s := range stats {
-		fmt.Printf("%-28s %7d %9d %9d  %s\n", s.Era, s.Count, s.HasPoint, s.DayPrec, topTypes(s.ByType, 3))
-	}
-	fmt.Printf("%-28s %7d\n", "TOTAL", len(res.Entities))
-
-	report := map[string]any{
-		"generated_at": time.Now().UTC().Format(time.RFC3339),
-		"seed_version": res.SeedVersion,
-		"total":        len(res.Entities),
-		"rejects":      len(res.Rejects),
-		"eras":         stats,
-	}
-	key := fmt.Sprintf("reports/census-%s.json", time.Now().UTC().Format("20060102-150405"))
-	if _, err := cli.PutJSON(ctx, warmBucket, key, report); err != nil {
+	report, err := ingest.BuildCensusReport(res, warmSource, warmSHA256)
+	if err != nil {
 		return err
 	}
-	fmt.Printf("\nreport -> s3://%s/%s\n", warmBucket, key)
+
+	printCensusSummary(runner.stdout, report)
+	manifest, err := publishCensusReport(ctx, runner.sink, runner.now().UTC(), report)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(runner.stdout, "report -> s3://%s/%s\n", envOr("BUCKET_WARM", "wk-warm"), manifest.Report.Key)
 	return nil
 }
 
-func topTypes(m map[string]int, n int) string {
-	type kv struct {
-		k string
-		v int
+func printCensusSummary(out io.Writer, report ingest.CensusReport) {
+	fmt.Fprintf(out, "\n%-14s %7s %7s %7s %7s  %s\n", "CENTURY", "COUNT", "DATE", "COORD", "WIKI", "TYPES")
+	for _, row := range report.Centuries {
+		fmt.Fprintf(
+			out,
+			"%-14s %7d %7d %7d %7d  %s\n",
+			formatCentury(row.CenturyStartYear),
+			row.Total.Count,
+			row.Total.HasDate,
+			row.Total.HasCoordinates,
+			row.Total.HasEnglishWikipedia,
+			summarizeCensusTypes(row.Types),
+		)
 	}
-	all := make([]kv, 0, len(m))
-	for k, v := range m {
-		all = append(all, kv{k, v})
+	fmt.Fprintf(out, "%-14s %7d %7d %7d %7d\n", "TOTAL", report.Total.Count, report.Total.HasDate, report.Total.HasCoordinates, report.Total.HasEnglishWikipedia)
+}
+
+func formatCentury(start float64) string {
+	return fmt.Sprintf("%.0f", start)
+}
+
+func summarizeCensusTypes(rows []ingest.CensusTypeRow) string {
+	if len(rows) == 0 {
+		return ""
 	}
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].v != all[j].v {
-			return all[i].v > all[j].v
-		}
-		return all[i].k < all[j].k
-	})
-	out := ""
-	for i, e := range all {
-		if i >= n {
-			break
-		}
-		if i > 0 {
-			out += ", "
-		}
-		out += fmt.Sprintf("%s:%d", e.k, e.v)
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		parts = append(parts, fmt.Sprintf("%s:%d", row.Type, row.Stats.Count))
 	}
-	return out
+	return strings.Join(parts, ", ")
+}
+
+func publishCensusReport(ctx context.Context, sink bake.Sink, generatedAt time.Time, report ingest.CensusReport) (censusManifest, error) {
+	reportBody, err := json.Marshal(report)
+	if err != nil {
+		return censusManifest{}, fmt.Errorf("encode census report: %w", err)
+	}
+	reportDigest := sha256.Sum256(reportBody)
+	reportID := fmt.Sprintf("%x", reportDigest)
+	manifest := censusManifest{
+		SchemaVersion: ingest.CensusReportSchemaVersion,
+		ReportID:      reportID,
+		GeneratedAt:   generatedAt.UTC().Format(time.RFC3339),
+		Report: publicationObject{
+			Key:    fmt.Sprintf("reports/census/%s/report.json", reportID),
+			Size:   int64(len(reportBody)),
+			SHA256: reportID,
+		},
+	}
+
+	if _, err := sink.Put(ctx, manifest.Report.Key, reportBody, "application/json"); err != nil {
+		return censusManifest{}, fmt.Errorf("publish census report: %w", err)
+	}
+	manifestBody, err := json.Marshal(manifest)
+	if err != nil {
+		return censusManifest{}, fmt.Errorf("encode census manifest: %w", err)
+	}
+	if _, err := sink.Put(ctx, censusManifestKey, manifestBody, "application/json"); err != nil {
+		return censusManifest{}, fmt.Errorf("publish census manifest: %w", err)
+	}
+	return manifest, nil
 }

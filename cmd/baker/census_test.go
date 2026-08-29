@@ -1,0 +1,441 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"wk/internal/bake"
+	"wk/internal/ingest"
+)
+
+func TestPublishCensusReportUsesContentAddressedKeysAndWritesManifestLast(t *testing.T) {
+	t.Parallel()
+
+	report := testCensusReport(t)
+	first := new(recordingSink)
+	firstTime := time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC)
+	firstManifest, err := publishCensusReport(context.Background(), first, firstTime, report)
+	if err != nil {
+		t.Fatalf("publishCensusReport: %v", err)
+	}
+	second := new(recordingSink)
+	secondTime := firstTime.Add(5 * time.Minute)
+	secondManifest, err := publishCensusReport(context.Background(), second, secondTime, report)
+	if err != nil {
+		t.Fatalf("second publishCensusReport: %v", err)
+	}
+
+	if len(first.puts) != 2 {
+		t.Fatalf("Put calls = %d, want 2", len(first.puts))
+	}
+	if first.puts[0].contentType != "application/json" || first.puts[1].contentType != "application/json" {
+		t.Fatalf("content types = %#v", first.puts)
+	}
+	if first.puts[1].key != censusManifestKey {
+		t.Fatalf("last key = %q, want %q", first.puts[1].key, censusManifestKey)
+	}
+
+	decodedFirst := decodeCensusManifest(t, first.puts[1].body)
+	if decodedFirst != firstManifest {
+		t.Fatalf("decoded manifest = %#v, want %#v", decodedFirst, firstManifest)
+	}
+	if firstManifest.SchemaVersion != ingest.CensusReportSchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", firstManifest.SchemaVersion, ingest.CensusReportSchemaVersion)
+	}
+	if firstManifest.GeneratedAt != firstTime.Format(time.RFC3339) {
+		t.Fatalf("GeneratedAt = %q, want %q", firstManifest.GeneratedAt, firstTime.Format(time.RFC3339))
+	}
+	if firstManifest.Report.Key != "reports/census/"+firstManifest.ReportID+"/report.json" {
+		t.Fatalf("report key = %q", firstManifest.Report.Key)
+	}
+	if firstManifest.Report.Size != int64(len(first.puts[0].body)) {
+		t.Fatalf("report size = %d, want %d", firstManifest.Report.Size, len(first.puts[0].body))
+	}
+	if firstManifest.Report.SHA256 != fmt.Sprintf("%x", sha256Bytes(first.puts[0].body)) {
+		t.Fatalf("report sha256 = %q", firstManifest.Report.SHA256)
+	}
+	if firstManifest.ReportID != firstManifest.Report.SHA256 {
+		t.Fatalf("report id = %q, want %q", firstManifest.ReportID, firstManifest.Report.SHA256)
+	}
+	if first.puts[0].key != firstManifest.Report.Key {
+		t.Fatalf("immutable key = %q, want %q", first.puts[0].key, firstManifest.Report.Key)
+	}
+
+	decodedSecond := decodeCensusManifest(t, second.puts[1].body)
+	if firstManifest.ReportID != secondManifest.ReportID || firstManifest.ReportID != decodedSecond.ReportID {
+		t.Fatalf("timestamp changed report ID: %#v vs %#v", firstManifest, secondManifest)
+	}
+	if bytes.Equal(first.puts[1].body, second.puts[1].body) {
+		t.Fatal("manifest body did not change when generated_at changed")
+	}
+	if !bytes.Equal(first.puts[0].body, second.puts[0].body) {
+		t.Fatal("identical report produced different immutable bytes")
+	}
+}
+
+func TestPublishCensusReportDifferentReportBytesChangeReportID(t *testing.T) {
+	t.Parallel()
+
+	first := new(recordingSink)
+	firstReport := testCensusReport(t)
+	firstReport.ImportReport.WarmSHA256 = testSHA256String("warm-a")
+	firstManifest, err := publishCensusReport(context.Background(), first, time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC), firstReport)
+	if err != nil {
+		t.Fatalf("publishCensusReport(first): %v", err)
+	}
+
+	second := new(recordingSink)
+	secondReport := testCensusReport(t)
+	secondReport.ImportReport.WarmSHA256 = testSHA256String("warm-b")
+	secondManifest, err := publishCensusReport(context.Background(), second, time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC), secondReport)
+	if err != nil {
+		t.Fatalf("publishCensusReport(second): %v", err)
+	}
+
+	if firstManifest.ReportID == secondManifest.ReportID {
+		t.Fatalf("different report bytes reused report ID %q", firstManifest.ReportID)
+	}
+}
+
+func TestPublishCensusReportDoesNotWritePointerAfterImmutableFailure(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingSink{failAt: 1}
+	err := publishCensusReportError(context.Background(), sink, time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC), testCensusReport(t))
+	if err == nil || !strings.Contains(err.Error(), "publish census report") {
+		t.Fatalf("publishCensusReport error = %v", err)
+	}
+	for _, put := range sink.puts {
+		if put.key == censusManifestKey {
+			t.Fatal("manifest was attempted after immutable upload failure")
+		}
+	}
+}
+
+func TestPublishCensusReportPropagatesPointerFailure(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingSink{failAt: 2}
+	err := publishCensusReportError(context.Background(), sink, time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC), testCensusReport(t))
+	if err == nil || !strings.Contains(err.Error(), "publish census manifest") {
+		t.Fatalf("publishCensusReport error = %v", err)
+	}
+	if len(sink.puts) != 2 {
+		t.Fatalf("Put calls = %d, want 2", len(sink.puts))
+	}
+}
+
+func TestParseCensusArgsRejectsMutuallyExclusiveWarmInputs(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseCensusArgs([]string{"--seed-only", "--warm-file", "warm.ndjson"}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("parseCensusArgs error = %v", err)
+	}
+}
+
+func TestParseCensusArgsReturnsHelp(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseCensusArgs([]string{"-h"}, io.Discard)
+	if !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("parseCensusArgs error = %v, want %v", err, flag.ErrHelp)
+	}
+}
+
+func TestRunCensusWithRunnerSeedOnlyPublishesWarmSourceNone(t *testing.T) {
+	t.Parallel()
+
+	sink := new(recordingSink)
+	called := false
+	var stdout bytes.Buffer
+	err := runCensusWithRunner(context.Background(), censusOptions{
+		seedDir:  "../../data/seed",
+		seedOnly: true,
+	}, censusRunner{
+		stdout: &stdout,
+		now:    func() time.Time { return time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC) },
+		sink:   sink,
+		loadWarm: func(context.Context, censusOptions) ([]byte, ingest.WarmSource, error) {
+			called = true
+			return nil, ingest.WarmSourceNone, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCensusWithRunner: %v", err)
+	}
+	if !called {
+		t.Fatal("seed-only run did not invoke the warm loader")
+	}
+
+	report := decodeCensusReport(t, sink.puts[0].body)
+	if report.ImportReport.WarmSource != ingest.WarmSourceNone {
+		t.Fatalf("WarmSource = %q, want %q", report.ImportReport.WarmSource, ingest.WarmSourceNone)
+	}
+	if report.ImportReport.WarmSHA256 != "" || report.ImportReport.Accepted.Warm != 0 {
+		t.Fatalf("warm import report = %#v", report.ImportReport)
+	}
+	if strings.Contains(stdout.String(), "warm events:") {
+		t.Fatalf("seed-only stdout unexpectedly mentioned warm merge: %q", stdout.String())
+	}
+}
+
+func TestRunCensusWithRunnerWarmFilePublishesWarmFileSource(t *testing.T) {
+	t.Parallel()
+
+	warm, err := os.ReadFile("../../internal/ingest/testdata/warm-century-boundaries.ndjson")
+	if err != nil {
+		t.Fatalf("read warm boundary fixture: %v", err)
+	}
+	sink := new(recordingSink)
+	var stdout bytes.Buffer
+	err = runCensusWithRunner(context.Background(), censusOptions{
+		seedDir:  "../../data/seed",
+		warmFile: "warm.ndjson",
+	}, censusRunner{
+		stdout: &stdout,
+		now:    func() time.Time { return time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC) },
+		sink:   sink,
+		loadWarm: func(context.Context, censusOptions) ([]byte, ingest.WarmSource, error) {
+			return warm, ingest.WarmSourceWarmFile, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("runCensusWithRunner: %v", err)
+	}
+
+	report := decodeCensusReport(t, sink.puts[0].body)
+	if report.ImportReport.WarmSource != ingest.WarmSourceWarmFile {
+		t.Fatalf("WarmSource = %q, want %q", report.ImportReport.WarmSource, ingest.WarmSourceWarmFile)
+	}
+	if report.ImportReport.WarmSHA256 != testSHA256Bytes(warm) {
+		t.Fatalf("WarmSHA256 = %q, want %q", report.ImportReport.WarmSHA256, testSHA256Bytes(warm))
+	}
+	if report.ImportReport.Accepted.Warm != 2 {
+		t.Fatalf("Accepted.Warm = %d, want 2", report.ImportReport.Accepted.Warm)
+	}
+	if !strings.Contains(stdout.String(), "warm events: 2 merged, 0 deduped against seed") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestRunCensusWithRunnerRejectsNilSinkAndWarmLoader(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		runner censusRunner
+		want   string
+	}{
+		{name: "nil sink", runner: censusRunner{loadWarm: func(context.Context, censusOptions) ([]byte, ingest.WarmSource, error) {
+			return nil, ingest.WarmSourceNone, nil
+		}}, want: "nil sink"},
+		{name: "nil warm loader", runner: censusRunner{sink: new(recordingSink)}, want: "nil warm loader"},
+	}
+
+	for _, tc := range cases {
+		err := runCensusWithRunner(context.Background(), censusOptions{seedDir: "../../data/seed"}, tc.runner)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s error = %v", tc.name, err)
+		}
+	}
+}
+
+func TestRunCensusFailsLoudWhenDefaultWarmInputIsMissing(t *testing.T) {
+	server := newBakeS3Server(nil)
+	defer server.Close()
+	server.installEnv(t)
+
+	err := runCensus(context.Background(), []string{"--seed", "../../data/seed"})
+	if err == nil || !strings.Contains(err.Error(), "load default warm input "+warmEventsKey) {
+		t.Fatalf("runCensus error = %v", err)
+	}
+	requests := server.requests()
+	if !containsRequest(requests, "/wk-warm-test/"+warmEventsKey) {
+		t.Fatalf("default warm object was not requested: %v", requests)
+	}
+	if containsRequest(requests, "/wk-warm-test/reports/census/") {
+		t.Fatalf("publication attempted after missing warm input: %v", requests)
+	}
+}
+
+func TestRunCensusDefaultWarmObjectPublishesToWarmBucket(t *testing.T) {
+	warm, err := os.ReadFile("../../internal/ingest/testdata/warm-century-boundaries.ndjson")
+	if err != nil {
+		t.Fatalf("read warm boundary fixture: %v", err)
+	}
+	server := newBakeS3Server(warm)
+	defer server.Close()
+	server.installEnv(t)
+
+	err = runCensus(context.Background(), []string{"--seed", "../../data/seed"})
+	if err != nil {
+		t.Fatalf("runCensus: %v", err)
+	}
+	requests := server.requests()
+	if !containsRequest(requests, "/wk-warm-test/"+warmEventsKey) {
+		t.Fatalf("default warm object was not requested: %v", requests)
+	}
+	if !containsRequest(requests, "/wk-warm-test/reports/census/") {
+		t.Fatalf("census report was not published to wk-warm: %v", requests)
+	}
+	if !containsRequest(requests, "/wk-warm-test/"+censusManifestKey) {
+		t.Fatalf("census manifest was not published: %v", requests)
+	}
+}
+
+func TestRunCensusSeedOnlySkipsDefaultWarmObjectRead(t *testing.T) {
+	server := newBakeS3Server(nil)
+	defer server.Close()
+	server.installEnv(t)
+
+	err := runCensus(context.Background(), []string{"--seed", "../../data/seed", "--seed-only"})
+	if err != nil {
+		t.Fatalf("runCensus: %v", err)
+	}
+	requests := server.requests()
+	if containsRequest(requests, "/wk-warm-test/"+warmEventsKey) {
+		t.Fatalf("seed-only run fetched default warm object: %v", requests)
+	}
+	if !containsRequest(requests, "/wk-warm-test/reports/census/") {
+		t.Fatalf("seed-only run did not publish census objects: %v", requests)
+	}
+}
+
+func TestRunCensusWarmFilePublishesWithoutDefaultWarmObjectRead(t *testing.T) {
+	warmPath := filepath.Join(t.TempDir(), "warm.ndjson")
+	warm, err := os.ReadFile("../../internal/ingest/testdata/warm-century-boundaries.ndjson")
+	if err != nil {
+		t.Fatalf("read warm boundary fixture: %v", err)
+	}
+	if err := os.WriteFile(warmPath, warm, 0o644); err != nil {
+		t.Fatalf("write warm file: %v", err)
+	}
+	server := newBakeS3Server(nil)
+	defer server.Close()
+	server.installEnv(t)
+
+	err = runCensus(context.Background(), []string{"--seed", "../../data/seed", "--warm-file", warmPath})
+	if err != nil {
+		t.Fatalf("runCensus: %v", err)
+	}
+	requests := server.requests()
+	if containsRequest(requests, "/wk-warm-test/"+warmEventsKey) {
+		t.Fatalf("--warm-file run fetched default warm object: %v", requests)
+	}
+	if !containsRequest(requests, "/wk-warm-test/reports/census/") {
+		t.Fatalf("--warm-file run did not publish census objects: %v", requests)
+	}
+}
+
+func TestRunCensusImmutableFailureSuppressesPointer(t *testing.T) {
+	warm, err := os.ReadFile("../../internal/ingest/testdata/warm-century-boundaries.ndjson")
+	if err != nil {
+		t.Fatalf("read warm boundary fixture: %v", err)
+	}
+	server := newBakeS3Server(warm)
+	server.failPutSubstring = "/wk-warm-test/reports/census/"
+	defer server.Close()
+	server.installEnv(t)
+
+	err = runCensus(context.Background(), []string{"--seed", "../../data/seed"})
+	if err == nil || !strings.Contains(err.Error(), "publish census report") {
+		t.Fatalf("runCensus error = %v", err)
+	}
+	requests := server.requests()
+	if containsRequest(requests, "/wk-warm-test/"+censusManifestKey) {
+		t.Fatalf("manifest was attempted after immutable failure: %v", requests)
+	}
+}
+
+func TestRunCensusPointerFailureReturnsError(t *testing.T) {
+	warm, err := os.ReadFile("../../internal/ingest/testdata/warm-century-boundaries.ndjson")
+	if err != nil {
+		t.Fatalf("read warm boundary fixture: %v", err)
+	}
+	server := newBakeS3Server(warm)
+	server.failPutSubstring = "/wk-warm-test/" + censusManifestKey
+	defer server.Close()
+	server.installEnv(t)
+
+	err = runCensus(context.Background(), []string{"--seed", "../../data/seed"})
+	if err == nil || !strings.Contains(err.Error(), "publish census manifest") {
+		t.Fatalf("runCensus error = %v", err)
+	}
+	requests := server.requests()
+	if !containsRequest(requests, "/wk-warm-test/reports/census/") {
+		t.Fatalf("immutable report was not attempted before manifest failure: %v", requests)
+	}
+}
+
+func TestUsageTextIncludesCensusModes(t *testing.T) {
+	t.Parallel()
+
+	for _, want := range []string{
+		"census [--seed <dir>] [--seed-only | --warm-file <path>]",
+		"BUCKET_WARM/" + warmEventsKey,
+		"--seed-only / --warm-file input",
+	} {
+		if !strings.Contains(usageText, want) {
+			t.Fatalf("usageText missing %q", want)
+		}
+	}
+}
+
+func decodeCensusManifest(t *testing.T, body []byte) censusManifest {
+	t.Helper()
+
+	var manifest censusManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("decode census manifest: %v", err)
+	}
+	return manifest
+}
+
+func decodeCensusReport(t *testing.T, body []byte) ingest.CensusReport {
+	t.Helper()
+
+	var report ingest.CensusReport
+	if err := json.Unmarshal(body, &report); err != nil {
+		t.Fatalf("decode census report: %v", err)
+	}
+	return report
+}
+
+func testCensusReport(t *testing.T) ingest.CensusReport {
+	t.Helper()
+
+	report, err := ingest.BuildCensusReport(&ingest.Result{
+		SeedVersion:     "seed-census",
+		SeedInputSHA256: testSHA256String("seed"),
+		Entities:        nil,
+	}, ingest.WarmSourceNone, "")
+	if err != nil {
+		t.Fatalf("BuildCensusReport: %v", err)
+	}
+	return report
+}
+
+func publishCensusReportError(ctx context.Context, sink bake.Sink, generatedAt time.Time, report ingest.CensusReport) error {
+	_, err := publishCensusReport(ctx, sink, generatedAt, report)
+	return err
+}
+
+func testSHA256Bytes(body []byte) string {
+	return fmt.Sprintf("%x", sha256Bytes(body))
+}
+
+func sha256Bytes(body []byte) [32]byte {
+	return sha256.Sum256(body)
+}
