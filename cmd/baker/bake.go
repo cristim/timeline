@@ -78,12 +78,15 @@ func runBake(ctx context.Context, args []string) error {
 	}
 
 	var warm []byte
+	warmSource := ingest.WarmSourceNone
+	warmSHA256 := ""
 	switch {
 	case *warmFile != "":
 		warm, err = os.ReadFile(*warmFile)
 		if err != nil {
 			return fmt.Errorf("read --warm-file: %w", err)
 		}
+		warmSource = ingest.WarmSourceWarmFile
 	case *withWarm:
 		if cli == nil {
 			return fmt.Errorf("--warm needs S3; use --warm-file with --out")
@@ -92,8 +95,11 @@ func runBake(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("--warm requires %s (run fetch-wikidata first): %w", warmEventsKey, err)
 		}
+		warmSource = ingest.WarmSourceWikidataEvents
 	}
 	if warm != nil {
+		sum := sha256.Sum256(warm)
+		warmSHA256 = fmt.Sprintf("%x", sum[:])
 		// Bulk-data rejects are counted and reported, never fatal (unlike the
 		// curated seed) - so a handful of bad upstream rows cannot block a bake.
 		added, skipped, err := ingest.MergeWarmEvents(res, warm)
@@ -102,18 +108,30 @@ func runBake(ctx context.Context, args []string) error {
 		}
 		fmt.Printf("warm events: %d merged, %d deduped, %d rejected\n", added, skipped, len(res.Rejects)-seedRejectCount)
 	}
-
 	if len(res.Rejects) > 0 {
 		for _, r := range res.Rejects {
 			fmt.Printf("  reject %s:%d: %s\n", r.File, r.Line, r.Reason)
 		}
-		if cli != nil {
-			reportKey := fmt.Sprintf("reports/bake-%s-rejects.json", time.Now().UTC().Format("20060102-150405"))
-			if _, err := cli.PutJSON(ctx, envOr("BUCKET_WARM", "wk-warm"), reportKey, res.Rejects); err != nil {
-				return fmt.Errorf("write reject report: %w", err)
-			}
-			fmt.Printf("reject report -> s3://%s/%s\n", envOr("BUCKET_WARM", "wk-warm"), reportKey)
+	}
+
+	importDir, err := os.MkdirTemp("", "world-knowledge-import-")
+	if err != nil {
+		return fmt.Errorf("create import directory: %w", err)
+	}
+	defer os.RemoveAll(importDir)
+	report, rejectFile, err := materializeImportArtifacts(ctx, importDir, res, warmSource, warmSHA256)
+	if err != nil {
+		return fmt.Errorf("materialize import artifacts: %w", err)
+	}
+	dataset := datasetVersion()
+	if cli != nil {
+		importSink := blob.BucketSink{Client: cli, Bucket: envOr("BUCKET_WARM", "wk-warm")}
+		if err := publishImportArtifacts(ctx, importSink, dataset, time.Now().UTC(), report, rejectFile); err != nil {
+			return err
 		}
+	}
+
+	if len(res.Rejects) > 0 {
 		// Only curated-seed rejects block the bake; warm rejects are tolerated.
 		if seedRejectCount > 0 && !*allowRejects {
 			return fmt.Errorf("%d seed lines rejected; fix the seed or pass --allow-rejects", seedRejectCount)
@@ -133,7 +151,6 @@ func runBake(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("read model: %w", err)
 	}
-	dataset := datasetVersion()
 	if cli != nil {
 		modelSink := blob.BucketSink{Client: cli, Bucket: envOr("BUCKET_WARM", "wk-warm")}
 		if err := publishWarmModel(ctx, modelSink, dataset, modelFiles); err != nil {

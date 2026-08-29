@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -11,11 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"wk/internal/duck"
+	"wk/internal/ingest"
 )
 
 type recordedPut struct {
@@ -120,6 +124,189 @@ func TestPublishWarmModelDoesNotWriteManifestAfterFileFailure(t *testing.T) {
 	}
 }
 
+func TestMaterializeImportArtifactsBuildsMatchingReportAndRejects(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	result := testImportResult()
+	report, rejectFile, err := materializeImportArtifacts(context.Background(), dir, result, ingest.WarmSourceWarmFile, testSHA256String("warm"))
+	if err != nil {
+		t.Fatalf("materializeImportArtifacts: %v", err)
+	}
+	if rejectFile.Rows != len(result.Rejects) {
+		t.Fatalf("reject rows = %d, want %d", rejectFile.Rows, len(result.Rejects))
+	}
+	if report.Rejected != (ingest.ImportCounts{Seed: 1, Warm: 1, Total: 2}) {
+		t.Fatalf("Rejected = %#v, want 1/1/2", report.Rejected)
+	}
+	wantReasons := []ingest.RejectReasonCount{
+		{Source: ingest.RejectSourceSeed, Reason: "bad seed", Count: 1},
+		{Source: ingest.RejectSourceWarm, Reason: "bad warm", Count: 1},
+	}
+	if !reflect.DeepEqual(report.RejectReasons, wantReasons) {
+		t.Fatalf("RejectReasons = %#v, want %#v", report.RejectReasons, wantReasons)
+	}
+}
+
+func TestMaterializeImportArtifactsFailsOnInvalidWarmSourceOrDigest(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		warmSource ingest.WarmSource
+		warmSHA256 string
+	}{
+		{name: "unknown source", warmSource: ingest.WarmSource("mystery"), warmSHA256: ""},
+		{name: "missing digest", warmSource: ingest.WarmSourceWarmFile, warmSHA256: ""},
+	}
+
+	for _, tc := range cases {
+		_, _, err := materializeImportArtifacts(context.Background(), t.TempDir(), testImportResult(), tc.warmSource, tc.warmSHA256)
+		if err == nil || !strings.Contains(err.Error(), "build import report") {
+			t.Fatalf("%s: materializeImportArtifacts error = %v", tc.name, err)
+		}
+	}
+}
+
+func TestPublishImportArtifactsUsesContentAddressedKeysAndWritesManifestLast(t *testing.T) {
+	t.Parallel()
+
+	report, rejectFile := testImportArtifacts(t)
+	first := new(recordingSink)
+	firstTime := time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC)
+	if err := publishImportArtifacts(context.Background(), first, "dataset-1", firstTime, report, rejectFile); err != nil {
+		t.Fatalf("publishImportArtifacts: %v", err)
+	}
+	second := new(recordingSink)
+	secondTime := firstTime.Add(5 * time.Minute)
+	if err := publishImportArtifacts(context.Background(), second, "dataset-1", secondTime, report, rejectFile); err != nil {
+		t.Fatalf("second publishImportArtifacts: %v", err)
+	}
+	if len(first.puts) != 3 {
+		t.Fatalf("Put calls = %d, want 3", len(first.puts))
+	}
+	if first.puts[0].contentType != parquetContentType || first.puts[1].contentType != "application/json" || first.puts[2].contentType != "application/json" {
+		t.Fatalf("content types = %#v", first.puts)
+	}
+	if first.puts[2].key != "imports/dataset-1/manifest.json" {
+		t.Fatalf("last key = %q, want imports/dataset-1/manifest.json", first.puts[2].key)
+	}
+
+	var firstManifest importManifest
+	if err := json.Unmarshal(first.puts[2].body, &firstManifest); err != nil {
+		t.Fatalf("decode first manifest: %v", err)
+	}
+	if firstManifest.SchemaVersion != ingest.ImportReportSchemaVersion {
+		t.Fatalf("SchemaVersion = %d, want %d", firstManifest.SchemaVersion, ingest.ImportReportSchemaVersion)
+	}
+	if firstManifest.GeneratedAt != firstTime.Format(time.RFC3339) {
+		t.Fatalf("GeneratedAt = %q, want %q", firstManifest.GeneratedAt, firstTime.Format(time.RFC3339))
+	}
+	if firstManifest.Report.Key != "imports/dataset-1/"+firstManifest.ImportID+"/report.json" {
+		t.Fatalf("report key = %q", firstManifest.Report.Key)
+	}
+	if firstManifest.Rejects.Key != "imports/dataset-1/"+firstManifest.ImportID+"/reject.parquet" {
+		t.Fatalf("reject key = %q", firstManifest.Rejects.Key)
+	}
+	if firstManifest.Rejects.Rows != rejectFile.Rows {
+		t.Fatalf("reject rows = %d, want %d", firstManifest.Rejects.Rows, rejectFile.Rows)
+	}
+	if firstManifest.Report.Size != int64(len(first.puts[1].body)) || firstManifest.Rejects.Size != int64(len(first.puts[0].body)) {
+		t.Fatalf("manifest sizes = report:%d reject:%d", firstManifest.Report.Size, firstManifest.Rejects.Size)
+	}
+	if firstManifest.Report.SHA256 != fmt.Sprintf("%x", sha256.Sum256(first.puts[1].body)) {
+		t.Fatalf("report sha256 = %q", firstManifest.Report.SHA256)
+	}
+	if firstManifest.Rejects.SHA256 != fmt.Sprintf("%x", sha256.Sum256(first.puts[0].body)) {
+		t.Fatalf("reject sha256 = %q", firstManifest.Rejects.SHA256)
+	}
+
+	var secondManifest importManifest
+	if err := json.Unmarshal(second.puts[2].body, &secondManifest); err != nil {
+		t.Fatalf("decode second manifest: %v", err)
+	}
+	if firstManifest.ImportID != secondManifest.ImportID {
+		t.Fatalf("timestamp changed import ID: %q vs %q", firstManifest.ImportID, secondManifest.ImportID)
+	}
+	if bytes.Equal(first.puts[2].body, second.puts[2].body) {
+		t.Fatal("manifest body did not change when generated_at changed")
+	}
+}
+
+func TestPublishImportArtifactsDifferentReportBytesChangeImportID(t *testing.T) {
+	t.Parallel()
+
+	first := new(recordingSink)
+	firstReport, rejectFile := testImportArtifacts(t)
+	firstReport.WarmSHA256 = testSHA256String("warm-a")
+	if err := publishImportArtifacts(context.Background(), first, "dataset-1", time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC), firstReport, rejectFile); err != nil {
+		t.Fatalf("publishImportArtifacts(first): %v", err)
+	}
+	second := new(recordingSink)
+	secondReport, _ := testImportArtifacts(t)
+	secondReport.WarmSHA256 = testSHA256String("warm-b")
+	if err := publishImportArtifacts(context.Background(), second, "dataset-1", time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC), secondReport, rejectFile); err != nil {
+		t.Fatalf("publishImportArtifacts(second): %v", err)
+	}
+
+	firstManifest := decodeImportManifest(t, first.puts[2].body)
+	secondManifest := decodeImportManifest(t, second.puts[2].body)
+	if firstManifest.ImportID == secondManifest.ImportID {
+		t.Fatalf("different report bytes reused import ID %q", firstManifest.ImportID)
+	}
+}
+
+func TestPublishImportArtifactsPublishesEmptyRejects(t *testing.T) {
+	t.Parallel()
+
+	report, rejectFile := testEmptyImportArtifacts(t)
+	sink := new(recordingSink)
+	if err := publishImportArtifacts(context.Background(), sink, "dataset-1", time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC), report, rejectFile); err != nil {
+		t.Fatalf("publishImportArtifacts: %v", err)
+	}
+
+	manifest := decodeImportManifest(t, sink.puts[2].body)
+	if manifest.Rejects.Rows != 0 {
+		t.Fatalf("reject rows = %d, want 0", manifest.Rejects.Rows)
+	}
+	if manifest.Rejects.Size == 0 || manifest.Rejects.SHA256 == "" {
+		t.Fatalf("empty reject metadata = %#v", manifest.Rejects)
+	}
+}
+
+func TestPublishImportArtifactsDoesNotWriteManifestAfterImmutableFailures(t *testing.T) {
+	t.Parallel()
+
+	report, rejectFile := testImportArtifacts(t)
+
+	for _, failAt := range []int{1, 2} {
+		sink := &recordingSink{failAt: failAt}
+		err := publishImportArtifacts(context.Background(), sink, "dataset-1", time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC), report, rejectFile)
+		if err == nil || !strings.Contains(err.Error(), "injected put failure") {
+			t.Fatalf("failAt=%d error = %v", failAt, err)
+		}
+		for _, put := range sink.puts {
+			if put.key == "imports/dataset-1/manifest.json" {
+				t.Fatalf("failAt=%d wrote manifest after immutable failure", failAt)
+			}
+		}
+	}
+}
+
+func TestPublishImportArtifactsPropagatesLatestManifestFailure(t *testing.T) {
+	t.Parallel()
+
+	report, rejectFile := testImportArtifacts(t)
+	sink := &recordingSink{failAt: 3}
+	err := publishImportArtifacts(context.Background(), sink, "dataset-1", time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC), report, rejectFile)
+	if err == nil || !strings.Contains(err.Error(), "publish import manifest") {
+		t.Fatalf("publishImportArtifacts error = %v", err)
+	}
+	if len(sink.puts) != 3 {
+		t.Fatalf("Put calls = %d, want 3", len(sink.puts))
+	}
+}
+
 func TestRunBakeOutRoundTripsWithoutPublishingWarmModel(t *testing.T) {
 	outDir := t.TempDir()
 	err := runBake(context.Background(), []string{
@@ -137,34 +324,74 @@ func TestRunBakeOutRoundTripsWithoutPublishingWarmModel(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outDir, "model")); !os.IsNotExist(err) {
 		t.Fatalf("static bake wrote warm model directory: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(outDir, "imports")); !os.IsNotExist(err) {
+		t.Fatalf("static bake wrote import directory: %v", err)
+	}
+}
+
+func TestRunBakeOutWithMalformedWarmFilePublishesHotOutputOnly(t *testing.T) {
+	outDir := t.TempDir()
+	warmPath := filepath.Join(t.TempDir(), "warm.ndjson")
+	validWarm, err := os.ReadFile("../../internal/ingest/testdata/warm-event.ndjson")
+	if err != nil {
+		t.Fatalf("read warm fixture: %v", err)
+	}
+	if err := os.WriteFile(warmPath, append(validWarm, []byte("{bad json}\n")...), 0o644); err != nil {
+		t.Fatalf("write warm file: %v", err)
+	}
+
+	err = runBake(context.Background(), []string{
+		"--seed", "../../data/seed",
+		"--geo", testGeoDir(t),
+		"--goldens", "../../data/goldens.json",
+		"--out", outDir,
+		"--warm-file", warmPath,
+	})
+	if err != nil {
+		t.Fatalf("runBake: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "manifest.json")); err != nil {
+		t.Fatalf("hot manifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "model")); !os.IsNotExist(err) {
+		t.Fatalf("static bake wrote warm model directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "imports")); !os.IsNotExist(err) {
+		t.Fatalf("static bake wrote import directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "v", "dev", "entity", "test-warm-event.json")); err != nil {
+		t.Fatalf("missing valid warm entity document: %v", err)
+	}
+}
+
+func TestRunBakeOutFailsWhenImportTempDirCannotBeCreated(t *testing.T) {
+	tmpParent := t.TempDir()
+	tmpFile := filepath.Join(tmpParent, "not-a-dir")
+	if err := os.WriteFile(tmpFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write tmp blocker: %v", err)
+	}
+	t.Setenv("TMPDIR", tmpFile)
+
+	outDir := t.TempDir()
+	err := runBake(context.Background(), []string{
+		"--seed", "../../data/seed",
+		"--geo", testGeoDir(t),
+		"--goldens", "../../data/goldens.json",
+		"--out", outDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "create import directory") {
+		t.Fatalf("runBake error = %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(outDir, "manifest.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("hot manifest after import-dir failure: %v", statErr)
+	}
 }
 
 func TestRunBakeWarmModelFailureStopsBeforeHotPublication(t *testing.T) {
-	var mu sync.Mutex
-	var requests []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		requests = append(requests, r.Method+" "+r.URL.Path)
-		mu.Unlock()
-		w.Header().Set("Content-Type", "application/xml")
-		if r.Method == http.MethodHead {
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>`))
-			return
-		}
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`<Error><Code>InvalidRequest</Code><Message>injected put failure</Message></Error>`))
-	}))
+	server := newBakeS3Server(nil)
+	server.failPutSubstring = "/wk-warm-test/model/"
 	defer server.Close()
-
-	t.Setenv("AWS_ACCESS_KEY_ID", "test")
-	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
-	t.Setenv("AWS_REGION", "us-east-1")
-	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
-	t.Setenv("S3_ENDPOINT", server.URL)
-	t.Setenv("S3_FORCE_PATH_STYLE", "true")
-	t.Setenv("BUCKET_WARM", "wk-warm-test")
-	t.Setenv("BUCKET_ARTIFACTS", "wk-artifacts-test")
+	server.installEnv(t)
 
 	err := runBake(context.Background(), []string{
 		"--seed", "../../data/seed",
@@ -174,15 +401,251 @@ func TestRunBakeWarmModelFailureStopsBeforeHotPublication(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "publish model file") {
 		t.Fatalf("runBake error = %v", err)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(requests) == 0 || !strings.Contains(strings.Join(requests, "\n"), "/wk-warm-test/model/") {
+	requests := server.requests()
+	if !containsRequest(requests, "/wk-warm-test/model/") {
 		t.Fatalf("warm model was not attempted; requests = %v", requests)
 	}
-	for _, request := range requests {
-		if strings.Contains(request, "/wk-artifacts-test/") {
-			t.Fatalf("hot artifact request after warm-model failure: %s", request)
-		}
+	if containsRequest(requests, "/wk-artifacts-test/") {
+		t.Fatalf("hot artifact request after warm-model failure: %v", requests)
+	}
+}
+
+func TestRunBakeSeedRejectPublishesImportDiagnosticsButNoModelOrHot(t *testing.T) {
+	server := newBakeS3Server(nil)
+	defer server.Close()
+	server.installEnv(t)
+
+	err := runBake(context.Background(), []string{
+		"--seed", writeSeedDir(t, seedFixture{
+			seedVersion: "seed-rejects",
+			files: map[string]string{
+				"seed.ndjson": validSeedLine("entity-1", "Valid") + "\n" + invalidSeedLine("entity-2", "Broken") + "\n",
+			},
+		}),
+		"--geo", testGeoDir(t),
+		"--goldens", "../../data/goldens.json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "seed lines rejected") {
+		t.Fatalf("runBake error = %v", err)
+	}
+
+	requests := server.requests()
+	if !containsRequest(requests, "/wk-warm-test/imports/dev/") {
+		t.Fatalf("import diagnostics were not published: %v", requests)
+	}
+	if containsRequest(requests, "/wk-warm-test/model/") {
+		t.Fatalf("warm model request after seed reject: %v", requests)
+	}
+	if containsRequest(requests, "/wk-artifacts-test/") {
+		t.Fatalf("hot artifact request after seed reject: %v", requests)
+	}
+}
+
+func TestRunBakeAllowRejectsContinuesWithStaticOutput(t *testing.T) {
+	seedDir := writeSeedDir(t, seedFixture{
+		seedVersion: "seed-allow-rejects",
+		files: map[string]string{
+			"seed.ndjson": validSeedLineWithRange("entity-1", "Valid", "1901-01-01") + "\n" + invalidSeedLine("entity-2", "Broken") + "\n",
+		},
+	})
+	goldensPath := writeGoldensFile(t, "seed-allow-rejects")
+	outDir := t.TempDir()
+
+	err := runBake(context.Background(), []string{
+		"--seed", seedDir,
+		"--geo", geoDirForEntity(t, "entity-1"),
+		"--goldens", goldensPath,
+		"--out", outDir,
+		"--allow-rejects",
+	})
+	if err != nil {
+		t.Fatalf("runBake: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "manifest.json")); err != nil {
+		t.Fatalf("hot manifest: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "model")); !os.IsNotExist(err) {
+		t.Fatalf("static bake wrote warm model directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "imports")); !os.IsNotExist(err) {
+		t.Fatalf("static bake wrote import directory: %v", err)
+	}
+}
+
+func TestRunBakeImportImmutableFailureStopsBeforeModelOrHot(t *testing.T) {
+	server := newBakeS3Server(nil)
+	server.failPutSubstring = "/wk-warm-test/imports/dev/"
+	defer server.Close()
+	server.installEnv(t)
+
+	err := runBake(context.Background(), []string{
+		"--seed", "../../data/seed",
+		"--geo", testGeoDir(t),
+		"--goldens", "../../data/goldens.json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "publish reject parquet") {
+		t.Fatalf("runBake error = %v", err)
+	}
+
+	requests := server.requests()
+	if containsRequest(requests, "/wk-warm-test/model/") {
+		t.Fatalf("warm model request after import failure: %v", requests)
+	}
+	if containsRequest(requests, "/wk-artifacts-test/") {
+		t.Fatalf("hot artifact request after import failure: %v", requests)
+	}
+}
+
+func TestRunBakeImportPointerFailureStopsBeforeModelOrHot(t *testing.T) {
+	server := newBakeS3Server(nil)
+	server.failPutSubstring = "/wk-warm-test/imports/dev/manifest.json"
+	defer server.Close()
+	server.installEnv(t)
+
+	err := runBake(context.Background(), []string{
+		"--seed", "../../data/seed",
+		"--geo", testGeoDir(t),
+		"--goldens", "../../data/goldens.json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "publish import manifest") {
+		t.Fatalf("runBake error = %v", err)
+	}
+
+	requests := server.requests()
+	if containsRequest(requests, "/wk-warm-test/model/") {
+		t.Fatalf("warm model request after import pointer failure: %v", requests)
+	}
+	if containsRequest(requests, "/wk-artifacts-test/") {
+		t.Fatalf("hot artifact request after import pointer failure: %v", requests)
+	}
+}
+
+func TestRunBakeSeedManifestFailuresPublishNothing(t *testing.T) {
+	cases := []struct {
+		name string
+		fixt seedFixture
+		want string
+	}{
+		{
+			name: "checksum mismatch",
+			fixt: seedFixture{
+				seedVersion: "seed-bad-sha",
+				files: map[string]string{
+					"seed.ndjson": validSeedLine("entity-1", "Valid") + "\n",
+				},
+				mutateManifest: func(m *ingest.SeedManifest) {
+					file := m.Files["seed.ndjson"]
+					file.SHA256 = testSHA256String("wrong")
+					m.Files["seed.ndjson"] = file
+				},
+			},
+			want: "sha256 mismatch",
+		},
+		{
+			name: "count mismatch",
+			fixt: seedFixture{
+				seedVersion: "seed-bad-count",
+				files: map[string]string{
+					"seed.ndjson": validSeedLine("entity-1", "Valid") + "\n",
+				},
+				mutateManifest: func(m *ingest.SeedManifest) {
+					file := m.Files["seed.ndjson"]
+					file.Count++
+					m.Files["seed.ndjson"] = file
+				},
+			},
+			want: "manifest says",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newBakeS3Server(nil)
+			defer server.Close()
+			server.installEnv(t)
+
+			err := runBake(context.Background(), []string{
+				"--seed", writeSeedDir(t, tc.fixt),
+				"--geo", testGeoDir(t),
+				"--goldens", "../../data/goldens.json",
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("runBake error = %v", err)
+			}
+			if got := server.requests(); len(got) != 0 {
+				t.Fatalf("requests after hard seed failure: %v", got)
+			}
+		})
+	}
+}
+
+func TestRunBakeDuplicateSeedIDPublishesNothing(t *testing.T) {
+	server := newBakeS3Server(nil)
+	defer server.Close()
+	server.installEnv(t)
+
+	err := runBake(context.Background(), []string{
+		"--seed", writeSeedDir(t, seedFixture{
+			seedVersion: "seed-dup-id",
+			files: map[string]string{
+				"seed.ndjson": validSeedLine("dup", "One") + "\n" + validSeedLine("dup", "Two") + "\n",
+			},
+		}),
+		"--geo", testGeoDir(t),
+		"--goldens", "../../data/goldens.json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate seed id") {
+		t.Fatalf("runBake error = %v", err)
+	}
+	if got := server.requests(); len(got) != 0 {
+		t.Fatalf("requests after duplicate seed id: %v", got)
+	}
+}
+
+func TestRunBakeUnresolvedRelationshipPublishesNothing(t *testing.T) {
+	server := newBakeS3Server(nil)
+	defer server.Close()
+	server.installEnv(t)
+
+	err := runBake(context.Background(), []string{
+		"--seed", writeSeedDir(t, seedFixture{
+			seedVersion: "seed-bad-rel",
+			files: map[string]string{
+				"seed.ndjson": validSeedLineWithRel("entity-1", "Valid", "missing-target") + "\n",
+			},
+		}),
+		"--geo", testGeoDir(t),
+		"--goldens", "../../data/goldens.json",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unknown target") {
+		t.Fatalf("runBake error = %v", err)
+	}
+	if got := server.requests(); len(got) != 0 {
+		t.Fatalf("requests after unresolved relationship: %v", got)
+	}
+}
+
+func TestRunBakeOversizedWarmScannerFailurePublishesNothing(t *testing.T) {
+	server := newBakeS3Server(nil)
+	defer server.Close()
+	server.installEnv(t)
+
+	warmPath := filepath.Join(t.TempDir(), "warm.ndjson")
+	if err := os.WriteFile(warmPath, append(bytes.Repeat([]byte("x"), 1024*1024+1), '\n'), 0o644); err != nil {
+		t.Fatalf("write warm file: %v", err)
+	}
+
+	err := runBake(context.Background(), []string{
+		"--seed", "../../data/seed",
+		"--geo", testGeoDir(t),
+		"--goldens", "../../data/goldens.json",
+		"--warm-file", warmPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "scan warm events") {
+		t.Fatalf("runBake error = %v", err)
+	}
+	if got := server.requests(); len(got) != 0 {
+		t.Fatalf("requests after oversized warm failure: %v", got)
 	}
 }
 
@@ -203,6 +666,16 @@ func testModelFiles(t *testing.T) []duck.ModelFile {
 
 func testGeoDir(t *testing.T) string {
 	t.Helper()
+	dir := emptyGeoDir(t)
+	front := `{"type":"FeatureCollection","properties":{"entity":"eastern-front","source":"test"},"features":[{"type":"Feature","properties":{"valid_from":"1941-06-22","label":"A","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[20,50],[21,51]]}},{"type":"Feature","properties":{"valid_from":"1942-01-01","label":"B","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[22,50],[23,51]]}}]}`
+	if err := os.WriteFile(filepath.Join(dir, "fronts", "test.geojson"), []byte(front), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func emptyGeoDir(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
 	for _, name := range []string{"borders", "fronts"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
@@ -213,9 +686,222 @@ func testGeoDir(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, "borders", "0.geojson"), []byte(border), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	front := `{"type":"FeatureCollection","properties":{"entity":"eastern-front","source":"test"},"features":[{"type":"Feature","properties":{"valid_from":"1941-06-22","label":"A","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[20,50],[21,51]]}},{"type":"Feature","properties":{"valid_from":"1942-01-01","label":"B","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[22,50],[23,51]]}}]}`
+	return dir
+}
+
+func geoDirForEntity(t *testing.T, entityID string) string {
+	t.Helper()
+	dir := emptyGeoDir(t)
+	front := fmt.Sprintf(`{"type":"FeatureCollection","properties":{"entity":%q,"source":"test"},"features":[{"type":"Feature","properties":{"valid_from":"1900-01-01","label":"A","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[20,50],[21,51]]}},{"type":"Feature","properties":{"valid_from":"1901-01-01","label":"B","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[22,50],[23,51]]}}]}`, entityID)
 	if err := os.WriteFile(filepath.Join(dir, "fronts", "test.geojson"), []byte(front), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+func testImportArtifacts(t *testing.T) (ingest.ImportReport, duck.ModelFile) {
+	t.Helper()
+	dir := t.TempDir()
+	report, file, err := materializeImportArtifacts(context.Background(), dir, testImportResult(), ingest.WarmSourceWarmFile, testSHA256String("warm"))
+	if err != nil {
+		t.Fatalf("materializeImportArtifacts: %v", err)
+	}
+	return report, file
+}
+
+func testEmptyImportArtifacts(t *testing.T) (ingest.ImportReport, duck.ModelFile) {
+	t.Helper()
+	dir := t.TempDir()
+	report, file, err := materializeImportArtifacts(context.Background(), dir, &ingest.Result{
+		SeedVersion:     "seed-deadbeef",
+		SeedInputSHA256: testSHA256String("seed"),
+		SeedParsed:      1,
+		SeedAccepted:    1,
+	}, ingest.WarmSourceNone, "")
+	if err != nil {
+		t.Fatalf("materializeImportArtifacts: %v", err)
+	}
+	return report, file
+}
+
+func testImportResult() *ingest.Result {
+	return &ingest.Result{
+		SeedVersion:           "seed-deadbeef",
+		SeedInputSHA256:       testSHA256String("seed"),
+		SeedParsed:            3,
+		SeedAccepted:          2,
+		WarmParsed:            2,
+		WarmAccepted:          1,
+		WarmDuplicatesSkipped: 0,
+		Rejects: []ingest.Reject{
+			{Source: ingest.RejectSourceSeed, File: "seed.ndjson", Line: 3, Reason: "bad seed"},
+			{Source: ingest.RejectSourceWarm, File: "warm:events", Line: 8, Reason: "bad warm"},
+		},
+	}
+}
+
+func decodeImportManifest(t *testing.T, body []byte) importManifest {
+	t.Helper()
+	var manifest importManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("decode import manifest: %v", err)
+	}
+	return manifest
+}
+
+func testSHA256String(input string) string {
+	sum := sha256.Sum256([]byte(input))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+type bakeS3Server struct {
+	server           *httptest.Server
+	warmBody         []byte
+	failPutSubstring string
+	mu               sync.Mutex
+	recorded         []string
+}
+
+func newBakeS3Server(warmBody []byte) *bakeS3Server {
+	s := &bakeS3Server{warmBody: warmBody}
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.recorded = append(s.recorded, r.Method+" "+r.URL.Path)
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		switch r.Method {
+		case http.MethodHead:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`<Error><Code>NoSuchKey</Code></Error>`))
+		case http.MethodGet:
+			if strings.HasSuffix(r.URL.Path, "/wk-warm-test/"+warmEventsKey) && s.warmBody != nil {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(s.warmBody)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`<Error><Code>NoSuchKey</Code></Error>`))
+		case http.MethodPut:
+			if s.failPutSubstring != "" && strings.Contains(r.URL.Path, s.failPutSubstring) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`<Error><Code>InvalidRequest</Code><Message>injected put failure</Message></Error>`))
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	return s
+}
+
+func (s *bakeS3Server) Close() {
+	s.server.Close()
+}
+
+func (s *bakeS3Server) installEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("AWS_ACCESS_KEY_ID", "test")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test")
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	t.Setenv("S3_ENDPOINT", s.server.URL)
+	t.Setenv("S3_FORCE_PATH_STYLE", "true")
+	t.Setenv("BUCKET_WARM", "wk-warm-test")
+	t.Setenv("BUCKET_ARTIFACTS", "wk-artifacts-test")
+	t.Setenv("DATASET_VERSION", "dev")
+}
+
+func (s *bakeS3Server) requests() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.recorded)
+}
+
+func containsRequest(requests []string, substring string) bool {
+	for _, request := range requests {
+		if strings.Contains(request, substring) {
+			return true
+		}
+	}
+	return false
+}
+
+type seedFixture struct {
+	seedVersion    string
+	files          map[string]string
+	mutateManifest func(*ingest.SeedManifest)
+}
+
+func writeSeedDir(t *testing.T, fixture seedFixture) string {
+	t.Helper()
+	dir := t.TempDir()
+	manifest := ingest.SeedManifest{
+		SeedVersion: fixture.seedVersion,
+		Files:       map[string]ingest.SeedFileMD{},
+	}
+	for name, body := range fixture.files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatalf("write seed file %s: %v", name, err)
+		}
+		manifest.Files[name] = ingest.SeedFileMD{
+			Count:  countSeedRecords(body),
+			SHA256: testSHA256String(body),
+		}
+	}
+	if fixture.mutateManifest != nil {
+		fixture.mutateManifest(&manifest)
+	}
+	manifestBody, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), manifestBody, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	return dir
+}
+
+func countSeedRecords(body string) int {
+	count := 0
+	for _, line := range strings.Split(body, "\n") {
+		text := strings.TrimSpace(line)
+		if text == "" || strings.HasPrefix(text, "#") {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func validSeedLine(id, name string) string {
+	return fmt.Sprintf(`{"id":%q,"type":"event","name":%q,"t0":"1900-01-01","precision":"day","status":"documented","categories":["war"],"importance":0.5}`, id, name)
+}
+
+func validSeedLineWithRange(id, name, t1 string) string {
+	return fmt.Sprintf(`{"id":%q,"type":"event","name":%q,"t0":"1900-01-01","t1":%q,"precision":"day","status":"documented","categories":["war"],"importance":0.5}`, id, name, t1)
+}
+
+func invalidSeedLine(id, name string) string {
+	return fmt.Sprintf(`{"id":%q,"type":"event","name":%q,"t0":"not-a-date","precision":"day","status":"documented","categories":["war"],"importance":0.5}`, id, name)
+}
+
+func validSeedLineWithRel(id, name, target string) string {
+	return fmt.Sprintf(`{"id":%q,"type":"event","name":%q,"t0":"1900-01-01","precision":"day","status":"documented","categories":["war"],"importance":0.5,"rel":[{"type":"part_of","target":%q}]}`, id, name, target)
+}
+
+func writeGoldensFile(t *testing.T, seedVersion string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "goldens.json")
+	body, err := json.Marshal(map[string]any{
+		"seed_version": seedVersion,
+		"views":        []any{},
+	})
+	if err != nil {
+		t.Fatalf("marshal goldens: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("write goldens: %v", err)
+	}
+	return path
 }

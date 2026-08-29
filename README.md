@@ -52,14 +52,23 @@ Wikidata (SPARQL)   ──┤   baker (Go)                          client (Reac
 - **Semantic zoom**: time is divided into buckets T0 (whole universe) through
   T13 (hours). Importance scores decide which entities appear at which bucket;
   the timeline shows the top 100 items that start or end in the visible range.
-- **The manifest is the only mutable object.** Everything under `/v/<dataset>/`
-  is immutable and cacheable forever; a release is a manifest repoint and so
-  is a rollback.
+- **The serving manifest is the only mutable public artifact.** Everything
+  under `/v/<dataset>/` is immutable and cacheable forever; a release is a
+  manifest repoint and so is a rollback.
 - **Golden views**: checked-in expectations ("the universe view must contain
   the Big Bang and the Cretaceous extinction") are evaluated inside every bake
   and a failure blocks publishing.
+- **Warm import diagnostics**: object-store bakes write deterministic ingest
+  diagnostics under `imports/<dataset>/<id>/`, with immutable
+  `report.json` and `reject.parquet` addressed by content. The report records
+  seed and warm source digests, parsed/accepted/rejected counts, skipped warm
+  duplicates, and reject reason groups. The mutable latest pointer
+  `imports/<dataset>/manifest.json` is written last and is the only import
+  diagnostics object that carries `generated_at`.
 - Deploying is `bake --out` plus a static web build - GitHub Pages runs the
-  whole product (see `.github/workflows/pages.yml`).
+  whole product (see `.github/workflows/pages.yml`). Static `bake --out`
+  exercises the same private import-diagnostics generation path, but it does
+  not publish warm model or import artifacts into the site output.
 
 ## Data
 
