@@ -38,7 +38,7 @@ census:
 	$(S3_ENV) go run ./cmd/baker census
 
 bake-docker:
-	docker compose run --rm baker bake --seed /seed --geo /geo
+	docker compose run --rm baker bake --seed /seed --geo /geo --goldens /goldens.json
 
 test:
 	go test ./...

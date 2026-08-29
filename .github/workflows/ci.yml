@@ -30,6 +30,14 @@ jobs:
         run: make fetch-geo
       - run: go vet ./...
       - run: go test ./...
+      - name: Build baker image
+        run: docker build --tag world-knowledge-baker:ci .
+      - name: Prepare container bake output
+        run: mkdir -m 0777 "$RUNNER_TEMP/bake-out"
+      - name: Run baker image
+        run: docker run --rm --volume "$PWD/data/seed:/seed:ro" --volume "$PWD/data/geo:/geo:ro" --volume "$PWD/data/goldens.json:/goldens.json:ro" --volume "$RUNNER_TEMP/bake-out:/out" world-knowledge-baker:ci bake --seed /seed --geo /geo --goldens /goldens.json --out /out
+      - name: Verify container bake output
+        run: test -f "$RUNNER_TEMP/bake-out/manifest.json"
 
   web:
     runs-on: ubuntu-latest

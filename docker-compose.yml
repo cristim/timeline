@@ -41,7 +41,7 @@ services:
   baker:
     build: .
     profiles: ["jobs"]
-    volumes: ["./data/seed:/seed:ro", "./data/geo:/geo:ro"]
+    volumes: ["./data/seed:/seed:ro", "./data/geo:/geo:ro", "./data/goldens.json:/goldens.json:ro"]
     environment:
       S3_ENDPOINT: http://minio:9000
       S3_FORCE_PATH_STYLE: "true"
