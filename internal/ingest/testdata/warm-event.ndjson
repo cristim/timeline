@@ -1,1 +1,1 @@
-{"id":"wd-q999000001","type":"event","name":"Test warm event","t0":{"y":1944.548416},"precision":"day","status":"documented","categories":["war"],"importance":0.42,"point":[13.35,52.51],"wikidata":"Q999000001","wikipedia":"https://en.wikipedia.org/wiki/Test_event","part_of_qid":"Q362"}
+{"id":"wd-q999000001","type":"event","name":"Test warm event","t0":{"y":1944.548416463},"precision":"day","status":"documented","categories":["war"],"importance":0.42,"point":[13.35,52.51],"wikidata":"Q999000001","wikipedia":"https://en.wikipedia.org/wiki/Test_event","part_of_qid":"Q362"}

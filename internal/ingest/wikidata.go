@@ -262,5 +262,5 @@ func parsePointWKT(v string) (lon, lat float64, ok bool) {
 }
 
 func jsonTime(t float64) json.RawMessage {
-	return json.RawMessage(fmt.Sprintf(`{"y": %.6f}`, model.SecondsToYear(t)))
+	return json.RawMessage(fmt.Sprintf(`{"y": %.9f}`, model.SecondsToYear(t)))
 }

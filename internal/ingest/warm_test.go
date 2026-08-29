@@ -3,12 +3,86 @@ package ingest
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"os"
 	"reflect"
 	"testing"
+	"time"
 
 	"wk/internal/model"
 )
+
+type warmBoundaryCase struct {
+	qid          string
+	name         string
+	at           string
+	articleURL   string
+	expectedUnix int64
+}
+
+func TestWarmEventProducerPreservesCenturyBoundaryUTCSeconds(t *testing.T) {
+	t.Parallel()
+
+	cases := []warmBoundaryCase{
+		{
+			qid:          "Q9990001900",
+			name:         "Boundary 1900 event",
+			at:           "1900-01-01T00:00:00Z",
+			articleURL:   "https://en.wikipedia.org/wiki/Boundary_1900_event",
+			expectedUnix: mustUnixSecond(t, "1900-01-01T00:00:00Z"),
+		},
+		{
+			qid:          "Q9990002000",
+			name:         "Boundary 2000 event",
+			at:           "2000-01-01T00:00:00Z",
+			articleURL:   "https://en.wikipedia.org/wiki/Boundary_2000_event",
+			expectedUnix: mustUnixSecond(t, "2000-01-01T00:00:00Z"),
+		},
+	}
+
+	records := make([]WikidataRecord, 0, len(cases))
+	for _, tc := range cases {
+		record, qid, ok := normalizeBinding(warmBoundaryBinding(tc), EventClasses[0])
+		if !ok || qid != tc.qid {
+			t.Fatalf("normalizeBinding(%s) = %#v, %q, %t", tc.at, record, qid, ok)
+		}
+		records = append(records, *record)
+	}
+
+	encoded, err := EncodeWarmEvents(records)
+	if err != nil {
+		t.Fatalf("EncodeWarmEvents: %v", err)
+	}
+	fixture, err := os.ReadFile("testdata/warm-century-boundaries.ndjson")
+	if err != nil {
+		t.Fatalf("read warm boundary fixture: %v", err)
+	}
+	if !bytes.Equal(encoded, fixture) {
+		t.Fatalf("boundary fixture differs from producer output\n got: %s\nwant: %s", encoded, fixture)
+	}
+
+	res, err := LoadSeed("../../data/seed")
+	if err != nil {
+		t.Fatalf("LoadSeed: %v", err)
+	}
+	added, skipped, err := MergeWarmEvents(res, fixture)
+	if err != nil {
+		t.Fatalf("MergeWarmEvents: %v", err)
+	}
+	if added != len(cases) || skipped != 0 || len(res.Rejects) != 0 {
+		t.Fatalf("merge result: added=%d skipped=%d rejects=%v", added, skipped, res.Rejects)
+	}
+	if res.WarmParsed != len(cases) || res.WarmAccepted != len(cases) || res.WarmDuplicatesSkipped != 0 {
+		t.Fatalf("warm counters = parsed:%d accepted:%d skipped:%d, want %d/%d/0", res.WarmParsed, res.WarmAccepted, res.WarmDuplicatesSkipped, len(cases), len(cases))
+	}
+
+	for _, tc := range cases {
+		entity := findEntityByWikidata(t, res, tc.qid)
+		if got := int64(math.Round(entity.T0)); got != tc.expectedUnix {
+			t.Fatalf("%s rounded T0 = %d, want %d", tc.qid, got, tc.expectedUnix)
+		}
+	}
+}
 
 func TestMergeWarmEventsAcceptsNormalizedFixture(t *testing.T) {
 	t.Parallel()
@@ -135,4 +209,42 @@ func TestMergeWarmEventsTracksAcceptedRejectedAndDuplicates(t *testing.T) {
 	if len(res.Entities) == 0 || res.Entities[len(res.Entities)-1].SeedID != "wd-q999000003" {
 		t.Fatalf("last entity = %#v, want wd-q999000003", res.Entities[len(res.Entities)-1])
 	}
+}
+
+func warmBoundaryBinding(tc warmBoundaryCase) map[string]struct {
+	Value string `json:"value"`
+} {
+	return map[string]struct {
+		Value string `json:"value"`
+	}{
+		"item":      {Value: "http://www.wikidata.org/entity/" + tc.qid},
+		"itemLabel": {Value: tc.name},
+		"time":      {Value: tc.at},
+		"coord":     {Value: "Point(13.35 52.51)"},
+		"sitelinks": {Value: "8"},
+		"article":   {Value: tc.articleURL},
+		"partOf":    {Value: "http://www.wikidata.org/entity/Q362"},
+	}
+}
+
+func mustUnixSecond(t *testing.T, value string) int64 {
+	t.Helper()
+
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatalf("time.Parse(%q): %v", value, err)
+	}
+	return parsed.Unix()
+}
+
+func findEntityByWikidata(t *testing.T, res *Result, qid string) *model.Entity {
+	t.Helper()
+
+	for _, entity := range res.Entities {
+		if entity.Wikidata == qid {
+			return entity
+		}
+	}
+	t.Fatalf("entity with wikidata %s not found", qid)
+	return nil
 }
