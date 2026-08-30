@@ -303,3 +303,48 @@ func TestApplyImportanceFloorDropsOrphanedRelationships(t *testing.T) {
 		t.Fatalf("surviving relationships = %#v", promoted[0].Rel)
 	}
 }
+
+// The ROAD-2 census publishes beside the artifacts it sizes: immutable,
+// content-addressed, with the manifest written last (ARCH-2).
+func TestCensusPublishesTheDumpReport(t *testing.T) {
+	server := newBakeS3Server(nil)
+	defer server.Close()
+	server.installEnv(t)
+
+	var stdout bytes.Buffer
+	if err := runCensusWithIO(context.Background(),
+		[]string{"--wikidata-dump", censusDumpFixture, "--publish"},
+		strings.NewReader(""), &stdout, io.Discard); err != nil {
+		t.Fatalf("runCensusWithIO: %v", err)
+	}
+
+	requests := server.requests()
+	prefix := "/wk-warm-test/reports/wikidata-census/dev/"
+	if !containsRequest(requests, prefix) {
+		t.Fatalf("requests = %v, want a publication under %s", requests, prefix)
+	}
+	var puts []string
+	for _, request := range requests {
+		if strings.HasPrefix(request, "PUT ") {
+			puts = append(puts, request)
+		}
+	}
+	if len(puts) != 2 {
+		t.Fatalf("PUT requests = %v, want the report then the manifest", puts)
+	}
+	if !strings.HasSuffix(puts[0], "/report.json") || !strings.HasSuffix(puts[1], "/manifest.json") {
+		t.Fatalf("publication order = %v, want the immutable report first", puts)
+	}
+	if !strings.Contains(stdout.String(), "report -> s3://wk-warm-test/reports/wikidata-census/dev/") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
+func TestCensusPublishRequiresTheDumpMode(t *testing.T) {
+	t.Parallel()
+
+	if _, err := parseCensusArgs([]string{"--publish"}, io.Discard); err == nil ||
+		!strings.Contains(err.Error(), "--publish only applies to --wikidata-dump") {
+		t.Fatalf("parseCensusArgs error = %v", err)
+	}
+}

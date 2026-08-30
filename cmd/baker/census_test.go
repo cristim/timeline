@@ -325,7 +325,7 @@ func TestRunCensusWithIOReturnsWikidataDumpOutputError(t *testing.T) {
 		censusErrorWriter{err: sentinel},
 		io.Discard,
 	)
-	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "encode --wikidata-dump report") {
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "write --wikidata-dump report") {
 		t.Fatalf("runCensusWithIO error = %v, want wrapped writer error", err)
 	}
 }
@@ -559,11 +559,12 @@ func TestUsageTextIncludesCensusModes(t *testing.T) {
 	t.Parallel()
 
 	for _, want := range []string{
-		"census --wikidata-dump <path|->",
-		"read decoded Wikidata JSON",
-		"report to stdout",
-		"externally decompressed JSON",
-		"mutually exclusive with seed/warm inputs",
+		"census --wikidata-dump <path|-> [--publish]",
+		"stream a Wikidata dump",
+		"census to stdout",
+		".json.bz2",
+		"BUCKET_WARM/reports/",
+		"Mutually exclusive",
 		"census [--seed <dir>] [--seed-only | --warm-file <path>]",
 		"BUCKET_WARM/" + warmEventsKey,
 		"--seed-only / --warm-file input",
