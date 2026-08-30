@@ -407,6 +407,128 @@ func TestBakePaleoLayerUsesFixedAttributionAndOmitsColor(t *testing.T) {
 	}
 }
 
+func TestBakeAreaLayerPreservesRenderRankAndOHMProvenance(t *testing.T) {
+	const wantAttribution = "historical-basemaps (GPL-3.0): https://github.com/aourednik/historical-basemaps · OpenHistoricalMap (CC0/public domain): https://www.openhistoricalmap.org/"
+	if BordersAttribution != wantAttribution {
+		t.Fatalf("BordersAttribution = %q, want %q", BordersAttribution, wantAttribution)
+	}
+
+	layer := model.BorderLayer{
+		Year: 1900, TFrom: 1900, TTo: 1964, Label: "World with London detail", Source: "historical-basemaps; OpenHistoricalMap",
+		Features: []model.BorderFeature{
+			{
+				Name: "United Kingdom", Representation: "historical",
+				Geometry: json.RawMessage(`{"type":"Polygon","coordinates":[[[0,0],[1,0],[0,1],[0,0]]]}`),
+			},
+			{
+				Name: "Chelsea", Representation: "historical", RenderRank: 1,
+				Source: "OpenHistoricalMap", SourceID: "relation/2691852@7", License: "CC0-1.0",
+				Attribution: "Map data courtesy of the OpenHistoricalMap project, in the public domain unless otherwise noted.",
+				SourceURL:   "https://www.openhistoricalmap.org/relation/2691852",
+				RetrievedAt: "2026-08-30T06:51:56Z",
+				Geometry:    json.RawMessage(`{"type":"Polygon","coordinates":[[[0,0],[1,0],[0,1],[0,0]]]}`),
+			},
+		},
+	}
+	compiler := new(recordingCompiler)
+	w := newWriter(context.Background(), newMemSink(), &Stats{})
+	if _, err := bakeAreaLayer(context.Background(), w, compiler, "test", BordersLayer, []model.BorderLayer{layer}); err != nil {
+		t.Fatalf("bakeAreaLayer: %v", err)
+	}
+	if err := w.wait(); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if len(compiler.requests) != 1 {
+		t.Fatalf("compiler requests = %d, want 1", len(compiler.requests))
+	}
+
+	var doc struct {
+		Features []struct {
+			Properties map[string]any `json:"properties"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(compiler.requests[0].GeoJSON, &doc); err != nil {
+		t.Fatalf("decode GeoJSON: %v", err)
+	}
+	if len(doc.Features) != 2 {
+		t.Fatalf("features = %d, want 2", len(doc.Features))
+	}
+	base := doc.Features[0].Properties
+	if base["render_rank"] != float64(0) {
+		t.Errorf("base render_rank = %#v, want numeric 0", base["render_rank"])
+	}
+	for _, key := range []string{"source", "source_id", "license", "attribution", "source_url", "retrieved_at"} {
+		if _, ok := base[key]; ok {
+			t.Errorf("base properties contain fabricated %s: %#v", key, base)
+		}
+	}
+
+	ohm := doc.Features[1].Properties
+	wantOHM := map[string]any{
+		"render_rank":  float64(1),
+		"source":       "OpenHistoricalMap",
+		"source_id":    "relation/2691852@7",
+		"license":      "CC0-1.0",
+		"attribution":  "Map data courtesy of the OpenHistoricalMap project, in the public domain unless otherwise noted.",
+		"source_url":   "https://www.openhistoricalmap.org/relation/2691852",
+		"retrieved_at": "2026-08-30T06:51:56Z",
+	}
+	for key, want := range wantOHM {
+		if got := ohm[key]; got != want {
+			t.Errorf("OHM %s = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func TestBakeComposedBorderWindowsKeepDistinctArtifactIdentities(t *testing.T) {
+	feature := model.BorderFeature{
+		Name: "United Kingdom", Representation: "historical",
+		Geometry: json.RawMessage(`{"type":"Polygon","coordinates":[[[0,0],[1,0],[0,1],[0,0]]]}`),
+	}
+	geo := &model.GeoSet{Borders: []model.BorderLayer{
+		{Year: 1960, TFrom: 1960, TTo: 1964, Label: "World borders · 1960", Source: "historical-basemaps", Features: []model.BorderFeature{feature}},
+		{Year: 1965, TFrom: 1965, TTo: 2035, Label: "World borders · 1960 · London boundaries · 1965 · OpenHistoricalMap", Source: "historical-basemaps; OpenHistoricalMap", Features: []model.BorderFeature{feature}},
+	}}
+	sink := newMemSink()
+	compiler := new(recordingCompiler)
+	manifest, _, err := Run(context.Background(), sink, compiler, "test", "seed-x", testEntities(t), geo, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	wantKeys := []string{
+		"v/test/" + LayerKey(BordersLayer, 1960),
+		"v/test/" + LayerKey(BordersLayer, 1965),
+	}
+	for _, key := range wantKeys {
+		if _, ok := sink.objects[key]; !ok {
+			t.Errorf("missing composed border artifact %q", key)
+		}
+		writes := 0
+		for _, writtenKey := range sink.keys {
+			if writtenKey == key {
+				writes++
+			}
+		}
+		if writes != 1 {
+			t.Errorf("writes for %q = %d, want 1", key, writes)
+		}
+	}
+
+	var index layerIndex
+	mustGet(t, sink, "v/test/"+LayerIndexKey(BordersLayer), &index)
+	wantIndex := []layerIndexRow{
+		{Year: 1960, TFrom: 1960, TTo: 1964, Label: "World borders · 1960", Source: "historical-basemaps"},
+		{Year: 1965, TFrom: 1965, TTo: 2035, Label: "World borders · 1960 · London boundaries · 1965 · OpenHistoricalMap", Source: "historical-basemaps; OpenHistoricalMap"},
+	}
+	if !slices.Equal(index.Steps, wantIndex) {
+		t.Errorf("border index = %#v, want %#v", index.Steps, wantIndex)
+	}
+	if got := manifest.Timesteps[BordersLayer]; !slices.Equal(got, []int{1960, 1965}) {
+		t.Errorf("border timesteps = %v, want [1960 1965]", got)
+	}
+}
+
 func TestBakeAreaLayerDoesNotPublishIndexAfterBodyFailure(t *testing.T) {
 	sink := &orderedSink{failPMTiles: true}
 	w := newWriter(context.Background(), sink, &Stats{})

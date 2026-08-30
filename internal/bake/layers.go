@@ -13,7 +13,7 @@ const (
 	BordersLayer       = "borders"
 	PaleoLayer         = "paleocoast"
 	PMTilesContentType = "application/vnd.pmtiles"
-	BordersAttribution = "historical-basemaps (GPL-3.0): https://github.com/aourednik/historical-basemaps"
+	BordersAttribution = "historical-basemaps (GPL-3.0): https://github.com/aourednik/historical-basemaps · OpenHistoricalMap (CC0/public domain): https://www.openhistoricalmap.org/"
 	PaleoAttribution   = "Merdith et al. 2021 (CC-BY 4.0): https://doi.org/10.1016/j.earscirev.2020.103477"
 )
 
@@ -60,6 +60,13 @@ type layerFeatProps struct {
 	Slug           string `json:"slug,omitempty"` // selectable entity, if any
 	Representation string `json:"representation"`
 	Color          string `json:"color,omitempty"`
+	RenderRank     int    `json:"render_rank"`
+	Source         string `json:"source,omitempty"`
+	SourceID       string `json:"source_id,omitempty"`
+	License        string `json:"license,omitempty"`
+	Attribution    string `json:"attribution,omitempty"`
+	SourceURL      string `json:"source_url,omitempty"`
+	RetrievedAt    string `json:"retrieved_at,omitempty"`
 }
 
 // layerIndex is layers/<layer>/index.json: every time-step with its coverage
@@ -128,6 +135,9 @@ func bakeAreaLayer(ctx context.Context, w *writer, compiler LayerCompiler, datas
 				Type: "Feature",
 				Properties: layerFeatProps{
 					Name: f.Name, Slug: f.Slug, Representation: f.Representation, Color: color,
+					RenderRank: f.RenderRank, Source: f.Source, SourceID: f.SourceID,
+					License: f.License, Attribution: f.Attribution, SourceURL: f.SourceURL,
+					RetrievedAt: f.RetrievedAt,
 				},
 				Geometry: f.Geometry,
 			})
