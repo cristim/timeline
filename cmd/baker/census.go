@@ -16,7 +16,10 @@ import (
 	"wk/internal/ingest"
 )
 
-const censusManifestKey = "reports/census/manifest.json"
+const (
+	censusReportPrefix = "reports/census"
+	censusManifestKey  = censusReportPrefix + "/manifest.json"
+)
 
 type censusOptions struct {
 	seedDir         string
@@ -24,6 +27,7 @@ type censusOptions struct {
 	warmFile        string
 	wikidataDump    string
 	wikidataDumpSet bool
+	publish         bool
 }
 
 type censusRunner struct {
@@ -50,7 +54,7 @@ func runCensusWithIO(ctx context.Context, args []string, stdin io.Reader, stdout
 		return err
 	}
 	if opts.wikidataDumpSet {
-		return runWikidataDumpCoverage(opts.wikidataDump, stdin, stdout)
+		return runWikidataDumpCoverage(ctx, opts, stdin, stdout)
 	}
 
 	cli, err := blob.New(ctx)
@@ -84,7 +88,8 @@ func runCensusWithIO(ctx context.Context, args []string, stdin io.Reader, stdout
 	return runCensusWithRunner(ctx, opts, runner)
 }
 
-func runWikidataDumpCoverage(path string, stdin io.Reader, stdout io.Writer) error {
+func runWikidataDumpCoverage(ctx context.Context, opts censusOptions, stdin io.Reader, stdout io.Writer) error {
+	path := opts.wikidataDump
 	r := stdin
 	if path != "-" {
 		file, err := os.Open(path)
@@ -99,9 +104,32 @@ func runWikidataDumpCoverage(path string, stdin io.Reader, stdout io.Writer) err
 	if err != nil {
 		return fmt.Errorf("scan --wikidata-dump %q: %w", path, err)
 	}
-	if err := json.NewEncoder(stdout).Encode(report); err != nil {
+	body, err := json.Marshal(report)
+	if err != nil {
 		return fmt.Errorf("encode --wikidata-dump report: %w", err)
 	}
+	if _, err := stdout.Write(append(body, '\n')); err != nil {
+		return fmt.Errorf("write --wikidata-dump report: %w", err)
+	}
+	if !opts.publish {
+		return nil
+	}
+
+	// The ROAD-2 census belongs beside the artifacts it sizes: immutable,
+	// content-addressed, in wk-warm/reports/ (DEV-5, SRC-5).
+	cli, err := blob.New(ctx)
+	if err != nil {
+		return err
+	}
+	warmBucket := envOr("BUCKET_WARM", "wk-warm")
+	prefix := reportPrefix("wikidata-census", datasetVersion())
+	manifest, err := publishContentAddressedReport(ctx,
+		blob.BucketSink{Client: cli, Bucket: warmBucket}, prefix, prefix+"/manifest.json",
+		time.Now().UTC(), report.SchemaVersion, body)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "report -> s3://%s/%s\n", warmBucket, manifest.Report.Key)
 	return nil
 }
 
@@ -112,7 +140,8 @@ func parseCensusArgs(args []string, output io.Writer) (censusOptions, error) {
 	seedDir := fs.String("seed", "data/seed", "NDJSON seed directory")
 	seedOnly := fs.Bool("seed-only", false, "publish a seed-only census; skip every warm input")
 	warmFile := fs.String("warm-file", "", "read warm-events NDJSON from this local file instead of BUCKET_WARM/"+warmEventsKey)
-	wikidataDump := fs.String("wikidata-dump", "", "stream a decoded Wikidata JSON dump from this path or -")
+	wikidataDump := fs.String("wikidata-dump", "", "stream a Wikidata JSON dump from this path or - (.json, .json.gz, .json.bz2)")
+	publish := fs.Bool("publish", false, "with --wikidata-dump, also publish the census to BUCKET_WARM/reports/")
 	if err := fs.Parse(args); err != nil {
 		return censusOptions{}, err
 	}
@@ -132,6 +161,10 @@ func parseCensusArgs(args []string, output io.Writer) (censusOptions, error) {
 	if wikidataDumpSet && (seedSet || *seedOnly || *warmFile != "") {
 		return censusOptions{}, fmt.Errorf("--wikidata-dump is mutually exclusive with --seed, --seed-only, and --warm-file")
 	}
+	if *publish && !wikidataDumpSet {
+		// The seed census always publishes; the flag would be a no-op there.
+		return censusOptions{}, fmt.Errorf("--publish only applies to --wikidata-dump")
+	}
 	if *seedOnly && *warmFile != "" {
 		return censusOptions{}, fmt.Errorf("--seed-only and --warm-file are mutually exclusive")
 	}
@@ -141,6 +174,7 @@ func parseCensusArgs(args []string, output io.Writer) (censusOptions, error) {
 		warmFile:        *warmFile,
 		wikidataDump:    *wikidataDump,
 		wikidataDumpSet: wikidataDumpSet,
+		publish:         *publish,
 	}, nil
 }
 
@@ -232,14 +266,30 @@ func publishCensusReport(ctx context.Context, sink bake.Sink, generatedAt time.T
 	if err != nil {
 		return censusManifest{}, fmt.Errorf("encode census report: %w", err)
 	}
+	return publishContentAddressedReport(ctx, sink, censusReportPrefix, censusManifestKey,
+		generatedAt, ingest.CensusReportSchemaVersion, reportBody)
+}
+
+// publishContentAddressedReport writes the report under its own digest, then
+// repoints the manifest. The immutable object always exists before anything
+// names it (ARCH-2), and republishing the same report is a no-op on the
+// immutable side however often it runs.
+func publishContentAddressedReport(
+	ctx context.Context,
+	sink bake.Sink,
+	prefix, manifestKey string,
+	generatedAt time.Time,
+	schemaVersion int,
+	reportBody []byte,
+) (censusManifest, error) {
 	reportDigest := sha256.Sum256(reportBody)
 	reportID := fmt.Sprintf("%x", reportDigest)
 	manifest := censusManifest{
-		SchemaVersion: ingest.CensusReportSchemaVersion,
+		SchemaVersion: schemaVersion,
 		ReportID:      reportID,
 		GeneratedAt:   generatedAt.UTC().Format(time.RFC3339),
 		Report: publicationObject{
-			Key:    fmt.Sprintf("reports/census/%s/report.json", reportID),
+			Key:    fmt.Sprintf("%s/%s/report.json", prefix, reportID),
 			Size:   int64(len(reportBody)),
 			SHA256: reportID,
 		},
@@ -252,7 +302,7 @@ func publishCensusReport(ctx context.Context, sink bake.Sink, generatedAt time.T
 	if err != nil {
 		return censusManifest{}, fmt.Errorf("encode census manifest: %w", err)
 	}
-	if _, err := sink.Put(ctx, censusManifestKey, manifestBody, "application/json"); err != nil {
+	if _, err := sink.Put(ctx, manifestKey, manifestBody, "application/json"); err != nil {
 		return censusManifest{}, fmt.Errorf("publish census manifest: %w", err)
 	}
 	return manifest, nil
