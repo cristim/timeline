@@ -706,3 +706,141 @@ test("phone viewport still renders the three areas", async ({ page }) => {
   await expect(page.locator(".searchbox input")).toBeVisible();
   expect(w.errors).toEqual([]);
 });
+
+// ── FE-8 compare ─────────────────────────────────────
+// The seed's own dates make the spec's example: T. rex (68-66 Ma) and
+// Stegosaurus (155-145 Ma) never met, and T. rex is nearer to the reader than
+// to Stegosaurus.
+const CMP_PAIR = "tyrannosaurus-rex,stegosaurus";
+
+/** A sparse deep-time view neither dinosaur appears in, optionally comparing. */
+function quietDeepView(cmp?: string) {
+  const tc = tcForYear(-250_000_000);
+  const span = 20_000_000 * SECONDS_PER_YEAR;
+  return `./?t0=${tc - span}&t1=${tc + span}&tc=${tc}${cmp ? `&cmp=${cmp}` : ""}`;
+}
+
+async function laneCount(page: Page): Promise<number> {
+  return Number((await page.locator(".count").textContent())!.split(" ")[0]);
+}
+
+test("compares two entities picked from search, then leaves compare", async ({ page }) => {
+  const w = watch(page);
+  await page.goto("./");
+  await booted(page);
+
+  await page.locator(".searchbox input").fill("tyranno");
+  await page.locator(".search-results li", { hasText: "Tyrannosaurus rex" }).click();
+  await expect(page.locator(".inspector h2")).toHaveText("Tyrannosaurus rex");
+
+  // Entry point: the inspector's compare action, second subject via search.
+  await page.locator(".insp-actions .iact", { hasText: "Compare" }).click();
+  await expect(page.locator(".cmp-pending")).toContainText("Tyrannosaurus rex");
+  await page.locator(".searchbox input").fill("stegosaur");
+  await page.locator(".search-results li", { hasText: "Stegosaurus" }).click();
+
+  const verdict = page.locator(".cmp-verdict");
+  await expect(verdict).toContainText("Tyrannosaurus rex and Stegosaurus");
+  await expect(verdict).toContainText("✗");
+  await expect(verdict).toContainText("closer to you");
+  // Both lifespans on the shared axis; deep time never reaches the now marker.
+  await expect(page.locator(".cmp-span")).toHaveCount(2);
+  await expect(page.locator(".cmp-now")).toHaveCount(0);
+  await expect(page.locator(".cmp-offaxis")).toHaveText("now is off this axis");
+
+  // Aligned table: mass is claimed by both, max speed only by T. rex, and the
+  // gap is stated rather than left blank.
+  const mass = page.locator(".cmp-table tbody tr", { hasText: "mass" });
+  await expect(mass.locator(".cmp-val")).toHaveCount(2);
+  await expect(mass.locator(".cmp-val").first()).toContainText("kg");
+  const speed = page.locator(".cmp-table tbody tr", { hasText: "max speed" });
+  await expect(speed.locator(".cmp-gap")).toHaveText("not recorded");
+
+  // API-6: the comparison is in the URL, so it is shareable.
+  await page.waitForTimeout(500);
+  expect(new URL(page.url()).searchParams.get("cmp")).toBe(CMP_PAIR);
+
+  // Back walks out of the comparison the way it walks out of a selection.
+  await page.goBack();
+  await expect(page.locator(".cmp-pending")).toContainText("Tyrannosaurus rex");
+  await page.goForward();
+  await expect(page.locator(".cmp-verdict")).toContainText("closer to you");
+
+  // Leaving compare restores the ordinary view and keeps the selection.
+  await page.waitForTimeout(500);
+  await page.locator(".cmp-close").click();
+  await expect(page.locator(".compare-panel")).toHaveCount(0);
+  await expect(page.locator(".inspector h2")).toHaveText("Tyrannosaurus rex");
+  await page.waitForTimeout(500);
+  expect(new URL(page.url()).searchParams.get("cmp")).toBeNull();
+  expect(w.errors, "console errors").toEqual([]);
+  expect(w.notFound, "same-origin 404s").toEqual([]);
+});
+
+test("a shared compare URL cold-loads the comparison", async ({ page }) => {
+  const w = watch(page);
+  await page.goto(`./?t0=-5.2e15&t1=-1.8e15&cmp=${CMP_PAIR}`);
+  await booted(page);
+  await expect(page.locator(".cmp-verdict")).toContainText("Tyrannosaurus rex and Stegosaurus");
+  await expect(page.locator(".cmp-verdict")).toContainText("77 Myr apart");
+  await expect(page.locator(".cmp-table tbody tr")).toHaveCount(3); // mass, length, max speed
+  expect(w.errors, "console errors").toEqual([]);
+  expect(w.notFound, "same-origin 404s").toEqual([]);
+});
+
+test("overlapping subjects are stated as overlapping", async ({ page }) => {
+  await page.goto("./?t0=-2.209e9&t1=7.889e8&cmp=battle-of-stalingrad,eastern-front-wwii");
+  await booted(page);
+  const verdict = page.locator(".cmp-verdict");
+  await expect(verdict).toContainText("✓");
+  await expect(verdict).toContainText("overlap for");
+  // A wartime pair spans four years, so the axis cannot reach 2026 and says so.
+  await expect(page.locator(".cmp-offaxis")).toHaveText("now is off this axis");
+});
+
+test("a pair straddling the present marks now on the axis", async ({ page }) => {
+  await page.goto(
+    "./?t0=-2.209e9&t1=7.889e8&cmp=battle-of-stalingrad,permanent-human-presence-on-mars",
+  );
+  await booted(page);
+  // A projected 2060 landing is ahead of the reader, not "at" the present.
+  await expect(page.locator(".cmp-verdict")).toContainText("closer to you");
+  await expect(page.locator(".cmp-offaxis")).toHaveCount(0);
+  await expect(page.locator(".cmp-now").first()).toBeVisible();
+});
+
+// A shared link can outlive the bake it was made from. No console/404 watch
+// here: the missing artifact is the point of the test.
+test("a compare link naming a missing entity says so", async ({ page }) => {
+  await page.goto(`./?t0=-5.2e15&t1=-1.8e15&cmp=no-such-entity,stegosaurus`);
+  await booted(page);
+  await expect(page.locator(".cmp-failed")).toHaveText("Could not load no-such-entity.");
+  await expect(page.locator(".cmp-verdict")).toHaveCount(0);
+});
+
+// FE-1 is desktop/tablet-first, but a narrowed window must not collapse the
+// axis the comparison is read from.
+test("the overlap bar survives a narrow window", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 800 });
+  await page.goto(`./?t0=-5.2e15&t1=-1.8e15&cmp=${CMP_PAIR}`);
+  await booted(page);
+  const track = page.locator(".cmp-track").first();
+  await expect(track).toBeVisible();
+  // The name and date columns give way before the track does.
+  expect((await track.boundingBox())!.width).toBeGreaterThan(150);
+  const bar = page.locator(".cmp-span").first();
+  expect((await bar.boundingBox())!.width).toBeGreaterThan(0);
+});
+
+test("the timeline keeps both compare subjects whatever the view shows", async ({ page }) => {
+  await page.goto(quietDeepView());
+  await booted(page);
+  await page.waitForTimeout(2500);
+  const base = await laneCount(page);
+
+  await page.goto(quietDeepView(CMP_PAIR));
+  await booted(page);
+  await expect(page.locator(".cmp-verdict")).toContainText("closer to you");
+  // Neither dinosaur is anywhere near this view, and both are drawn anyway.
+  await expect.poll(() => laneCount(page), { timeout: 10_000 }).toBe(base + 2);
+});
