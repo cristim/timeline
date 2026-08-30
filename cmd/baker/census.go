@@ -19,9 +19,11 @@ import (
 const censusManifestKey = "reports/census/manifest.json"
 
 type censusOptions struct {
-	seedDir  string
-	seedOnly bool
-	warmFile string
+	seedDir         string
+	seedOnly        bool
+	warmFile        string
+	wikidataDump    string
+	wikidataDumpSet bool
 }
 
 type censusRunner struct {
@@ -39,9 +41,16 @@ type censusManifest struct {
 }
 
 func runCensus(ctx context.Context, args []string) error {
-	opts, err := parseCensusArgs(args, os.Stderr)
+	return runCensusWithIO(ctx, args, os.Stdin, os.Stdout, os.Stderr)
+}
+
+func runCensusWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	opts, err := parseCensusArgs(args, stderr)
 	if err != nil {
 		return err
+	}
+	if opts.wikidataDumpSet {
+		return runWikidataDumpCoverage(opts.wikidataDump, stdin, stdout)
 	}
 
 	cli, err := blob.New(ctx)
@@ -50,7 +59,7 @@ func runCensus(ctx context.Context, args []string) error {
 	}
 	warmBucket := envOr("BUCKET_WARM", "wk-warm")
 	runner := censusRunner{
-		stdout: os.Stdout,
+		stdout: stdout,
 		now:    time.Now,
 		sink:   blob.BucketSink{Client: cli, Bucket: warmBucket},
 		loadWarm: func(ctx context.Context, opts censusOptions) ([]byte, ingest.WarmSource, error) {
@@ -75,6 +84,27 @@ func runCensus(ctx context.Context, args []string) error {
 	return runCensusWithRunner(ctx, opts, runner)
 }
 
+func runWikidataDumpCoverage(path string, stdin io.Reader, stdout io.Writer) error {
+	r := stdin
+	if path != "-" {
+		file, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("open --wikidata-dump %q: %w", path, err)
+		}
+		defer file.Close()
+		r = file
+	}
+
+	report, err := ingest.BuildWikidataDumpCoverageReport(r)
+	if err != nil {
+		return fmt.Errorf("scan --wikidata-dump %q: %w", path, err)
+	}
+	if err := json.NewEncoder(stdout).Encode(report); err != nil {
+		return fmt.Errorf("encode --wikidata-dump report: %w", err)
+	}
+	return nil
+}
+
 func parseCensusArgs(args []string, output io.Writer) (censusOptions, error) {
 	fs := flag.NewFlagSet("census", flag.ContinueOnError)
 	fs.SetOutput(output)
@@ -82,16 +112,35 @@ func parseCensusArgs(args []string, output io.Writer) (censusOptions, error) {
 	seedDir := fs.String("seed", "data/seed", "NDJSON seed directory")
 	seedOnly := fs.Bool("seed-only", false, "publish a seed-only census; skip every warm input")
 	warmFile := fs.String("warm-file", "", "read warm-events NDJSON from this local file instead of BUCKET_WARM/"+warmEventsKey)
+	wikidataDump := fs.String("wikidata-dump", "", "stream a decoded Wikidata JSON dump from this path or -")
 	if err := fs.Parse(args); err != nil {
 		return censusOptions{}, err
+	}
+	seedSet := false
+	wikidataDumpSet := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "seed":
+			seedSet = true
+		case "wikidata-dump":
+			wikidataDumpSet = true
+		}
+	})
+	if wikidataDumpSet && *wikidataDump == "" {
+		return censusOptions{}, fmt.Errorf("--wikidata-dump requires a non-empty path or -")
+	}
+	if wikidataDumpSet && (seedSet || *seedOnly || *warmFile != "") {
+		return censusOptions{}, fmt.Errorf("--wikidata-dump is mutually exclusive with --seed, --seed-only, and --warm-file")
 	}
 	if *seedOnly && *warmFile != "" {
 		return censusOptions{}, fmt.Errorf("--seed-only and --warm-file are mutually exclusive")
 	}
 	return censusOptions{
-		seedDir:  *seedDir,
-		seedOnly: *seedOnly,
-		warmFile: *warmFile,
+		seedDir:         *seedDir,
+		seedOnly:        *seedOnly,
+		warmFile:        *warmFile,
+		wikidataDump:    *wikidataDump,
+		wikidataDumpSet: wikidataDumpSet,
 	}, nil
 }
 

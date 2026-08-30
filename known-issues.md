@@ -2,10 +2,11 @@
 
 - **The deterministic census is not the full ROAD-2 census.** It measures
   accepted normalized seed entities plus the current bounded Wikidata feed,
-  whose source query prefilters to dated, geolocated battles, wars, and sieges.
-  It does not yet process the Wikidata dump or cover political events,
-  disasters, scientific events, people, species, and products, so its counts
-  cannot set the final dump-scale HOT-tier targets.
+  and its local dump mode now streams decoded Wikidata JSON into aggregate raw
+  fact and time-precision coverage. It still lacks taxonomy/type
+  classification, calendar conversion, per-century attribution, native dump
+  decompression, S3 publication, normalized bulk ingest and bulk bake, and
+  final dump-scale HOT-tier targets.
 
 - **Artifact count grows ~27x entity count at fine buckets.** The 10.5k-entity
   warm bake produces ~280k chunk objects (window duplication x categories,

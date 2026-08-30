@@ -77,6 +77,11 @@ Wikidata (SPARQL)   ──┤   baker (Go)                          client (Reac
   latest pointer at `reports/census/manifest.json` is written last and is the
   only census object containing `generated_at`. The report identity depends
   only on its exact deterministic JSON bytes.
+- **Raw Wikidata coverage**: `baker census --wikidata-dump <path|->` streams a
+  decoded Wikidata JSON array and writes one deterministic aggregate report to
+  stdout. It counts English labels, validated dates, Earth coordinates,
+  sitelinks, combined date/coordinate/English-Wikipedia coverage, and time
+  claims by property and numeric precision without using S3.
 - Deploying is `bake --out` plus a static web build - GitHub Pages runs the
   whole product through the pinned baker image (see
   `.github/workflows/pages.yml`). Static `bake --out` exercises the same
@@ -101,6 +106,23 @@ artifact. The report describes accepted normalized entities after source
 filters. The current bulk feed contains only battles, wars, and sieges, so it
 is a deterministic precursor to ROAD-2 rather than the complete dump-scale
 census.
+
+For raw dump coverage, pass decoded JSON from a file or pipe external
+decompression to stdin:
+
+```sh
+go run ./cmd/baker census --wikidata-dump /path/to/latest-all.json
+bunzip2 -c /path/to/latest-all.json.bz2 | go run ./cmd/baker census --wikidata-dump -
+```
+
+This local mode emits `schema_version`, `coverage_basis`, `input_sha256`,
+`items`, and deterministically sorted `time_claims`. The digest covers the
+exact uncompressed JSON bytes consumed, including trailing whitespace, not the
+compressed dump artifact. Coverage is measured after statement validation and
+before taxonomy/type classification, recorded as
+`wikidata-item-facts-after-statement-validation-before-type-classification`.
+The command neither initializes S3 nor loads, normalizes, publishes, or retains
+all dump items.
 
 Map geometry comes from four pinned upstreams. Borders, paleo coastlines, and
 the Protomaps extract are fetched by `make fetch-geo` and cached in CI; the

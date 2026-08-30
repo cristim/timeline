@@ -29,6 +29,10 @@ const usageText = `usage: baker <command>
                                for the three fetched map inputs
   geo-verify [--geo <dir>]     prove fetched layers tile their range and the
                                basemap matches its size and digest pin
+  census --wikidata-dump <path|->
+                               read decoded Wikidata JSON and write its coverage
+                               report to stdout; pipe externally decompressed JSON
+                               to - on stdin; mutually exclusive with seed/warm inputs
   census [--seed <dir>] [--seed-only | --warm-file <path>]
                                deterministic census from seed plus default
                                BUCKET_WARM/` + warmEventsKey + `, or explicit
