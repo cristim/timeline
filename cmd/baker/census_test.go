@@ -19,7 +19,7 @@ import (
 	"wk/internal/ingest"
 )
 
-const expectedWikidataDumpCoverageJSON = `{"schema_version":1,"coverage_basis":"wikidata-item-facts-after-statement-validation-before-type-classification","input_sha256":"3d59b3bde012de266b41ffadc982e24eb820f8d3297d63130ae61851e49af6d4",` +
+const expectedWikidataDumpCoverageJSON = `{"schema_version":1,"coverage_basis":"wikidata-item-facts-after-statement-validation-before-type-classification","input_sha256":"3d59b3bde012de266b41ffadc982e24eb820f8d3297d63130ae61851e49af6d4","compression":"none",` +
 	`"items":{"count":2,"has_english_label":1,"has_date":1,"has_coordinates":1,"has_english_wikipedia":1,"has_any_sitelink":2,"has_all":1,"total_sitelinks":4},` +
 	`"properties":1,` +
 	`"time_claims":[{"property":"P569","precision":11,"count":1},{"property":"P570","precision":9,"count":1},{"property":"P577","precision":10,"count":1},{"property":"P580","precision":11,"count":1},{"property":"P585","precision":7,"count":1}],` +
