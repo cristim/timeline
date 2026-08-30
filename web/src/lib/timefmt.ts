@@ -1,6 +1,10 @@
 // Human labels for timeline_time values across 100+ orders of magnitude.
 import { SECONDS_PER_YEAR, secondsToYear } from "./keyscheme";
 
+/** The present, in timeline seconds. Fixed at load: the NOW line must not
+ *  drift between the timeline's frame and the compare view's verdict. */
+export const NOW_S = Date.now() / 1000;
+
 /** Formats a time (seconds since 1970) at a scale suited to `span` seconds. */
 export function formatTime(t: number, span: number): string {
   const year = secondsToYear(t);
@@ -28,6 +32,29 @@ export function formatTime(t: number, span: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/**
+ * Formats a length of time (seconds) - how long something lasted, or how much
+ * empty time sits between two things. Unlike formatTime this is a duration, so
+ * it never carries "ago" or "in".
+ */
+export function formatDuration(seconds: number): string {
+  const s = Math.abs(seconds);
+  const years = s / SECONDS_PER_YEAR;
+  if (years >= 1e9) return `${trim(years / 1e9)} Gyr`;
+  if (years >= 1e6) return `${trim(years / 1e6)} Myr`;
+  if (years >= 1e4) return `${trim(years / 1000)} kyr`;
+  if (years >= 1) return plural(Math.round(years), "year");
+  if (s >= 86_400) return plural(Math.round(s / 86_400), "day");
+  if (s >= 3600) return plural(Math.round(s / 3600), "hour");
+  if (s >= 60) return plural(Math.round(s / 60), "minute");
+  // Two same-day events can share seconds; "0 minutes" would read as none.
+  return "under a minute";
+}
+
+function plural(n: number, unit: string): string {
+  return `${n} ${unit}${n === 1 ? "" : "s"}`;
 }
 
 /** Label for an entity's time range, respecting its stated precision. */

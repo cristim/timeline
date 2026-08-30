@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { ChunkItem } from "../lib/data";
 import { colorFor, markerStyle } from "../lib/colors";
-import { formatTime } from "../lib/timefmt";
+import { formatTime, NOW_S } from "../lib/timefmt";
 import { futureGutterItems, laneItems } from "../lib/visible";
 import { SECONDS_PER_YEAR } from "../lib/keyscheme";
 import { cursorTime } from "../lib/state";
@@ -18,7 +18,6 @@ const T_MAX = 2.2e17;
 const MIN_SPAN = 900; // 15 minutes
 const AXIS_H = 26;
 const ROW_H = 22;
-const NOW_S = Date.now() / 1000;
 
 // Time cursor (FE-3/FE-5): a bright neutral instrument line, deliberately not
 // a category colour and not the selection amber - it marks a moment, it is not
@@ -42,6 +41,8 @@ interface Props {
   t1: number;
   items: ChunkItem[];
   selected: string | null;
+  /** The FE-8 compare subjects, drawn and pinned like the selection. */
+  compare: string[];
   /** Pinned cursor time; null follows the centre of the view. */
   tc: number | null;
   onRange: (t0: number, t1: number) => void;
@@ -57,7 +58,7 @@ interface HitBox {
   slug: string;
 }
 
-export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCursor }: Props) {
+export function Timeline({ t0, t1, items, selected, compare, tc, onRange, onSelect, onCursor }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hits = useRef<HitBox[]>([]);
   const drag = useRef<{
@@ -134,7 +135,7 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
     hits.current = [];
     const rows: number[] = []; // per-row rightmost occupied x
     const maxRows = Math.floor((h - AXIS_H - 6) / ROW_H);
-    const visibility = { t0, t1, cursor, selected };
+    const visibility = { t0, t1, cursor, selected, compare };
     const offRight = futureGutterItems(items, visibility);
     ctx.font = "11px system-ui, sans-serif";
 
@@ -164,7 +165,7 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
 
       const color = colorFor(item.categories);
       const style = markerStyle(item.status);
-      const isSel = item.slug === selected;
+      const isSel = item.slug === selected || compare.includes(item.slug);
       ctx.globalAlpha = 1;
 
       if (isSpan) {
@@ -228,7 +229,7 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
     // panned off-screen; it pins to the edge with an arrow rather than
     // vanishing, because the map is still showing whatever time it holds.
     drawCursor(ctx, x(cursor), handleX(cursor, t0, t1, w), w, h, formatTime(cursor, span), tc !== null);
-  }, [t0, t1, items, selected, cursor, tc]);
+  }, [t0, t1, items, selected, compare, cursor, tc]);
 
   useEffect(() => {
     const raf = requestAnimationFrame(draw);

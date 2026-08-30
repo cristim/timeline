@@ -6,6 +6,7 @@
 import { useState, type ReactNode } from "react";
 import type { EntityDoc, EntityRef } from "../lib/data";
 import { markerStyle } from "../lib/colors";
+import { fmtNum } from "../lib/numfmt";
 import { formatRange, isOngoing } from "../lib/timefmt";
 
 interface Props {
@@ -13,10 +14,12 @@ interface Props {
   width?: number;
   onSelect: (slug: string) => void;
   onFocusTime: (t0: number, t1: number) => void;
+  /** Starts an FE-8 comparison with this entity as its first subject. */
+  onCompare: (slug: string) => void;
   onClose: () => void;
 }
 
-export function Inspector({ doc, width, onSelect, onFocusTime, onClose }: Props) {
+export function Inspector({ doc, width, onSelect, onFocusTime, onCompare, onClose }: Props) {
   if (!doc) {
     return (
       <aside className="inspector empty" style={{ width }}>
@@ -49,6 +52,11 @@ export function Inspector({ doc, width, onSelect, onFocusTime, onClose }: Props)
           <span className="prec"> · {temporal.precision.replace(/_/g, " ")}</span>
         </button>
         {doc.description && <p className="desc">{doc.description}</p>}
+        <div className="insp-actions">
+          <button className="iact" onClick={() => onCompare(doc.slug)}>
+            Compare
+          </button>
+        </div>
       </div>
 
       <Section title="Details" defaultOpen>
@@ -235,14 +243,4 @@ export function focusEntity(
   const { t0, t1 } = doc.temporal;
   const span = Math.max(t1 - t0, 86_400);
   onFocusTime(t0 - span * 1.5, t1 + span * 1.5);
-}
-
-function fmtNum(v: number): string {
-  if (Math.abs(v) >= 1e9) return `${round2(v / 1e9)}B`;
-  if (Math.abs(v) >= 1e6) return `${round2(v / 1e6)}M`;
-  if (Math.abs(v) >= 1e4) return `${round2(v / 1e3)}k`;
-  return `${round2(v)}`;
-}
-function round2(v: number): number {
-  return Math.round(v * 100) / 100;
 }
