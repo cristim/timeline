@@ -396,12 +396,37 @@ func TestConvertWikidataTimeWidensThePrecisionLabelWithTheWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConvertWikidataTime: %v", err)
 	}
-	if got.Precision == "day" {
-		t.Fatal("a window widened to 61 days still claims day precision")
+	// 61 days: too wide for a month, covered by a year. Not billion_year,
+	// which would be honest but useless.
+	if got.Precision != "year" {
+		t.Fatalf("precision = %q, want year for a 61-day window", got.Precision)
 	}
 	if unit := modelPrecisionSeconds[got.Precision]; unit < got.T1-got.T0 {
 		t.Fatalf("precision %q has unit %v, shorter than the %v window",
 			got.Precision, unit, got.T1-got.T0)
+	}
+}
+
+func TestPrecisionForSpanPicksTheFinestCoveringUnit(t *testing.T) {
+	for _, tt := range []struct {
+		span float64
+		want string
+	}{
+		{span: 1, want: "second"},
+		{span: 45, want: "minute"},
+		{span: 3600, want: "hour"},
+		{span: 86400, want: "day"},
+		{span: 40 * 86400, want: "year"},
+		{span: 5 * model.SecondsPerYear, want: "decade"},
+		{span: 200 * model.SecondsPerYear, want: "millennium"},
+		{span: 2e9 * model.SecondsPerYear, want: "billion_year"},
+	} {
+		if got := precisionForSpan(tt.span); got != tt.want {
+			t.Fatalf("precisionForSpan(%v) = %q, want %q", tt.span, got, tt.want)
+		}
+		if _, ok := model.FinestBucketFor(precisionForSpan(tt.span)); !ok {
+			t.Fatalf("precisionForSpan(%v) is not a model precision", tt.span)
+		}
 	}
 }
 

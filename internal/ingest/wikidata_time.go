@@ -102,14 +102,17 @@ var modelPrecisionSeconds = map[string]float64{
 
 // precisionForSpan returns the finest label whose unit still covers the span,
 // so a value widened by its own before/after uncertainty stops claiming the
-// precision of its unwidened form.
+// precision of its unwidened form. It walks finest to coarsest: taking the
+// first match in coarsest-first order would return billion_year for every
+// span, understating as badly as the bug it exists to prevent.
 func precisionForSpan(span float64) string {
-	for _, precision := range modelPrecisionOrder {
+	for i := len(modelPrecisionOrder) - 1; i >= 0; i-- {
+		precision := modelPrecisionOrder[i]
 		if modelPrecisionSeconds[precision] >= span {
 			return precision
 		}
 	}
-	return modelPrecisionOrder[len(modelPrecisionOrder)-1]
+	return modelPrecisionOrder[0]
 }
 
 // wikidataPrecisionUnitYears covers the precisions coarser than a year, where
