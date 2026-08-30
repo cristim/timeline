@@ -10,17 +10,19 @@
 
 - **Artifact count still tracks entity count at T11/T12.** Consecutive windows
   holding identical chunk bodies now share one artifact (manifest window runs),
-  which removed the window-duplication multiplier: the seed bake went from
-  8,173 chunk objects to 897, and a dump-shaped synthetic set drops from 30.8x
-  entity count to 4.6x at 10k entities and from 7.5x to 2.0x at 1M. What runs
-  cannot touch is a window holding one moment event nobody else shares - 88% of
-  the residual at 1M is T11/T12 cells with a single item, where every entity is
-  its own boundary. That is ~2M objects at 1M entities and ~8M at 5M, so M5
-  still needs a lever runs do not provide: not baking T12/T13 for entities
-  below an importance floor, or letting the client fall back to the parent
-  bucket where the finer one has nothing of its own. Both change what the
-  client can find, unlike the run collapse, so both want their own ZOOM-3
-  review.
+  which removed the window-duplication multiplier. Measured on the 10,547-entity
+  warm bake: 269,522 chunk objects -> 37,382 (-86%), 25.6x entity count -> 3.5x,
+  bake stage 2m39s -> 38s, manifest 1.96 MB -> 565 KB. Nearly all of it was T12,
+  where a multi-day span was one object per day: 246,499 -> 23,152.
+
+  What runs cannot touch is a window holding one moment event nobody else
+  shares, so what is left is 3.5 objects per entity and grows with the dump.
+  T11 and T12 are 88% of the residual (9,566 + 23,152 of 37,382), and a
+  dump-shaped synthetic set projects ~2M objects at 1M entities. M5 therefore
+  still needs a lever runs do not provide: not baking T12/T13 for entities below
+  an importance floor, or letting the client fall back to the parent bucket
+  where the finer one holds nothing of its own. Both change what the client can
+  find, unlike the run collapse, so both want their own ZOOM-3 review.
 
 - **Deep-time zoom can feel empty (T3-T5).** Zooming into e.g. 2.8 Gyr ago
   shows "0 shown": billion-year-precision entities (Sun, Earth, eras) are
