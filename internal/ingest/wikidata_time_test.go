@@ -265,3 +265,81 @@ func TestConvertWikidataTimeWindowsAreOrderedAndBounded(t *testing.T) {
 		}
 	}
 }
+
+// The reported calendar must be the one the CHOSEN claim was stated in, not
+// whichever claim of that property happened to be listed first: the census
+// splits Julian from Gregorian on it.
+func TestResolveWikidataItemTimeReportsTheChosenClaimsCalendar(t *testing.T) {
+	claims := []wikidataDumpTimeFact{
+		{Property: "P580", Time: "+1700-01-01T00:00:00Z", Precision: 11, CalendarModel: calendarModelGregorian},
+		{Property: "P580", Time: "+1600-01-01T00:00:00Z", Precision: 11, CalendarModel: calendarModelJulian},
+	}
+	resolved, ok := resolveWikidataItemTime(newDumpCounters(), claims)
+	if !ok {
+		t.Fatal("resolveWikidataItemTime returned no time")
+	}
+	if resolved.CalendarModel != calendarModelJulian {
+		t.Fatalf("calendar = %q, want the earliest claim's Julian model", resolved.CalendarModel)
+	}
+	if got := censusYearAt(resolved.T0, resolved.Precision); got != 1600 {
+		t.Fatalf("year = %v, want 1600", got)
+	}
+}
+
+// A span is no more precise than its blurriest end.
+func TestResolveWikidataItemTimeTakesTheCoarserPrecision(t *testing.T) {
+	claims := []wikidataDumpTimeFact{
+		{Property: "P580", Time: "+1914-07-28T00:00:00Z", Precision: 11, CalendarModel: calendarModelGregorian},
+		{Property: "P582", Time: "+1918-00-00T00:00:00Z", Precision: 7, CalendarModel: calendarModelGregorian},
+	}
+	resolved, ok := resolveWikidataItemTime(newDumpCounters(), claims)
+	if !ok {
+		t.Fatal("resolveWikidataItemTime returned no time")
+	}
+	if resolved.Precision != "century" {
+		t.Fatalf("precision = %q, want century", resolved.Precision)
+	}
+}
+
+// An unconvertible claim is counted, not silently ignored.
+func TestResolveWikidataItemTimeCountsUnconvertibleClaims(t *testing.T) {
+	counters := newDumpCounters()
+	claims := []wikidataDumpTimeFact{
+		{Property: "P580", Time: "+0000-01-01T00:00:00Z", Precision: 11, CalendarModel: calendarModelGregorian},
+	}
+	if _, ok := resolveWikidataItemTime(counters, claims); ok {
+		t.Fatal("a year-zero claim resolved")
+	}
+	if counters.skips[SkipUnconvertibleTimeFact] != 1 {
+		t.Fatalf("skips = %#v, want one unconvertible time fact", counters.skips)
+	}
+}
+
+// gregorianYearAt must terminate and decline cleanly outside the range its
+// formulas are valid over, rather than walking year by year on bad arithmetic.
+func TestGregorianYearAtDeclinesOutsideTheCalendarRange(t *testing.T) {
+	for _, year := range []float64{-1e9, -100000, 2e6, 1e12} {
+		if got, ok := gregorianYearAt(model.YearToSeconds(year)); ok {
+			t.Fatalf("gregorianYearAt(year %v) = %d, want a refusal", year, got)
+		}
+	}
+	for _, year := range []float64{-4000, -44, 1, 1969, 500000} {
+		got, ok := gregorianYearAt(model.YearToSeconds(year))
+		if !ok {
+			t.Fatalf("gregorianYearAt(year %v) refused", year)
+		}
+		if float64(got) < year-1 || float64(got) > year {
+			t.Fatalf("gregorianYearAt(year %v) = %d, want within a year", year, got)
+		}
+	}
+}
+
+// Deep time keeps the mean-year scale rather than a calendar year it has no
+// business claiming.
+func TestCensusYearAtFallsBackInDeepTime(t *testing.T) {
+	seconds := model.YearToSeconds(-4.5e9)
+	got := censusYearAt(seconds, "billion_year")
+	if got != model.SecondsToYear(seconds) {
+		t.Fatalf("censusYearAt = %v, want the mean-year value %v", got, model.SecondsToYear(seconds))
+	}
+}

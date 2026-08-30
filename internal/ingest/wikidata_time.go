@@ -44,10 +44,11 @@ const (
 
 // WikidataTimeWindow is one converted time value.
 type WikidataTimeWindow struct {
-	T0        float64 // seconds from 1970, start of the precision unit
-	T1        float64 // end of the unit; T1 > T0 always
-	Precision string  // model time_precision, never finer than the source
-	Year      float64 // astronomical year of T0, for census attribution
+	T0            float64 // seconds from 1970, start of the precision unit
+	T1            float64 // end of the unit; T1 > T0 always
+	Precision     string  // model time_precision, never finer than the source
+	Year          float64 // astronomical year of T0, for census attribution
+	CalendarModel string  // the calendar the source stated it in
 }
 
 // modelPrecisionForWikidata maps Wikidata's precision scale onto the model
@@ -127,10 +128,11 @@ func ConvertWikidataTime(fact wikidataDumpTimeFact) (WikidataTimeWindow, error) 
 		return WikidataTimeWindow{}, fmt.Errorf("degenerate time window [%v,%v]", start, end)
 	}
 	return WikidataTimeWindow{
-		T0:        start,
-		T1:        end,
-		Precision: precision,
-		Year:      model.SecondsToYear(start),
+		T0:            start,
+		T1:            end,
+		Precision:     precision,
+		Year:          model.SecondsToYear(start),
+		CalendarModel: calendar,
 	}, nil
 }
 
@@ -308,14 +310,21 @@ func gregorianYearAt(seconds float64) (int64, bool) {
 	if math.Abs(days) > 4e11 { // keeps the JDN arithmetic inside int64
 		return 0, false
 	}
+	// Start from the mean-year estimate, then walk. The mean Gregorian year is
+	// exact over the calendar's 400-year cycle, so the estimate is under a day
+	// out and this settles in one step. The estimate is range-checked BEFORE
+	// the walk: outside the guarded range the JDN formulas are not valid, so
+	// the loop would have nothing sound to converge on.
+	estimate := int64(math.Floor(model.SecondsToYear(seconds)))
+	if estimate < minCalendarYear || estimate > maxCalendarYear {
+		return 0, false
+	}
 	jdn := unixEpochJDN + int64(days)
-	// Newton-free: start from the mean-year estimate, then walk. The estimate
-	// is never more than a year out, so this settles in one or two steps.
-	year := int64(math.Floor(model.SecondsToYear(seconds)))
-	for gregorianJDN(year, 1, 1) > jdn {
+	year := estimate
+	for year > minCalendarYear && gregorianJDN(year, 1, 1) > jdn {
 		year--
 	}
-	for gregorianJDN(year+1, 1, 1) <= jdn {
+	for year < maxCalendarYear && gregorianJDN(year+1, 1, 1) <= jdn {
 		year++
 	}
 	if year < minCalendarYear || year > maxCalendarYear {
@@ -359,7 +368,7 @@ func resolveWikidataItemTime(counters *dumpCounters, claims []wikidataDumpTimeFa
 		Precision:     start.Precision,
 		Year:          start.Year,
 		StartProperty: startProperty,
-		CalendarModel: calendarModelFor(claims, startProperty),
+		CalendarModel: start.CalendarModel,
 	}
 	if end, endProperty, ok := selectWindow(counters, claims, wikidataEndTimeProperties, latest); ok && end.T1 >= start.T0 {
 		resolved.T1 = end.T1
@@ -399,15 +408,6 @@ func selectWindow(
 		}
 	}
 	return WikidataTimeWindow{}, "", false
-}
-
-func calendarModelFor(claims []wikidataDumpTimeFact, property string) string {
-	for _, claim := range claims {
-		if claim.Property == property {
-			return claim.CalendarModel
-		}
-	}
-	return ""
 }
 
 // coarserPrecision returns whichever of two model precisions renders at the
