@@ -181,24 +181,39 @@ export function useTimeLayer(
   return useMemo(() => ({ slice, coverage }), [slice, coverage]);
 }
 
-export function useEntity(manifest: Manifest | null, slug: string | null): EntityDoc | null {
-  const [doc, setDoc] = useState<EntityDoc | null>(null);
+/**
+ * One entity document. `failed` separates "the fetch came back wrong" from
+ * "not here yet", so a consumer can say so instead of showing a spinner
+ * forever - a shared link naming a slug a later bake dropped is a 404, not a
+ * slow load.
+ */
+export interface EntityState {
+  doc: EntityDoc | null;
+  failed: boolean;
+}
+
+export function useEntity(manifest: Manifest | null, slug: string | null): EntityState {
+  const [state, setState] = useState<EntityState>({ doc: null, failed: false });
   useEffect(() => {
     if (!manifest || !slug) {
-      setDoc(null);
+      setState({ doc: null, failed: false });
       return;
     }
     let live = true;
+    // The previous document stays put until the next one lands - the inspector
+    // swaps in place rather than blinking. Consumers that must not show the
+    // outgoing entity check doc.slug against the one they asked for.
+    setState((s) => ({ doc: s.doc, failed: false }));
     fetchEntity(manifest, slug).then(
-      (d) => live && setDoc(d),
+      (d) => live && setState({ doc: d, failed: false }),
       (e: unknown) => {
         console.error("entity load failed:", e);
-        if (live) setDoc(null);
+        if (live) setState({ doc: null, failed: true });
       },
     );
     return () => {
       live = false;
     };
   }, [manifest, slug]);
-  return doc;
+  return state;
 }

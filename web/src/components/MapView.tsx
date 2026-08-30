@@ -107,6 +107,8 @@ interface Props {
   basemap: BasemapDescriptor;
   items: ChunkItem[];
   selected: string | null;
+  /** The FE-8 compare subjects, highlighted like the selection. */
+  compare: string[];
   /** What kind of world to draw at the cursor (lib/mapmode.ts). */
   mode: MapMode;
   /** Political extents for the cursor time, or null outside recorded history. */
@@ -154,7 +156,7 @@ export function captureGlobeSprite(): HTMLCanvasElement | null {
   return out;
 }
 
-function toGeoJSON(items: ChunkItem[], selected: string | null): FeatureCollection {
+function toGeoJSON(items: ChunkItem[], highlight: Set<string>): FeatureCollection {
   return {
     type: "FeatureCollection",
     features: items
@@ -166,7 +168,7 @@ function toGeoJSON(items: ChunkItem[], selected: string | null): FeatureCollecti
           slug: i.slug,
           name: i.name,
           color: i.categories.map((c) => categoryColor[c]).find(Boolean) ?? FALLBACK_COLOR,
-          selected: i.slug === selected ? 1 : 0,
+          selected: highlight.has(i.slug) ? 1 : 0,
         },
       })),
   };
@@ -211,6 +213,7 @@ export function MapView({
   basemap,
   items,
   selected,
+  compare,
   mode,
   era,
   paleo,
@@ -440,12 +443,15 @@ export function MapView({
   }, [paleo]);
 
   useEffect(() => {
-    dataRef.current = toGeoJSON(items, selected);
+    // The compare subjects wear the selection's treatment: a comparison the
+    // map does not point at is a table, not a view.
+    const highlight = new Set([selected, ...compare].filter((s): s is string => !!s));
+    dataRef.current = toGeoJSON(items, highlight);
     const map = mapRef.current;
     if (map && readyRef.current) {
       (map.getSource(SOURCE) as maplibregl.GeoJSONSource | undefined)?.setData(dataRef.current);
     }
-  }, [items, selected]);
+  }, [items, selected, compare]);
 
   useEffect(() => {
     frontRef.current = frontFC(front);

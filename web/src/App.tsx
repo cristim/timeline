@@ -5,8 +5,15 @@ import { MapView } from "./components/MapView";
 import { SpaceView, SPACE_MAX } from "./components/SpaceView";
 import { Timeline } from "./components/Timeline";
 import { Inspector, focusEntity } from "./components/Inspector";
+import { Compare } from "./components/Compare";
 import { SearchBox } from "./components/SearchBox";
-import { useEntity, useManifest, useTimeLayer, useViewportItems } from "./lib/hooks";
+import {
+  useEntity,
+  useManifest,
+  useTimeLayer,
+  useViewportItems,
+  type EntityState,
+} from "./lib/hooks";
 import { cursorTime, DEFAULT_VIEW, parseView, serializeView, type ViewState } from "./lib/state";
 import { laneItems, mapItems } from "./lib/visible";
 import { frontAt, frontBounds } from "./lib/fronts";
@@ -14,7 +21,7 @@ import { formatTime } from "./lib/timefmt";
 import { secondsToYear } from "./lib/keyscheme";
 import { mapMode, voidChipLabel } from "./lib/mapmode";
 import { categoryColor } from "./lib/colors";
-import type { ChunkItem, SearchEntry } from "./lib/data";
+import type { ChunkItem, EntityDoc, SearchEntry } from "./lib/data";
 
 // Timeline shell sizing: draggable between MIN and MAX; dragging below the
 // collapse threshold folds it down to just the status bar.
@@ -88,21 +95,22 @@ export function App() {
     window.addEventListener("pointerup", onUp);
   };
 
-  // URL sync (API-6): selection changes push a history entry (back/forward
-  // walks selections, FE-9); pan/zoom/filter changes replace in place.
+  // URL sync (API-6): changing what you are looking at - the selection or the
+  // compare pair - pushes a history entry (back/forward walks them, FE-9);
+  // pan/zoom/filter changes replace in place.
   const urlTimer = useRef<number | undefined>(undefined);
-  const lastPushedSel = useRef(view.selected);
+  const lastNav = useRef(navKey(view));
   useEffect(() => {
     window.clearTimeout(urlTimer.current);
     urlTimer.current = window.setTimeout(() => {
       const url = serializeView(view);
       if (url === window.location.search) return;
-      if (view.selected !== lastPushedSel.current) {
+      if (navKey(view) !== lastNav.current) {
         history.pushState(null, "", url);
       } else {
         history.replaceState(null, "", url);
       }
-      lastPushedSel.current = view.selected;
+      lastNav.current = navKey(view);
     }, 250);
     return () => window.clearTimeout(urlTimer.current);
   }, [view]);
@@ -112,7 +120,7 @@ export function App() {
       // History navigation is not a new selection: sync the ref so the URL
       // normalization write below stays a replaceState - a pushState here
       // would destroy the forward history stack.
-      lastPushedSel.current = v.selected;
+      lastNav.current = navKey(v);
       setView(v);
     };
     window.addEventListener("popstate", onPop);
@@ -126,7 +134,13 @@ export function App() {
     view.cats,
     view.minImportance,
   );
-  const selectedDoc = useEntity(manifest, view.selected);
+  const selectedDoc = useEntity(manifest, view.selected).doc;
+  // Compare subjects load through the same cached entity fetch as the
+  // inspector, so comparing the selection costs no extra request (FE-8).
+  const cmpAState = useEntity(manifest, view.compare[0] ?? null);
+  const cmpBState = useEntity(manifest, view.compare[1] ?? null);
+  const cmpA = docFor(cmpAState, view.compare[0]);
+  const cmpB = docFor(cmpBState, view.compare[1]);
   // The cursor is the moment the map is showing (FE-3/FE-5), and the map
   // follows it wherever curated data exists (DEV-6 M4).
   const tc = cursorTime(view);
@@ -169,6 +183,11 @@ export function App() {
     [],
   );
   const setCursor = useCallback((t: number | null) => setView((v) => ({ ...v, tc: t })), []);
+  const startCompare = useCallback(
+    (slug: string) => setView((v) => ({ ...v, compare: [slug] })),
+    [],
+  );
+  const leaveCompare = useCallback(() => setView((v) => ({ ...v, compare: [] })), []);
   const setSpace = useCallback(
     (next: number) => setView((v) => ({ ...v, space: Math.max(0, Math.min(SPACE_MAX, next)) })),
     [],
@@ -181,6 +200,21 @@ export function App() {
     }));
 
   const onSearchPick = (e: SearchEntry) => {
+    // A compare waiting for its second subject claims the pick (FE-8); the
+    // timeline then frames both, so the highlight it draws is on screen.
+    // Picking the first subject again is not a comparison, so it selects.
+    if (view.compare.length === 1 && view.compare[0] !== e.slug) {
+      setView((v) => ({ ...v, compare: [v.compare[0], e.slug] }));
+      // Only frame when the first subject's document is actually in hand;
+      // picking the second before it lands leaves the range where it was.
+      if (cmpA) {
+        const t0 = Math.min(cmpA.temporal.t0, e.t0);
+        const t1 = Math.max(cmpA.temporal.t1, e.t1);
+        const pad = Math.max((t1 - t0) * 0.15, 86_400);
+        setRange(t0 - pad, t1 + pad);
+      }
+      return;
+    }
     setView((v) => {
       const span = Math.max(e.t1 - e.t0, 86_400);
       return { ...v, selected: e.slug, t0: e.t0 - span * 1.5, t1: e.t1 + span * 1.5 };
@@ -201,29 +235,20 @@ export function App() {
 
   // One visibility judgement, shared by the map, the lanes and the count.
   const visibility = useMemo(
-    () => ({ t0: view.t0, t1: view.t1, cursor: tc, selected: view.selected }),
-    [view.t0, view.t1, tc, view.selected],
+    () => ({ t0: view.t0, t1: view.t1, cursor: tc, selected: view.selected, compare: view.compare }),
+    [view.t0, view.t1, tc, view.selected, view.compare],
   );
+  // The entities the user is pointing at are drawn even when the loaded chunks
+  // do not carry them - a cold-loaded compare link lands on neither subject's
+  // window otherwise.
   const displayItems = useMemo<ChunkItem[]>(() => {
-    if (!selectedDoc || items.some((i) => i.slug === selectedDoc.slug)) return items;
-    return [
-      ...items,
-      {
-        slug: selectedDoc.slug,
-        type: selectedDoc.type,
-        name: selectedDoc.name,
-        t0: selectedDoc.temporal.t0,
-        t1: selectedDoc.temporal.t1,
-        precision: selectedDoc.temporal.precision,
-        status: selectedDoc.temporal.status,
-        point: selectedDoc.point,
-        categories: selectedDoc.categories,
-        importance: selectedDoc.importance,
-        media_thumb: selectedDoc.media_thumb,
-        child_count: selectedDoc.children?.length,
-      },
-    ];
-  }, [items, selectedDoc]);
+    const extra = [selectedDoc, cmpA, cmpB]
+      .filter((d): d is EntityDoc => !!d)
+      .filter((d, i, all) => all.findIndex((o) => o.slug === d.slug) === i)
+      .filter((d) => !items.some((i) => i.slug === d.slug))
+      .map(asChunkItem);
+    return extra.length ? [...items, ...extra] : items;
+  }, [items, selectedDoc, cmpA, cmpB]);
   const mapVisible = useMemo(() => mapItems(displayItems, visibility), [displayItems, visibility]);
   // The status-bar count matches what the timeline lanes actually show
   // (top-100 after declutter), not the raw chunk union.
@@ -276,6 +301,7 @@ export function App() {
             basemap={manifest.basemap}
             items={mapVisible}
             selected={view.selected}
+            compare={view.compare}
             mode={mode}
             era={era}
             paleo={paleo}
@@ -307,6 +333,13 @@ export function App() {
           {view.space > 0 && (
             <SpaceView s={view.space} onZoom={setSpace} onSelect={setSelected} />
           )}
+          <Compare
+            slugs={view.compare}
+            a={cmpA}
+            b={cmpB}
+            failed={[cmpAState.failed, cmpBState.failed]}
+            onClose={leaveCompare}
+          />
         </div>
         <div
           className="insp-resize-handle"
@@ -318,6 +351,7 @@ export function App() {
           width={inspWidth}
           onSelect={setSelected}
           onFocusTime={setRange}
+          onCompare={startCompare}
           onClose={() => setSelected(null)}
         />
       </div>
@@ -335,6 +369,7 @@ export function App() {
             t1={view.t1}
             items={displayItems}
             selected={view.selected}
+            compare={view.compare}
             tc={view.tc}
             onRange={setRange}
             onSelect={setSelected}
@@ -398,6 +433,42 @@ export function App() {
       )}
     </div>
   );
+}
+
+/**
+ * What a history entry is: the things a back press should undo. Pan, zoom and
+ * filter changes replace in place; changing what you are looking at - the
+ * selection or the compare pair - pushes (FE-9).
+ */
+function navKey(v: ViewState): string {
+  return `${v.selected ?? ""}|${v.compare.join(",")}`;
+}
+
+/**
+ * The loaded document only when it is the one asked for. useEntity keeps the
+ * outgoing entity until the next lands, and a comparison must never show a
+ * subject it is not comparing.
+ */
+function docFor(state: EntityState, slug: string | undefined): EntityDoc | null {
+  return state.doc && state.doc.slug === slug ? state.doc : null;
+}
+
+/** An entity document as the lane/map item the renderers consume. */
+function asChunkItem(doc: EntityDoc): ChunkItem {
+  return {
+    slug: doc.slug,
+    type: doc.type,
+    name: doc.name,
+    t0: doc.temporal.t0,
+    t1: doc.temporal.t1,
+    precision: doc.temporal.precision,
+    status: doc.temporal.status,
+    point: doc.point,
+    categories: doc.categories,
+    importance: doc.importance,
+    media_thumb: doc.media_thumb,
+    child_count: doc.children?.length,
+  };
 }
 
 /**

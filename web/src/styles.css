@@ -147,6 +147,89 @@ body {
 .insp-head .when:hover { color: var(--amber); }
 .insp-head .when .prec { color: var(--text-3); font-weight: 400; }
 .insp-head .desc { margin-top: 8px; color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
+.insp-actions { display: flex; gap: 6px; margin-top: 10px; }
+.iact {
+  font: 600 10.5px var(--ui); letter-spacing: 0.02em;
+  background: var(--ink-2); border: 1px solid var(--hair-2); border-radius: 99px;
+  color: var(--text-2); padding: 3.5px 11px; cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.iact:hover { border-color: var(--amber); color: var(--amber); }
+
+/* ── compare (FE-8) ──────────────────────────── */
+/* Sits over the map, not instead of it: both subjects stay highlighted on the
+   map and the timeline while the comparison is open. */
+.compare-panel {
+  position: absolute; left: 12px; bottom: 12px; z-index: 4;
+  width: min(640px, calc(100% - 24px)); max-height: 68%;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: rgba(11, 15, 23, 0.95); border: 1px solid var(--hair-2);
+  border-radius: 10px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+.cmp-head {
+  display: flex; align-items: center; gap: 8px; flex: none;
+  padding: 9px 12px; border-bottom: 1px solid var(--hair);
+  background: linear-gradient(180deg, rgba(232, 180, 90, 0.06), transparent);
+}
+.cmp-head h3 {
+  font: 600 9.5px var(--mono); letter-spacing: 0.13em; text-transform: uppercase;
+  color: var(--text-3); margin: 0;
+}
+.cmp-close {
+  margin-left: auto; background: none; border: 0; color: var(--text-3);
+  font-size: 18px; line-height: 1; padding: 0 4px; cursor: pointer;
+}
+.cmp-close:hover { color: var(--text-1); }
+.cmp-body { padding: 12px; overflow-y: auto; }
+.cmp-pending, .cmp-none { color: var(--text-2); font-size: 12.5px; }
+.cmp-verdict { font-size: 13px; line-height: 1.5; color: var(--text-1); }
+.cmp-verdict b { font-weight: 600; }
+.cmp-mark { font: 600 13px var(--mono); margin-right: 6px; }
+.cmp-mark.yes { color: #a9c98b; }
+.cmp-mark.no { color: #d98a72; }
+
+/* One grid for every lane, so the tracks share an axis by construction and the
+   name and date columns give way before the track does on a narrow screen. */
+.cmp-axis {
+  display: grid; grid-template-columns: minmax(0, auto) minmax(60px, 1fr) minmax(0, auto);
+  align-items: center; gap: 6px 10px; margin: 12px 0 14px;
+}
+.cmp-lane { display: contents; }
+.cmp-legend { max-width: 130px; font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-legend.a { color: var(--amber); }
+.cmp-legend.b { color: var(--cyan); }
+.cmp-track {
+  position: relative; flex: 1; height: 13px;
+  background: var(--ink-2); border: 1px solid var(--hair); border-radius: 4px;
+}
+.cmp-span { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.cmp-span.a { background: var(--amber); }
+.cmp-span.b { background: var(--cyan); }
+.cmp-now { position: absolute; top: -3px; bottom: -3px; border-left: 1px dashed var(--text-1); }
+/* Wide enough for a two-ended deep-time range ("155 Myr ago – 145 Myr ago")
+   on one line, which is most of what this column ever holds. */
+.cmp-when { max-width: 152px; text-align: right; font: 500 10px var(--mono); color: var(--text-3); }
+.cmp-when .status-badge { display: inline-block; margin-top: 3px; font-size: 8px; }
+/* Under the track, in the track's own column. */
+.cmp-scale {
+  grid-column: 2; display: flex; gap: 8px; justify-content: space-between;
+  font: 500 9.5px var(--mono); color: var(--text-3);
+}
+.cmp-offaxis { color: var(--text-3); font-style: italic; }
+
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.cmp-table th, .cmp-table td { text-align: left; padding: 5px 8px; border-top: 1px solid var(--hair); vertical-align: baseline; }
+.cmp-table thead th {
+  border-top: 0; font: 600 9.5px var(--mono); letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--text-3);
+}
+.cmp-table tbody th { font-weight: 500; color: var(--text-2); width: 34%; }
+.cmp-val { font: 500 12.5px var(--ui); color: var(--text-1); }
+.cmp-val .unit { color: var(--text-3); }
+.cmp-claims { display: block; font: 500 9.5px var(--mono); color: #7d94c9; }
+/* A missing measurement is stated, never rendered as a zero or a blank. */
+.cmp-gap { color: var(--text-3); font-style: italic; }
+.cmp-mismatch { margin-left: 6px; font: 600 9px var(--mono); color: #d98a72; }
 
 .insp-resize-handle {
   width: 9px; margin: 0 -4.5px; z-index: 5; flex: none;
