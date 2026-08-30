@@ -38,7 +38,7 @@ make fetch-geo       # fetch the pinned borders, paleo coastlines, and local bas
 make verify-geo      # verify layer coverage plus every fetched digest
 make fetch-wikidata  # pull ~10k battles/wars/sieges from Wikidata (CC0)
 make bake-full       # bake seed + the fetched Wikidata events
-make census          # deterministic century/type census over seed + warm events
+make census          # deterministic time-slice/type census over seed + warm events
 ```
 
 ## How it works
