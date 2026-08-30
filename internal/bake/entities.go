@@ -264,19 +264,26 @@ func ref(e *model.Entity) RefDoc {
 // milliseconds per PUT, so a 100k-object bake must not serialize them
 // (measured: 13 min sequential vs. well under a minute pooled).
 type writer struct {
-	ctx   context.Context
-	sink  Sink
-	g     *errgroup.Group
-	mu    sync.Mutex
-	stats *Stats
+	rootCtx context.Context
+	ctx     context.Context
+	sink    Sink
+	g       *errgroup.Group
+	mu      sync.Mutex
+	stats   *Stats
 }
 
 const uploadConcurrency = 48
 
 func newWriter(ctx context.Context, sink Sink, stats *Stats) *writer {
-	g, gctx := errgroup.WithContext(ctx)
+	w := &writer{rootCtx: ctx, sink: sink, stats: stats}
+	w.resetGroup()
+	return w
+}
+
+func (w *writer) resetGroup() {
+	g, gctx := errgroup.WithContext(w.rootCtx)
 	g.SetLimit(uploadConcurrency)
-	return &writer{ctx: gctx, sink: sink, g: g, stats: stats}
+	w.g, w.ctx = g, gctx
 }
 
 // putJSON marshals synchronously (deterministic ordering of any marshal
@@ -286,16 +293,28 @@ func (w *writer) putJSON(key string, v any) error {
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", key, err)
 	}
+	return w.putBytes(key, body, "application/json")
+}
+
+func (w *writer) putBytes(key string, body []byte, contentType string) error {
 	w.g.Go(func() error {
-		changed, err := w.sink.Put(w.ctx, key, body, "application/json")
+		changed, err := w.sink.Put(w.ctx, key, body, contentType)
 		if err != nil {
-			return err
+			return fmt.Errorf("put %s: %w", key, err)
 		}
 		w.mu.Lock()
 		w.stats.add(changed)
 		w.mu.Unlock()
 		return nil
 	})
+	return nil
+}
+
+func (w *writer) flush() error {
+	if err := w.g.Wait(); err != nil {
+		return err
+	}
+	w.resetGroup()
 	return nil
 }
 

@@ -5,6 +5,7 @@ package bake
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -53,12 +54,13 @@ type chunkFile struct {
 }
 
 // Run bakes all artifacts for the dataset and returns the manifest to publish.
-// geo must be non-nil; an empty GeoSet bakes no layers.
+// geo must be non-nil; an empty GeoSet bakes no layers and needs no compiler.
+// A non-empty area layer requires a compiler.
 // A non-nil goldens file is evaluated against the baked chunks; any failure
 // aborts before the manifest exists, so a failing golden view cannot publish
 // (ZOOM-5).
-func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities []*model.Entity, geo *model.GeoSet, goldens *GoldenFile) (*model.Manifest, *Stats, error) {
-	stats := &Stats{}
+func Run(ctx context.Context, sink Sink, compiler LayerCompiler, dataset, seedVersion string, entities []*model.Entity, geo *model.GeoSet, goldens *GoldenFile) (manifest *model.Manifest, stats *Stats, err error) {
+	stats = &Stats{}
 
 	childCount := map[string]int{}
 	for _, e := range entities {
@@ -74,6 +76,18 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 		return nil, stats, err
 	}
 	w := newWriter(ctx, sink, stats)
+	defer func() {
+		waitErr := w.wait()
+		if waitErr == nil {
+			return
+		}
+		manifest = nil
+		if err == nil {
+			err = waitErr
+		} else if !errors.Is(err, waitErr) {
+			err = errors.Join(err, waitErr)
+		}
+	}()
 	buckets, captured, err := bakeChunks(w, dataset, entities, childCount, goldenKeys)
 	if err != nil {
 		return nil, stats, err
@@ -107,7 +121,7 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 		{BordersLayer, geo.Borders},
 		{PaleoLayer, geo.Paleo},
 	} {
-		steps, err := bakeAreaLayer(w, dataset, l.name, l.slices)
+		steps, err := bakeAreaLayer(ctx, w, compiler, dataset, l.name, l.slices)
 		if err != nil {
 			return nil, stats, err
 		}
@@ -119,10 +133,6 @@ func Run(ctx context.Context, sink Sink, dataset, seedVersion string, entities [
 	if err := w.putJSON(fmt.Sprintf("v/%s/aliases.json", dataset), map[string]string{}); err != nil {
 		return nil, stats, err
 	}
-	if err := w.wait(); err != nil {
-		return nil, stats, err
-	}
-
 	m := &model.Manifest{
 		Dataset:      dataset,
 		SeedVersion:  seedVersion,

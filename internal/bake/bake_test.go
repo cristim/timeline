@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"wk/internal/model"
 	"wk/internal/rankzoom"
@@ -18,17 +19,70 @@ import (
 type memSink struct {
 	mu      sync.Mutex
 	objects map[string][]byte
+	types   map[string]string
+	keys    []string
 }
 
-func newMemSink() *memSink { return &memSink{objects: map[string][]byte{}} }
+func newMemSink() *memSink {
+	return &memSink{objects: map[string][]byte{}, types: map[string]string{}}
+}
 
-func (m *memSink) Put(_ context.Context, key string, body []byte, _ string) (bool, error) {
+func (m *memSink) Put(_ context.Context, key string, body []byte, contentType string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.keys = append(m.keys, key)
+	m.types[key] = contentType
 	if old, ok := m.objects[key]; ok && string(old) == string(body) {
 		return false, nil
 	}
 	m.objects[key] = body
+	return true, nil
+}
+
+type recordingCompiler struct {
+	requests []LayerCompileRequest
+	err      error
+}
+
+func (c *recordingCompiler) Compile(_ context.Context, request LayerCompileRequest) ([]byte, error) {
+	c.requests = append(c.requests, request)
+	if c.err != nil {
+		return nil, c.err
+	}
+	return append([]byte("pmtiles:"), request.GeoJSON...), nil
+}
+
+type orderedSink struct {
+	mu            sync.Mutex
+	keys          []string
+	failPMTiles   bool
+	indexCtxError error
+}
+
+type blockingSink struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingSink) Put(_ context.Context, key string, _ []byte, _ string) (bool, error) {
+	if key == "v/test/entity/world-war-ii.json" {
+		s.once.Do(func() { close(s.started) })
+		<-s.release
+	}
+	return true, nil
+}
+
+func (s *orderedSink) Put(ctx context.Context, key string, _ []byte, _ string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.keys = append(s.keys, key)
+	if strings.HasSuffix(key, ".pmtiles") && s.failPMTiles {
+		return false, fmt.Errorf("PMTiles upload failed")
+	}
+	if strings.HasSuffix(key, "/index.json") {
+		s.indexCtxError = ctx.Err()
+	}
 	return true, nil
 }
 
@@ -85,7 +139,8 @@ func TestBucketizeSemanticZoom(t *testing.T) {
 func TestBakeChunksAndDocs(t *testing.T) {
 	es := testEntities(t)
 	sink := newMemSink()
-	m, stats, err := Run(context.Background(), sink, "test", "seed-x", es, testGeo(), nil)
+	compiler := new(recordingCompiler)
+	m, stats, err := Run(context.Background(), sink, compiler, "test", "seed-x", es, testGeo(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +205,7 @@ func TestBakeChunksAndDocs(t *testing.T) {
 	}
 
 	// Idempotency: a second run writes nothing.
-	_, stats2, err := Run(context.Background(), sink, "test", "seed-x", es, testGeo(), nil)
+	_, stats2, err := Run(context.Background(), sink, compiler, "test", "seed-x", es, testGeo(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,14 +237,22 @@ func testGeo() *model.GeoSet {
 func TestBakeLayersAndGeometry(t *testing.T) {
 	es := testEntities(t)
 	sink := newMemSink()
-	m, _, err := Run(context.Background(), sink, "test", "seed-x", es, testGeo(), nil)
+	compiler := new(recordingCompiler)
+	m, _, err := Run(context.Background(), sink, compiler, "test", "seed-x", es, testGeo(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// The time-step artifact is a GeoJSON FeatureCollection carrying its own
-	// coverage window, so the client can refuse to draw it at a date it does
-	// not speak for.
+	if len(compiler.requests) != 1 {
+		t.Fatalf("compiler requests = %d, want 1", len(compiler.requests))
+	}
+	request := compiler.requests[0]
+	if request.Layer != BordersLayer || request.Year != 1942 || request.TFrom != 1939 || request.TTo != 1945 || request.Label != "Axis maximum" || request.Source != "atlas" {
+		t.Fatalf("compiler request metadata = %#v", request)
+	}
+	if request.Attribution != BordersAttribution {
+		t.Fatalf("compiler attribution = %q", request.Attribution)
+	}
 	var layer struct {
 		Type       string `json:"type"`
 		Properties struct {
@@ -200,10 +263,12 @@ func TestBakeLayersAndGeometry(t *testing.T) {
 			Source string `json:"source"`
 		} `json:"properties"`
 		Features []struct {
-			Properties struct{ Slug, Representation string } `json:"properties"`
+			Properties struct{ Slug, Representation, Color string } `json:"properties"`
 		} `json:"features"`
 	}
-	mustGet(t, sink, "v/test/"+LayerKey(BordersLayer, 1942), &layer)
+	if err := json.Unmarshal(request.GeoJSON, &layer); err != nil {
+		t.Fatalf("compiler GeoJSON: %v", err)
+	}
 	if layer.Type != "FeatureCollection" {
 		t.Errorf("layer type = %q", layer.Type)
 	}
@@ -213,13 +278,26 @@ func TestBakeLayersAndGeometry(t *testing.T) {
 	if len(layer.Features) != 1 || layer.Features[0].Properties.Slug != "world-war-ii" {
 		t.Errorf("layer features = %+v, want the seed id resolved to a slug", layer.Features)
 	}
+	if layer.Features[0].Properties.Color != polityColor("Axis") {
+		t.Errorf("layer color = %q", layer.Features[0].Properties.Color)
+	}
+	layerKey := "v/test/" + LayerKey(BordersLayer, 1942)
+	if got := string(sink.objects[layerKey]); !strings.HasPrefix(got, "pmtiles:") {
+		t.Fatalf("layer body = %q", got)
+	}
+	if sink.types[layerKey] != PMTilesContentType {
+		t.Fatalf("layer MIME = %q", sink.types[layerKey])
+	}
 
 	// The index lets the client answer "is any era covering this date?" with
 	// one small fetch instead of one snapshot per guess.
 	var index layerIndex
 	mustGet(t, sink, "v/test/"+LayerIndexKey(BordersLayer), &index)
-	if len(index.Steps) != 1 || index.Steps[0].Year != 1942 {
+	if len(index.Steps) != 1 || index.Steps[0].Year != 1942 || index.Steps[0].Source != "atlas" {
 		t.Errorf("layer index = %+v", index.Steps)
+	}
+	if !strings.HasSuffix(layerKey, ".pmtiles") {
+		t.Fatalf("layer key = %q", layerKey)
 	}
 
 	if m.Layers[0] != BordersLayer || len(m.Timesteps[BordersLayer]) != 1 {
@@ -248,12 +326,132 @@ func TestBakeLayersAndGeometry(t *testing.T) {
 
 // Without curated geometry the manifest keeps the shape M2 published.
 func TestBakeWithoutGeo(t *testing.T) {
-	m, _, err := Run(context.Background(), newMemSink(), "test", "seed-x", testEntities(t), &model.GeoSet{}, nil)
+	m, _, err := Run(context.Background(), newMemSink(), nil, "test", "seed-x", testEntities(t), &model.GeoSet{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(m.Layers) != 0 || len(m.Timesteps) != 0 {
 		t.Errorf("layers=%v timesteps=%v, want both empty", m.Layers, m.Timesteps)
+	}
+}
+
+func TestBakeAreaLayerRequiresCompiler(t *testing.T) {
+	_, _, err := Run(context.Background(), newMemSink(), nil, "test", "seed-x", testEntities(t), testGeo(), nil)
+	if err == nil || !strings.Contains(err.Error(), "layer compiler") {
+		t.Fatalf("Run error = %v", err)
+	}
+}
+
+func TestBakeAreaLayerPropagatesCompilerFailure(t *testing.T) {
+	compiler := &recordingCompiler{err: fmt.Errorf("compiler exploded")}
+	_, _, err := Run(context.Background(), newMemSink(), compiler, "test", "seed-x", testEntities(t), testGeo(), nil)
+	if err == nil || !strings.Contains(err.Error(), "compile borders layer 1942") || !strings.Contains(err.Error(), "compiler exploded") {
+		t.Fatalf("Run error = %v", err)
+	}
+}
+
+func TestRunDrainsOutstandingUploadsAfterCompilerFailure(t *testing.T) {
+	sink := &blockingSink{started: make(chan struct{}), release: make(chan struct{})}
+	compiler := &recordingCompiler{err: fmt.Errorf("compiler exploded")}
+	entities := testEntities(t)
+	geo := testGeo()
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := Run(context.Background(), sink, compiler, "test", "seed-x", entities, geo, nil)
+		result <- err
+	}()
+
+	<-sink.started
+	select {
+	case err := <-result:
+		close(sink.release)
+		t.Fatalf("Run returned before upload drained: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(sink.release)
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "compiler exploded") {
+		t.Fatalf("Run error = %v", err)
+	}
+}
+
+func TestBakePaleoLayerUsesFixedAttributionAndOmitsColor(t *testing.T) {
+	layer := model.BorderLayer{
+		Year: -540_000_000, TFrom: -600_000_000, TTo: -500_000_000,
+		Label: "Cambrian", Source: "MERDITH2021",
+		Features: []model.BorderFeature{{
+			Name: "land", Representation: "reconstructed",
+			Geometry: json.RawMessage(`{"type":"Polygon","coordinates":[[[0,0],[1,0],[0,1],[0,0]]]}`),
+		}},
+	}
+	compiler := new(recordingCompiler)
+	w := newWriter(context.Background(), newMemSink(), &Stats{})
+	if _, err := bakeAreaLayer(context.Background(), w, compiler, "test", PaleoLayer, []model.BorderLayer{layer}); err != nil {
+		t.Fatalf("bakeAreaLayer: %v", err)
+	}
+	if err := w.wait(); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if len(compiler.requests) != 1 || compiler.requests[0].Attribution != PaleoAttribution {
+		t.Fatalf("compiler requests = %#v", compiler.requests)
+	}
+	var doc struct {
+		Features []struct {
+			Properties map[string]any `json:"properties"`
+		} `json:"features"`
+	}
+	if err := json.Unmarshal(compiler.requests[0].GeoJSON, &doc); err != nil {
+		t.Fatalf("decode GeoJSON: %v", err)
+	}
+	if _, ok := doc.Features[0].Properties["color"]; ok {
+		t.Fatalf("paleo properties contain color: %#v", doc.Features[0].Properties)
+	}
+}
+
+func TestBakeAreaLayerDoesNotPublishIndexAfterBodyFailure(t *testing.T) {
+	sink := &orderedSink{failPMTiles: true}
+	w := newWriter(context.Background(), sink, &Stats{})
+	_, err := bakeAreaLayer(context.Background(), w, new(recordingCompiler), "test", BordersLayer, testGeo().Borders)
+	if err == nil || !strings.Contains(err.Error(), "PMTiles upload failed") {
+		t.Fatalf("bakeAreaLayer error = %v", err)
+	}
+	for _, key := range sink.keys {
+		if strings.HasSuffix(key, "/index.json") {
+			t.Fatalf("index published after body failure: %v", sink.keys)
+		}
+	}
+}
+
+func TestBakeAreaLayerIndexUsesFreshLiveContextAfterFlush(t *testing.T) {
+	sink := new(orderedSink)
+	w := newWriter(context.Background(), sink, &Stats{})
+	layers := append([]model.BorderLayer(nil), testGeo().Borders...)
+	second := layers[0]
+	second.Year = 1943
+	layers = append(layers, second)
+	if _, err := bakeAreaLayer(context.Background(), w, new(recordingCompiler), "test", BordersLayer, layers); err != nil {
+		t.Fatalf("bakeAreaLayer: %v", err)
+	}
+	if err := w.wait(); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	if sink.indexCtxError != nil {
+		t.Fatalf("index context error = %v", sink.indexCtxError)
+	}
+	if len(sink.keys) != 3 || !strings.HasSuffix(sink.keys[0], ".pmtiles") || !strings.HasSuffix(sink.keys[1], ".pmtiles") || !strings.HasSuffix(sink.keys[2], "/index.json") {
+		t.Fatalf("publication order = %v", sink.keys)
+	}
+}
+
+func TestPolityColorMatchesJavaScriptUTF16(t *testing.T) {
+	tests := map[string]string{
+		"Axis":     "hsl(84, 34%, 45%)",
+		"Québec":   "hsl(232, 34%, 45%)",
+		"𐍈 Empire": "hsl(283, 34%, 45%)",
+	}
+	for name, want := range tests {
+		if got := polityColor(name); got != want {
+			t.Errorf("polityColor(%q) = %q, want %q", name, got, want)
+		}
 	}
 }
 

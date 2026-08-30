@@ -18,9 +18,16 @@ import (
 	"testing"
 	"time"
 
+	"wk/internal/bake"
 	"wk/internal/duck"
 	"wk/internal/ingest"
 )
+
+type testLayerCompiler struct{}
+
+func (testLayerCompiler) Compile(_ context.Context, request bake.LayerCompileRequest) ([]byte, error) {
+	return append([]byte("pmtiles:"), request.GeoJSON...), nil
+}
 
 type recordedPut struct {
 	key         string
@@ -309,7 +316,7 @@ func TestPublishImportArtifactsPropagatesLatestManifestFailure(t *testing.T) {
 
 func TestRunBakeOutRoundTripsWithoutPublishingWarmModel(t *testing.T) {
 	outDir := t.TempDir()
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -321,11 +328,31 @@ func TestRunBakeOutRoundTripsWithoutPublishingWarmModel(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outDir, "manifest.json")); err != nil {
 		t.Fatalf("hot manifest: %v", err)
 	}
+	if _, err := os.Stat(filepath.Join(outDir, "v", "dev", "layers", "borders", "0.pmtiles")); err != nil {
+		t.Fatalf("PMTiles layer: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "v", "dev", "layers", "borders", "0.json")); !os.IsNotExist(err) {
+		t.Fatalf("legacy GeoJSON layer exists: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(outDir, "model")); !os.IsNotExist(err) {
 		t.Fatalf("static bake wrote warm model directory: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outDir, "imports")); !os.IsNotExist(err) {
 		t.Fatalf("static bake wrote import directory: %v", err)
+	}
+}
+
+func TestRunBakeReportsMissingTippecanoe(t *testing.T) {
+	t.Setenv("PATH", "")
+	outDir := t.TempDir()
+	err := runBake(context.Background(), []string{
+		"--seed", "../../data/seed",
+		"--geo", testGeoDir(t),
+		"--goldens", "../../data/goldens.json",
+		"--out", outDir,
+	})
+	if err == nil || !strings.Contains(err.Error(), "tippecanoe") || !strings.Contains(err.Error(), "executable file not found") {
+		t.Fatalf("runBake error = %v", err)
 	}
 }
 
@@ -340,7 +367,7 @@ func TestRunBakeOutWithMalformedWarmFilePublishesHotOutputOnly(t *testing.T) {
 		t.Fatalf("write warm file: %v", err)
 	}
 
-	err = runBake(context.Background(), []string{
+	err = runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -373,7 +400,7 @@ func TestRunBakeOutFailsWhenImportTempDirCannotBeCreated(t *testing.T) {
 	t.Setenv("TMPDIR", tmpFile)
 
 	outDir := t.TempDir()
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -393,7 +420,7 @@ func TestRunBakeWarmModelFailureStopsBeforeHotPublication(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", "../../data/seed",
 		"--geo", filepath.Join(t.TempDir(), "unused"),
 		"--goldens", "../../data/goldens.json",
@@ -415,7 +442,7 @@ func TestRunBakeSeedRejectPublishesImportDiagnosticsButNoModelOrHot(t *testing.T
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", writeSeedDir(t, seedFixture{
 			seedVersion: "seed-rejects",
 			files: map[string]string{
@@ -451,7 +478,7 @@ func TestRunBakeAllowRejectsContinuesWithStaticOutput(t *testing.T) {
 	goldensPath := writeGoldensFile(t, "seed-allow-rejects")
 	outDir := t.TempDir()
 
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", seedDir,
 		"--geo", geoDirForEntity(t, "entity-1"),
 		"--goldens", goldensPath,
@@ -478,7 +505,7 @@ func TestRunBakeImportImmutableFailureStopsBeforeModelOrHot(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -502,7 +529,7 @@ func TestRunBakeImportPointerFailureStopsBeforeModelOrHot(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -564,7 +591,7 @@ func TestRunBakeSeedManifestFailuresPublishNothing(t *testing.T) {
 			defer server.Close()
 			server.installEnv(t)
 
-			err := runBake(context.Background(), []string{
+			err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 				"--seed", writeSeedDir(t, tc.fixt),
 				"--geo", testGeoDir(t),
 				"--goldens", "../../data/goldens.json",
@@ -584,7 +611,7 @@ func TestRunBakeDuplicateSeedIDPublishesNothing(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", writeSeedDir(t, seedFixture{
 			seedVersion: "seed-dup-id",
 			files: map[string]string{
@@ -607,7 +634,7 @@ func TestRunBakeUnresolvedRelationshipPublishesNothing(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", writeSeedDir(t, seedFixture{
 			seedVersion: "seed-bad-rel",
 			files: map[string]string{
@@ -635,7 +662,7 @@ func TestRunBakeOversizedWarmScannerFailurePublishesNothing(t *testing.T) {
 		t.Fatalf("write warm file: %v", err)
 	}
 
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",

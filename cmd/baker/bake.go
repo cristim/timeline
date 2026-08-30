@@ -36,6 +36,10 @@ type warmModelManifest struct {
 // -> bucketize -> artifacts -> manifest publish. Artifacts go to S3/MinIO by
 // default or to a local directory with --out (the static-hosting/CI path).
 func runBake(ctx context.Context, args []string) error {
+	return runBakeWithCompiler(ctx, &bake.TippecanoeCompiler{}, args)
+}
+
+func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, args []string) error {
 	fs := flag.NewFlagSet("bake", flag.ContinueOnError)
 	seedDir := fs.String("seed", "", "path to the NDJSON seed directory")
 	geoDir := fs.String("geo", "data/geo", "curated geometry directory (border time-steps, front lines)")
@@ -171,7 +175,7 @@ func runBake(ctx context.Context, args []string) error {
 	}
 
 	start := time.Now()
-	manifest, stats, err := bake.Run(ctx, sink, dataset, res.SeedVersion, res.Entities, geo, goldens)
+	manifest, stats, err := bake.Run(ctx, sink, compiler, dataset, res.SeedVersion, res.Entities, geo, goldens)
 	if err != nil {
 		return err
 	}
