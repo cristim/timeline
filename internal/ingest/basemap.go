@@ -11,6 +11,7 @@ import (
 type BasemapSpec struct {
 	Source      string
 	Tool        string
+	GoToolchain string
 	BBox        string
 	MaxZoom     int
 	Overfetch   int
@@ -24,12 +25,13 @@ type BasemapSpec struct {
 var ProductionBasemap = BasemapSpec{
 	Source:      "https://build.protomaps.com/20260829.pmtiles",
 	Tool:        "github.com/protomaps/go-pmtiles@v1.30.0",
+	GoToolchain: "go1.26.7",
 	BBox:        "-180,-85.0511,180,85.0511",
 	MaxZoom:     6,
 	Overfetch:   0,
 	Filename:    "protomaps-20260829-z0-6.pmtiles",
-	Size:        44_856_992,
-	SHA256:      "9a6cd0b9b26b4bcf13fb3167755431816058659552c0f33f5d1df3793d093082",
+	Size:        44_856_968,
+	SHA256:      "91578880b31e965f7e1c27c3efe1e2f53bb60e87b758349761a5f32cbb37b675",
 	Attribution: `<a href="https://github.com/protomaps/basemaps">Protomaps</a> · © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> · <a href="https://docs.overturemaps.org/attribution/">© ESA WorldCover project 2020 / Contains modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)`,
 }
 

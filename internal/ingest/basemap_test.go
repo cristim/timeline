@@ -34,10 +34,11 @@ func TestProductionBasemapPin(t *testing.T) {
 	wantAttribution := `<a href="https://github.com/protomaps/basemaps">Protomaps</a> · © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> · <a href="https://docs.overturemaps.org/attribution/">© ESA WorldCover project 2020 / Contains modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)`
 	if ProductionBasemap.Source != "https://build.protomaps.com/20260829.pmtiles" ||
 		ProductionBasemap.Tool != "github.com/protomaps/go-pmtiles@v1.30.0" ||
+		ProductionBasemap.GoToolchain != "go1.26.7" ||
 		ProductionBasemap.BBox != "-180,-85.0511,180,85.0511" || ProductionBasemap.MaxZoom != 6 ||
 		ProductionBasemap.Overfetch != 0 || ProductionBasemap.Filename != "protomaps-20260829-z0-6.pmtiles" ||
-		ProductionBasemap.Size != 44_856_992 ||
-		ProductionBasemap.SHA256 != "9a6cd0b9b26b4bcf13fb3167755431816058659552c0f33f5d1df3793d093082" ||
+		ProductionBasemap.Size != 44_856_968 ||
+		ProductionBasemap.SHA256 != "91578880b31e965f7e1c27c3efe1e2f53bb60e87b758349761a5f32cbb37b675" ||
 		ProductionBasemap.Attribution != wantAttribution {
 		t.Fatalf("production basemap pin = %#v", ProductionBasemap)
 	}
@@ -82,7 +83,8 @@ func testBasemapSpec() (BasemapSpec, []byte) {
 	digest := sha256.Sum256(body)
 	return BasemapSpec{
 		Source: "https://example.test/world.pmtiles", Tool: "example.test/tool@v1.2.3",
-		BBox: "-1,-2,3,4", MaxZoom: 2, Overfetch: 0, Filename: "tiny.pmtiles",
+		GoToolchain: "go1.26.7",
+		BBox:        "-1,-2,3,4", MaxZoom: 2, Overfetch: 0, Filename: "tiny.pmtiles",
 		Size: int64(len(body)), SHA256: fmt.Sprintf("%x", digest), Attribution: "test attribution",
 	}, body
 }

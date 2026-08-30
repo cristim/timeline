@@ -33,15 +33,15 @@ files are PMTiles v3 archives containing MVT vector tiles; the generated
 archive uses Protomaps schema 4.15.2. The reproducible extraction is:
 
 ```sh
-go run github.com/protomaps/go-pmtiles@v1.30.0 extract \
+GOTOOLCHAIN=go1.26.7 go run github.com/protomaps/go-pmtiles@v1.30.0 extract \
   https://build.protomaps.com/20260829.pmtiles \
   data/geo/basemap/protomaps-20260829-z0-6.pmtiles \
   --bbox=-180,-85.0511,180,85.0511 --maxzoom=6 --overfetch=0
 ```
 
 `baker fetch-basemap` performs that extraction through a temporary path and
-accepts it only at 44,856,992 bytes with SHA-256
-`9a6cd0b9b26b4bcf13fb3167755431816058659552c0f33f5d1df3793d093082` before
+accepts it only at 44,856,968 bytes with SHA-256
+`91578880b31e965f7e1c27c3efe1e2f53bb60e87b758349761a5f32cbb37b675` before
 replacing an existing archive.
 
 The file is a static input to the baker, not a time-sliced overlay. Its source,

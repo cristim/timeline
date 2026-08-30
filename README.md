@@ -111,7 +111,7 @@ live API:
 | Political borders, 123000 BC to AD 2010 | [aourednik/historical-basemaps](https://github.com/aourednik/historical-basemaps) at `62d8f1a` | **GPL-3.0** |
 | Reconstructed coastlines, 540 Ma to 1 Ma | [GPlates Web Service](https://gws.gplates.org), MERDITH2021 plate model | CC-BY 4.0 |
 | London administrative boundaries, 1900 and 1965 | [OpenHistoricalMap](https://www.openhistoricalmap.org/) pinned Overpass response | CC0/public domain unless relation-tagged otherwise |
-| Global basemap, zooms 0-6 | [Protomaps daily build](https://build.protomaps.com/20260829.pmtiles), extracted with go-pmtiles v1.30.0 | ODbL Produced Work; includes ESA WorldCover CC-BY 4.0 landcover |
+| Global basemap, zooms 0-6 | [Protomaps daily build](https://build.protomaps.com/20260829.pmtiles), extracted with go-pmtiles v1.30.0 under Go 1.26.7 | ODbL Produced Work; includes ESA WorldCover CC-BY 4.0 landcover |
 
 **The border data is GPL-3.0**, and the simplified copies this project builds
 are a modified version of it, so they carry the same terms — including for

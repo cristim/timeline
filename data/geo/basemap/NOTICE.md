@@ -2,8 +2,8 @@
 
 `protomaps-20260829-z0-6.pmtiles` is a global zoom 0-6 extract of
 `https://build.protomaps.com/20260829.pmtiles`, made with
-`github.com/protomaps/go-pmtiles@v1.30.0`. The distributed archive is an ODbL
-Produced Work.
+`github.com/protomaps/go-pmtiles@v1.30.0` under Go 1.26.7. The distributed
+archive is an ODbL Produced Work.
 
 The relevant inputs to the default Protomaps basemap build are:
 

@@ -23,7 +23,13 @@ const (
 	basemapCommandWaitTime = 5 * time.Second
 )
 
-type basemapCommandRunner func(context.Context, string, ...string) ([]byte, error)
+type basemapCommand struct {
+	Executable   string
+	Arguments    []string
+	EnvOverrides []string
+}
+
+type basemapCommandRunner func(context.Context, basemapCommand) ([]byte, error)
 
 // Fetched map inputs live in data/geo rather than S3, and their output is
 // gitignored. CI restores them from a cache keyed on geo-fingerprint.
@@ -97,6 +103,9 @@ func runFetchBasemapWithCleanup(ctx context.Context, args []string, spec ingest.
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if spec.GoToolchain == "" {
+		return errors.New("basemap generating toolchain is required")
+	}
 	if err := os.MkdirAll(*outDir, 0o755); err != nil {
 		return fmt.Errorf("create basemap output directory %s: %w", *outDir, err)
 	}
@@ -119,7 +128,11 @@ func runFetchBasemapWithCleanup(ctx context.Context, args []string, spec ingest.
 		fmt.Sprintf("--maxzoom=%d", spec.MaxZoom),
 		fmt.Sprintf("--overfetch=%d", spec.Overfetch),
 	}
-	output, err := runner(commandCtx, "go", commandArgs...)
+	output, err := runner(commandCtx, basemapCommand{
+		Executable:   "go",
+		Arguments:    commandArgs,
+		EnvOverrides: []string{"GOTOOLCHAIN=" + spec.GoToolchain},
+	})
 	if err != nil {
 		stderr := strings.TrimSpace(string(output))
 		if ctxErr := commandCtx.Err(); ctxErr != nil {
@@ -141,8 +154,9 @@ func runFetchBasemapWithCleanup(ctx context.Context, args []string, spec ingest.
 	return nil
 }
 
-func runBasemapCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+func runBasemapCommand(ctx context.Context, request basemapCommand) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, request.Executable, request.Arguments...)
+	cmd.Env = append(cmd.Environ(), request.EnvOverrides...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -168,6 +182,7 @@ func geoFingerprint(basemap ingest.BasemapSpec) string {
 	fmt.Fprintf(h, "slices=%v\n", ingest.PaleoSlices)
 	fmt.Fprintf(h, "basemap.source=%s\n", basemap.Source)
 	fmt.Fprintf(h, "basemap.tool=%s\n", basemap.Tool)
+	fmt.Fprintf(h, "basemap.gotoolchain=%s\n", basemap.GoToolchain)
 	fmt.Fprintf(h, "basemap.bbox=%s\n", basemap.BBox)
 	fmt.Fprintf(h, "basemap.maxzoom=%d\n", basemap.MaxZoom)
 	fmt.Fprintf(h, "basemap.overfetch=%d\n", basemap.Overfetch)
