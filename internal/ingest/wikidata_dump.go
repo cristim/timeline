@@ -21,6 +21,9 @@ type wikidataDumpTimeFact struct {
 	Time          string
 	Precision     int
 	CalendarModel string
+	Timezone      int
+	Before        int
+	After         int
 }
 
 type wikidataDumpItemFacts struct {
@@ -76,6 +79,9 @@ type wikidataTimeValue struct {
 	Time          string          `json:"time"`
 	Precision     json.RawMessage `json:"precision"`
 	CalendarModel string          `json:"calendarmodel"`
+	Timezone      json.RawMessage `json:"timezone"`
+	Before        json.RawMessage `json:"before"`
+	After         json.RawMessage `json:"after"`
 }
 
 type wikidataCoordinateValue struct {
@@ -238,11 +244,28 @@ func extractTimeFact(property string, stmt wikidataDumpStatement) (wikidataDumpT
 	if !ok || precision < 0 || precision > 14 || value.Time == "" || value.CalendarModel == "" {
 		return wikidataDumpTimeFact{}, false
 	}
+	// timezone/before/after are optional in practice but signed when present;
+	// an unparseable one would silently shift or narrow the window.
+	timezone, ok := parseOptionalSignedInt(value.Timezone)
+	if !ok {
+		return wikidataDumpTimeFact{}, false
+	}
+	before, ok := parseOptionalSignedInt(value.Before)
+	if !ok {
+		return wikidataDumpTimeFact{}, false
+	}
+	after, ok := parseOptionalSignedInt(value.After)
+	if !ok {
+		return wikidataDumpTimeFact{}, false
+	}
 	return wikidataDumpTimeFact{
 		Property:      property,
 		Time:          value.Time,
 		Precision:     precision,
 		CalendarModel: value.CalendarModel,
+		Timezone:      timezone,
+		Before:        before,
+		After:         after,
 	}, true
 }
 
@@ -296,16 +319,25 @@ func validNumericEntityID(id string, prefix byte) bool {
 	return true
 }
 
+// parseFlexibleInt accepts every JSON spelling of a whole number a dump can
+// carry: bare, quoted, and the "11.0" form a JSON round-trip through a float
+// type produces. Rejecting that form would silently drop every time claim from
+// a re-serialized dump.
 func parseFlexibleInt(raw json.RawMessage) (int, bool) {
-	s, ok := rawNumberString(raw)
-	if !ok || !allDecimalDigits(s) {
+	f, ok := parseFlexibleFloat(raw)
+	if !ok || f != math.Trunc(f) || math.Abs(f) > math.MaxInt32 {
 		return 0, false
 	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return 0, false
+	return int(f), true
+}
+
+// parseOptionalSignedInt treats an absent field as zero and anything present
+// but unparseable as a hard no.
+func parseOptionalSignedInt(raw json.RawMessage) (int, bool) {
+	if len(strings.TrimSpace(string(raw))) == 0 || string(raw) == "null" {
+		return 0, true
 	}
-	return n, true
+	return parseFlexibleInt(raw)
 }
 
 func parseFlexibleFloat(raw json.RawMessage) (float64, bool) {
@@ -333,16 +365,4 @@ func rawNumberString(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSpace(s), true
-}
-
-func allDecimalDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
