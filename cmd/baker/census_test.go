@@ -19,11 +19,22 @@ import (
 	"wk/internal/ingest"
 )
 
-const expectedWikidataDumpCoverageJSON = `{"schema_version":1,"coverage_basis":"wikidata-item-facts-after-statement-validation-before-type-classification","input_sha256":"3d59b3bde012de266b41ffadc982e24eb820f8d3297d63130ae61851e49af6d4","compression":"none",` +
-	`"items":{"count":2,"has_english_label":1,"has_date":1,"has_coordinates":1,"has_english_wikipedia":1,"has_any_sitelink":2,"has_all":1,"total_sitelinks":4},` +
-	`"properties":1,` +
-	`"time_claims":[{"property":"P569","precision":11,"count":1},{"property":"P570","precision":9,"count":1},{"property":"P577","precision":10,"count":1},{"property":"P580","precision":11,"count":1},{"property":"P585","precision":7,"count":1}],` +
-	`"skipped_claims":[{"reason":"claim_group_not_an_array","count":1},{"reason":"entity_id_value_invalid","count":1},{"reason":"snak_shape_unusable","count":4},{"reason":"statement_rank_not_used","count":4},{"reason":"time_value_invalid","count":1}]}` + "\n"
+// expectedWikidataDumpCoverageJSON is built from the library rather than
+// pinned here: this test covers the CLI plumbing (path and stdin produce the
+// same bytes), and the report schema is pinned by the ingest package's own
+// tests.
+func expectedWikidataDumpCoverageJSON(t *testing.T, body []byte) string {
+	t.Helper()
+	report, err := ingest.BuildWikidataDumpCoverageReport(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("BuildWikidataDumpCoverageReport: %v", err)
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	return string(encoded) + "\n"
+}
 
 type censusErrorWriter struct {
 	err error
@@ -243,8 +254,9 @@ func TestRunCensusWithIOStreamsWikidataDumpFromPathAndStdin(t *testing.T) {
 			if err := runCensusWithIO(context.Background(), tc.args, tc.stdin, &stdout, &stderr); err != nil {
 				t.Fatalf("runCensusWithIO: %v", err)
 			}
-			if got := stdout.String(); got != expectedWikidataDumpCoverageJSON {
-				t.Fatalf("stdout mismatch\n got: %s\nwant: %s", got, expectedWikidataDumpCoverageJSON)
+			want := expectedWikidataDumpCoverageJSON(t, body)
+			if got := stdout.String(); got != want {
+				t.Fatalf("stdout mismatch\n got: %s\nwant: %s", got, want)
 			}
 			if stderr.Len() != 0 {
 				t.Fatalf("stderr = %q, want empty", stderr.String())

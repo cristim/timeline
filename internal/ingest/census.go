@@ -3,15 +3,13 @@ package ingest
 import (
 	"cmp"
 	"fmt"
-	"math"
 	"slices"
-	"time"
 
 	"wk/internal/model"
 )
 
 const (
-	CensusReportSchemaVersion = 1
+	CensusReportSchemaVersion = 2
 	CensusCoverageBasis       = "accepted-normalized-entities-after-source-filters"
 )
 
@@ -34,19 +32,22 @@ type CensusTypeRow struct {
 	Stats CensusStats `json:"stats"`
 }
 
-type CensusCenturyRow struct {
-	CenturyStartYear float64         `json:"century_start_year"`
-	Total            CensusStats     `json:"total"`
-	Types            []CensusTypeRow `json:"types"`
+// CensusBucketRow is one time slice: a century through recorded history, a
+// coarser span in deep time (see census_buckets.go).
+type CensusBucketRow struct {
+	StartYear float64         `json:"start_year"`
+	SpanYears float64         `json:"span_years"`
+	Total     CensusStats     `json:"total"`
+	Types     []CensusTypeRow `json:"types"`
 }
 
 type CensusReport struct {
-	SchemaVersion int                `json:"schema_version"`
-	CoverageBasis string             `json:"coverage_basis"`
-	ImportReport  ImportReport       `json:"import_report"`
-	Total         CensusStats        `json:"total"`
-	Types         []CensusTypeRow    `json:"types"`
-	Centuries     []CensusCenturyRow `json:"centuries"`
+	SchemaVersion int               `json:"schema_version"`
+	CoverageBasis string            `json:"coverage_basis"`
+	ImportReport  ImportReport      `json:"import_report"`
+	Total         CensusStats       `json:"total"`
+	Types         []CensusTypeRow   `json:"types"`
+	Buckets       []CensusBucketRow `json:"buckets"`
 }
 
 type censusStatsAccumulator struct {
@@ -58,7 +59,8 @@ type censusStatsAccumulator struct {
 	precisionCounts     map[string]int
 }
 
-type censusCenturyAccumulator struct {
+type censusBucketAccumulator struct {
+	span   float64
 	total  *censusStatsAccumulator
 	byType map[string]*censusStatsAccumulator
 }
@@ -78,7 +80,7 @@ func BuildCensusReport(result *Result, warmSource WarmSource, warmSHA256 string)
 
 	total := newCensusStatsAccumulator()
 	byType := map[string]*censusStatsAccumulator{}
-	byCentury := map[float64]*censusCenturyAccumulator{}
+	byBucket := map[float64]*censusBucketAccumulator{}
 
 	for idx, entity := range result.Entities {
 		if entity == nil {
@@ -94,22 +96,23 @@ func BuildCensusReport(result *Result, warmSource WarmSource, warmSHA256 string)
 		}
 		typeStats.add(entity)
 
-		centuryStart := centuryStartYear(censusYear(entity))
-		century := byCentury[centuryStart]
-		if century == nil {
-			century = &censusCenturyAccumulator{
+		bucketStart, bucketSpan := censusBucketFor(censusYearForEntity(entity))
+		bucket := byBucket[bucketStart]
+		if bucket == nil {
+			bucket = &censusBucketAccumulator{
+				span:   bucketSpan,
 				total:  newCensusStatsAccumulator(),
 				byType: map[string]*censusStatsAccumulator{},
 			}
-			byCentury[centuryStart] = century
+			byBucket[bucketStart] = bucket
 		}
-		century.total.add(entity)
-		centuryTypeStats := century.byType[entity.Type]
-		if centuryTypeStats == nil {
-			centuryTypeStats = newCensusStatsAccumulator()
-			century.byType[entity.Type] = centuryTypeStats
+		bucket.total.add(entity)
+		bucketTypeStats := bucket.byType[entity.Type]
+		if bucketTypeStats == nil {
+			bucketTypeStats = newCensusStatsAccumulator()
+			bucket.byType[entity.Type] = bucketTypeStats
 		}
-		centuryTypeStats.add(entity)
+		bucketTypeStats.add(entity)
 	}
 
 	return CensusReport{
@@ -118,7 +121,7 @@ func BuildCensusReport(result *Result, warmSource WarmSource, warmSHA256 string)
 		ImportReport:  importReport,
 		Total:         total.snapshot(),
 		Types:         buildCensusTypeRows(byType),
-		Centuries:     buildCenturyRows(byCentury),
+		Buckets:       buildCensusBucketRows(byBucket),
 	}, nil
 }
 
@@ -183,62 +186,22 @@ func buildCensusTypeRows(byType map[string]*censusStatsAccumulator) []CensusType
 	return rows
 }
 
-func buildCenturyRows(byCentury map[float64]*censusCenturyAccumulator) []CensusCenturyRow {
-	starts := make([]float64, 0, len(byCentury))
-	for start := range byCentury {
+func buildCensusBucketRows(byBucket map[float64]*censusBucketAccumulator) []CensusBucketRow {
+	starts := make([]float64, 0, len(byBucket))
+	for start := range byBucket {
 		starts = append(starts, start)
 	}
 	slices.Sort(starts)
 
-	rows := make([]CensusCenturyRow, 0, len(starts))
+	rows := make([]CensusBucketRow, 0, len(starts))
 	for _, start := range starts {
-		century := byCentury[start]
-		rows = append(rows, CensusCenturyRow{
-			CenturyStartYear: start,
-			Total:            century.total.snapshot(),
-			Types:            buildCensusTypeRows(century.byType),
+		bucket := byBucket[start]
+		rows = append(rows, CensusBucketRow{
+			StartYear: start,
+			SpanYears: bucket.span,
+			Total:     bucket.total.snapshot(),
+			Types:     buildCensusTypeRows(bucket.byType),
 		})
 	}
 	return rows
-}
-
-func censusYear(entity *model.Entity) float64 {
-	modelYear := normalizeSignedZero(model.SecondsToYear(entity.T0))
-	if modelYear == math.Trunc(modelYear) {
-		return modelYear
-	}
-	if !usesCivilYear(entity.Precision) {
-		return modelYear
-	}
-
-	roundedSecond := math.Round(entity.T0)
-	if roundedSecond < math.MinInt64 || roundedSecond > math.MaxInt64 {
-		return modelYear
-	}
-
-	civilYear := time.Unix(int64(roundedSecond), 0).UTC().Year()
-	if civilYear < 1 || civilYear > 9999 {
-		return modelYear
-	}
-	return normalizeSignedZero(float64(civilYear))
-}
-
-func usesCivilYear(precision string) bool {
-	switch precision {
-	case "year", "month", "day", "hour", "minute", "second":
-		return true
-	default:
-		return false
-	}
-}
-
-func centuryStartYear(year float64) float64 {
-	return normalizeSignedZero(math.Floor(year/100) * 100)
-}
-
-func normalizeSignedZero(value float64) float64 {
-	if value == 0 {
-		return 0
-	}
-	return value
 }

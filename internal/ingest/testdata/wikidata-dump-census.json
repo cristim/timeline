@@ -1,0 +1,57 @@
+[
+{"id":"Q2001","type":"item","labels":{"en":{"value":"Battle of Waterloo"}},"descriptions":{"en":{"value":"1815 battle"}},"sitelinks":{"enwiki":{"title":"Battle of Waterloo"},"frwiki":{"title":"Bataille de Waterloo"},"dewiki":{"title":"Schlacht bei Waterloo"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q178561"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P580":[{"mainsnak":{"snaktype":"value","property":"P580","datatype":"time","datavalue":{"value":{"time":"+1815-06-18T00:00:00Z","timezone":0,"before":0,"after":0,"precision":11,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}],
+"P625":[{"mainsnak":{"snaktype":"value","property":"P625","datatype":"globe-coordinate","datavalue":{"value":{"latitude":50.68,"longitude":4.41,"globe":"http://www.wikidata.org/entity/Q2"},"type":"globecoordinate"}},"rank":"normal"}]
+}},
+{"id":"Q2002","type":"item","labels":{"en":{"value":"World War I"}},"sitelinks":{"enwiki":{"title":"World War I"},"eswiki":{"title":"Primera Guerra Mundial"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q198"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P580":[{"mainsnak":{"snaktype":"value","property":"P580","datatype":"time","datavalue":{"value":{"time":"+1914-07-28T00:00:00Z","timezone":0,"before":0,"after":0,"precision":11,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}],
+"P582":[{"mainsnak":{"snaktype":"value","property":"P582","datatype":"time","datavalue":{"value":{"time":"+1918-11-11T00:00:00Z","timezone":0,"before":0,"after":0,"precision":11,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}]
+}},
+{"id":"Q2003","type":"item","labels":{"en":{"value":"Julius Caesar"}},"sitelinks":{"enwiki":{"title":"Julius Caesar"},"dewiki":{"title":"Gaius Iulius Caesar"},"itwiki":{"title":"Gaio Giulio Cesare"},"frwiki":{"title":"Jules Cesar"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q5"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P569":[{"mainsnak":{"snaktype":"value","property":"P569","datatype":"time","datavalue":{"value":{"time":"-0100-07-12T00:00:00Z","timezone":0,"before":0,"after":0,"precision":11,"calendarmodel":"http://www.wikidata.org/entity/Q1985786"},"type":"time"}},"rank":"normal"}],
+"P570":[{"mainsnak":{"snaktype":"value","property":"P570","datatype":"time","datavalue":{"value":{"time":"-0044-03-15T00:00:00Z","timezone":0,"before":0,"after":0,"precision":11,"calendarmodel":"http://www.wikidata.org/entity/Q1985786"},"type":"time"}},"rank":"normal"}]
+}},
+{"id":"Q2004","type":"item","labels":{"en":{"value":"Panthera leo"}},"sitelinks":{"enwiki":{"title":"Lion"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q16521"},"type":"wikibase-entityid"}},"rank":"normal"}]
+}},
+{"id":"Q2005","type":"item","labels":{"en":{"value":"1906 San Francisco earthquake"}},"sitelinks":{"enwiki":{"title":"1906 San Francisco earthquake"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q7944"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P585":[{"mainsnak":{"snaktype":"value","property":"P585","datatype":"time","datavalue":{"value":{"time":"+1906-04-18T00:00:00Z","timezone":0,"before":0,"after":0,"precision":11,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}],
+"P625":[{"mainsnak":{"snaktype":"value","property":"P625","datatype":"globe-coordinate","datavalue":{"value":{"latitude":37.75,"longitude":-122.55,"globe":"http://www.wikidata.org/entity/Q2"},"type":"globecoordinate"}},"rank":"normal"}]
+}},
+{"id":"Q2006","type":"item","labels":{"en":{"value":"Hubble Space Telescope"}},"sitelinks":{"enwiki":{"title":"Hubble Space Telescope"},"jawiki":{"title":"Hubble"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q40218"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P571":[{"mainsnak":{"snaktype":"value","property":"P571","datatype":"time","datavalue":{"value":{"time":"+1990-04-24T00:00:00Z","timezone":0,"before":0,"after":0,"precision":11,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}]
+}},
+{"id":"Q2007","type":"item","labels":{"en":{"value":"A structural study"}},"sitelinks":{},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q13442814"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P577":[{"mainsnak":{"snaktype":"value","property":"P577","datatype":"time","datavalue":{"value":{"time":"+2001-05-00T00:00:00Z","timezone":0,"before":0,"after":0,"precision":10,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}]
+}},
+{"id":"Q2008","type":"item","labels":{"en":{"value":"Mercury (disambiguation)"}},"sitelinks":{"enwiki":{"title":"Mercury"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q4167410"},"type":"wikibase-entityid"}},"rank":"normal"}]
+}},
+{"id":"Q2009","type":"item","labels":{"en":{"value":"Kringle domain"}},"sitelinks":{"enwiki":{"title":"Kringle domain"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q898273"},"type":"wikibase-entityid"}},"rank":"normal"}]
+}},
+{"id":"Q2010","type":"item","labels":{"en":{"value":"Tyrannosaurus"}},"sitelinks":{"enwiki":{"title":"Tyrannosaurus"},"dewiki":{"title":"Tyrannosaurus"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q23038290"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P574":[{"mainsnak":{"snaktype":"value","property":"P574","datatype":"time","datavalue":{"value":{"time":"-66000000-00-00T00:00:00Z","timezone":0,"before":0,"after":0,"precision":3,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}]
+}},
+{"id":"Q2011","type":"item","labels":{"en":{"value":"2020 United States presidential election"}},"sitelinks":{"enwiki":{"title":"2020 United States presidential election"},"eswiki":{"title":"Elecciones"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q40231"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P585":[{"mainsnak":{"snaktype":"value","property":"P585","datatype":"time","datavalue":{"value":{"time":"+2020-11-03T00:00:00Z","timezone":0,"before":0,"after":0,"precision":11,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}],
+"P625":[{"mainsnak":{"snaktype":"value","property":"P625","datatype":"globe-coordinate","datavalue":{"value":{"latitude":38.9,"longitude":-77.03,"globe":"http://www.wikidata.org/entity/Q2"},"type":"globecoordinate"}},"rank":"normal"}]
+}},
+{"id":"Q2012","type":"item","labels":{"en":{"value":"COVID-19 pandemic"}},"sitelinks":{"enwiki":{"title":"COVID-19 pandemic"},"frwiki":{"title":"Pandemie"},"dewiki":{"title":"COVID-19-Pandemie"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q12184"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P580":[{"mainsnak":{"snaktype":"value","property":"P580","datatype":"time","datavalue":{"value":{"time":"+2019-12-01T00:00:00Z","timezone":0,"before":0,"after":0,"precision":11,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}]
+}},
+{"id":"Q2013","type":"item","labels":{"en":{"value":"Great Pyramid of Giza"}},"sitelinks":{"enwiki":{"title":"Great Pyramid of Giza"},"arwiki":{"title":"Pyramid"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q811979"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P571":[{"mainsnak":{"snaktype":"value","property":"P571","datatype":"time","datavalue":{"value":{"time":"-2560-00-00T00:00:00Z","timezone":0,"before":0,"after":0,"precision":7,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}],
+"P625":[{"mainsnak":{"snaktype":"value","property":"P625","datatype":"globe-coordinate","datavalue":{"value":{"latitude":29.98,"longitude":31.13,"globe":"http://www.wikidata.org/entity/Q2"},"type":"globecoordinate"}},"rank":"normal"}]
+}}
+]
