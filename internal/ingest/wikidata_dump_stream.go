@@ -12,8 +12,9 @@ import (
 // Wikidata publishes its JSON dump as latest-all.json.bz2 (SRC-1 tier 1, held
 // in the COLD tier per SRC-3). Decompressing it needs no dependency and no
 // external process: compress/bzip2 and compress/gzip are stdlib, both stream,
-// and both handle the concatenated members real dumps sometimes carry. Peak
-// memory stays flat regardless of the archive's size.
+// and both handle the concatenated members real dumps sometimes carry.
+// Decompression itself is O(1) in the archive's size; what a caller keeps from
+// the decoded stream is the caller's business.
 
 type DumpCompression string
 

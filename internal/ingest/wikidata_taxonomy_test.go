@@ -68,24 +68,23 @@ func TestClassifyResolvesInstanceOfBeforeSubclassOf(t *testing.T) {
 		wantOutcome ClassificationOutcome
 		wantType    string
 		wantClass   string
-		wantVia     string
 		wantCensus  string
 	}{
 		{
 			name: "battle by P31", instanceOf: []string{"Q178561"},
-			wantOutcome: ClassificationTyped, wantType: "event", wantClass: "Q178561", wantVia: "P31", wantCensus: "event",
+			wantOutcome: ClassificationTyped, wantType: "event", wantClass: "Q178561", wantCensus: "event",
 		},
 		{
 			name: "most specific curated class wins", instanceOf: []string{"Q180684", "Q178561", "Q198"},
-			wantOutcome: ClassificationTyped, wantType: "event", wantClass: "Q178561", wantVia: "P31", wantCensus: "event",
+			wantOutcome: ClassificationTyped, wantType: "event", wantClass: "Q178561", wantCensus: "event",
 		},
 		{
 			name: "P279 only when P31 matches nothing", instanceOf: []string{"Q99999999"}, subclassOf: []string{"Q42889"},
-			wantOutcome: ClassificationTyped, wantType: "product", wantClass: "Q42889", wantVia: "P279", wantCensus: "product",
+			wantOutcome: ClassificationTyped, wantType: "product", wantClass: "Q42889", wantCensus: "product",
 		},
 		{
 			name: "P31 beats P279", instanceOf: []string{"Q5"}, subclassOf: []string{"Q42889"},
-			wantOutcome: ClassificationTyped, wantType: "person", wantClass: "Q5", wantVia: "P31", wantCensus: "person",
+			wantOutcome: ClassificationTyped, wantType: "person", wantClass: "Q5", wantCensus: "person",
 		},
 		{
 			name: "exclusion beats acceptance", instanceOf: []string{"Q13442814", "Q13406463"},
@@ -111,9 +110,6 @@ func TestClassifyResolvesInstanceOfBeforeSubclassOf(t *testing.T) {
 			}
 			if got.Class.QID != tt.wantClass {
 				t.Fatalf("class = %q, want %q", got.Class.QID, tt.wantClass)
-			}
-			if got.Property != tt.wantVia {
-				t.Fatalf("property = %q, want %q", got.Property, tt.wantVia)
 			}
 			if got.CensusType() != tt.wantCensus {
 				t.Fatalf("census type = %q, want %q", got.CensusType(), tt.wantCensus)

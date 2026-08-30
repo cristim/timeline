@@ -51,7 +51,6 @@ type WikidataClass struct {
 type WikidataClassification struct {
 	Outcome    ClassificationOutcome
 	Class      WikidataClass
-	Property   string // "P31" or "P279"; empty when nothing matched
 	Categories []string
 	Type       string
 }
@@ -251,12 +250,11 @@ func (t *WikidataTaxonomy) Classify(instanceOf, subclassOf []string) WikidataCla
 			}
 		}
 	}
-	for _, source := range []struct {
-		property string
-		qids     []string
-	}{{"P31", instanceOf}, {"P279", subclassOf}} {
+	// P31 first, then P279: an item that instantiates a curated class beats one
+	// that merely subclasses a different curated class.
+	for _, qids := range [][]string{instanceOf, subclassOf} {
 		best := -1
-		for _, qid := range source.qids {
+		for _, qid := range qids {
 			rank, ok := t.rank[qid]
 			if ok && (best < 0 || rank < best) {
 				best = rank
@@ -267,7 +265,6 @@ func (t *WikidataTaxonomy) Classify(instanceOf, subclassOf []string) WikidataCla
 			return WikidataClassification{
 				Outcome:    ClassificationTyped,
 				Class:      class,
-				Property:   source.property,
 				Type:       class.Type,
 				Categories: class.Categories,
 			}

@@ -183,30 +183,6 @@ func TestImportWikidataDumpReadsCompressedInput(t *testing.T) {
 	}
 }
 
-func TestImportWikidataDumpAppliesTheImportanceFloor(t *testing.T) {
-	t.Parallel()
-
-	all := importCensusFixture(t, WikidataDumpImportOptions{})
-	floored := importCensusFixture(t, WikidataDumpImportOptions{ImportanceFloor: 0.32})
-	if floored.Report.Accepted >= all.Report.Accepted {
-		t.Fatalf("floor kept %d of %d entities, want fewer", floored.Report.Accepted, all.Report.Accepted)
-	}
-	for _, entity := range floored.Entities {
-		if entity.Importance < 0.32 {
-			t.Fatalf("entity %q importance %v is below the floor", entity.SeedID, entity.Importance)
-		}
-	}
-	held := 0
-	for _, row := range floored.Report.FilterReasons {
-		if strings.HasPrefix(row.Reason, "below importance floor") {
-			held = row.Count
-		}
-	}
-	if held != all.Report.Accepted-floored.Report.Accepted {
-		t.Fatalf("held %d, want %d", held, all.Report.Accepted-floored.Report.Accepted)
-	}
-}
-
 func TestImportWikidataDumpFailsLoudly(t *testing.T) {
 	t.Parallel()
 
@@ -215,15 +191,11 @@ func TestImportWikidataDumpFailsLoudly(t *testing.T) {
 		t.Fatalf("nil reader error = %v", err)
 	}
 
-	for _, opts := range []WikidataDumpImportOptions{{MaxRejectRate: 1.5}, {MaxRejectRate: -1}} {
-		if _, err := ImportWikidataDump(strings.NewReader("[]"), opts); err == nil ||
+	for _, rate := range []float64{1.5, -1} {
+		if _, err := ImportWikidataDump(strings.NewReader("[]"), WikidataDumpImportOptions{MaxRejectRate: &rate}); err == nil ||
 			!strings.Contains(err.Error(), "max reject rate") {
-			t.Fatalf("max reject rate %v error = %v", opts.MaxRejectRate, err)
+			t.Fatalf("max reject rate %v error = %v", rate, err)
 		}
-	}
-	if _, err := ImportWikidataDump(strings.NewReader("[]"), WikidataDumpImportOptions{ImportanceFloor: 2}); err == nil ||
-		!strings.Contains(err.Error(), "importance floor") {
-		t.Fatalf("importance floor error = %v", err)
 	}
 
 	// SRC-3 entity resolution joins on wikidata_id, so a repeat is fatal.
@@ -256,7 +228,8 @@ func TestImportWikidataDumpEnforcesTheRejectGate(t *testing.T) {
 	}
 
 	// Raising the gate lets the same run through, with the reject recorded.
-	imported, err := ImportWikidataDump(strings.NewReader(input), WikidataDumpImportOptions{MaxRejectRate: 1})
+	allowAll := 1.0
+	imported, err := ImportWikidataDump(strings.NewReader(input), WikidataDumpImportOptions{MaxRejectRate: &allowAll})
 	if err != nil {
 		t.Fatalf("ImportWikidataDump with a raised gate: %v", err)
 	}
@@ -268,5 +241,31 @@ func TestImportWikidataDumpEnforcesTheRejectGate(t *testing.T) {
 	}
 	if imported.Report.RejectRate != 1 {
 		t.Fatalf("reject rate = %v, want 1", imported.Report.RejectRate)
+	}
+}
+
+// An explicit zero gate means "no reject is acceptable", which a sentinel zero
+// standing for "use the default" could not express.
+func TestImportWikidataDumpHonoursAnExplicitZeroGate(t *testing.T) {
+	t.Parallel()
+
+	input := `[
+{"id":"Q9201","type":"item","labels":{"en":{"value":"Impossible"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q178561"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P585":[{"mainsnak":{"snaktype":"value","property":"P585","datatype":"time","datavalue":{"value":{"time":"-100000000000-00-00T00:00:00Z","timezone":0,"before":0,"after":0,"precision":6,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}]
+}}
+]`
+	zero := 0.0
+	if _, err := ImportWikidataDump(strings.NewReader(input), WikidataDumpImportOptions{MaxRejectRate: &zero}); err == nil ||
+		!strings.Contains(err.Error(), "reject rate") {
+		t.Fatalf("ImportWikidataDump error = %v, want the zero gate to bite", err)
+	}
+	// And a clean dump still passes the same zero gate.
+	body, err := os.ReadFile("testdata/wikidata-dump-census.json")
+	if err != nil {
+		t.Fatalf("read census fixture: %v", err)
+	}
+	if _, err := ImportWikidataDump(strings.NewReader(string(body)), WikidataDumpImportOptions{MaxRejectRate: &zero}); err != nil {
+		t.Fatalf("a dump with no rejects failed a zero gate: %v", err)
 	}
 }

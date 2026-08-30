@@ -77,14 +77,18 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, basem
 		Body: basemapBody,
 	}
 	// A bulk bake has no pinned expectations until someone writes them against
-	// its dataset, so --goldens "" turns the gate off explicitly. The seed bake
-	// keeps it on by default.
+	// its dataset, so --goldens "" turns the gate off there. The seed bake has
+	// goldens and always runs them: letting the curated dataset switch its own
+	// gate off is exactly the silent breakage ZOOM-5 exists to prevent.
 	var goldens *bake.GoldenFile
-	if *goldensPath != "" {
+	switch {
+	case *goldensPath != "":
 		goldens, err = bake.LoadGoldens(*goldensPath)
 		if err != nil {
 			return err
 		}
+	case *modelDirFlag == "":
+		return fmt.Errorf("--goldens is required with --seed; an empty value is only allowed for --model")
 	}
 
 	if *modelDirFlag != "" {
@@ -220,7 +224,9 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, basem
 		return err
 	}
 	manifest.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
-	fmt.Printf("golden views: %d passed\n", len(goldens.Views))
+	if goldens != nil {
+		fmt.Printf("golden views: %d passed\n", len(goldens.Views))
+	}
 	fmt.Printf("bake: %d artifacts written, %d unchanged in %s\n", stats.Written, stats.Unchanged, time.Since(start).Round(time.Millisecond))
 
 	return publishManifest(ctx, sink, *manifest)

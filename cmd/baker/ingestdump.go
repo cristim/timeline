@@ -26,11 +26,10 @@ import (
 const dumpImportReportName = "import.json"
 
 type ingestDumpOptions struct {
-	dump            string
-	out             string
-	importanceFloor float64
-	maxRejectRate   float64
-	publish         bool
+	dump          string
+	out           string
+	maxRejectRate *float64
+	publish       bool
 }
 
 func runIngestWikidataDump(ctx context.Context, args []string) error {
@@ -54,8 +53,7 @@ func runIngestWikidataDumpWithIO(ctx context.Context, args []string, stdin io.Re
 	}
 
 	imported, err := ingest.ImportWikidataDump(source, ingest.WikidataDumpImportOptions{
-		MaxRejectRate:   opts.maxRejectRate,
-		ImportanceFloor: opts.importanceFloor,
+		MaxRejectRate: opts.maxRejectRate,
 	})
 	if err != nil {
 		return err
@@ -115,10 +113,8 @@ func parseIngestDumpArgs(args []string, output io.Writer) (ingestDumpOptions, er
 
 	dump := fs.String("dump", "", "Wikidata JSON dump to read: a path (.json, .json.gz, .json.bz2) or - for stdin")
 	out := fs.String("out", "", "directory to write the normalized Parquet model, reject table and import report into")
-	importanceFloor := fs.Float64("importance-floor", 0,
-		"keep only entities at or above this importance; the rest stay WARM (SRC-5)")
-	maxRejectRate := fs.Float64("max-reject-rate", 0,
-		"fail if more than this fraction of normalizable items are rejected (0 uses the default gate)")
+	maxRejectRate := fs.Float64("max-reject-rate", ingest.DefaultMaxRejectRate,
+		"fail if more than this fraction of normalizable items are rejected")
 	publish := fs.Bool("publish", false, "publish the model and report to BUCKET_WARM")
 	if err := fs.Parse(args); err != nil {
 		return ingestDumpOptions{}, err
@@ -130,11 +126,10 @@ func parseIngestDumpArgs(args []string, output io.Writer) (ingestDumpOptions, er
 		return ingestDumpOptions{}, fmt.Errorf("--out <dir> is required")
 	}
 	return ingestDumpOptions{
-		dump:            *dump,
-		out:             *out,
-		importanceFloor: *importanceFloor,
-		maxRejectRate:   *maxRejectRate,
-		publish:         *publish,
+		dump:          *dump,
+		out:           *out,
+		maxRejectRate: maxRejectRate,
+		publish:       *publish,
 	}, nil
 }
 

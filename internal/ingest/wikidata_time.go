@@ -52,16 +52,19 @@ type WikidataTimeWindow struct {
 }
 
 // modelPrecisionForWikidata maps Wikidata's precision scale onto the model
-// vocabulary. 4 (100 ky) and 5 (10 ky) have no model peer and round up to
-// million_year: the window still carries the true span, only the label is
-// conservative, because overstating precision is the failure that matters.
+// vocabulary, always rounding to a COARSER label when there is no exact peer,
+// never a finer one: overstating precision is the failure that matters. The
+// model jumps straight from billion_year to million_year to millennium, so
+// Wikidata's 100 My and 10 My round up to billion_year, and its 100 ky and
+// 10 ky round up to million_year. Each window still carries its true span;
+// only the label is conservative.
 var modelPrecisionForWikidata = map[int]string{
-	0:  "billion_year",
-	1:  "million_year",
-	2:  "million_year",
-	3:  "million_year",
-	4:  "million_year",
-	5:  "million_year",
+	0:  "billion_year", // 1 Gy
+	1:  "billion_year", // 100 My
+	2:  "billion_year", // 10 My
+	3:  "million_year", // 1 My
+	4:  "million_year", // 100 ky
+	5:  "million_year", // 10 ky
 	6:  "millennium",
 	7:  "century",
 	8:  "decade",
@@ -71,6 +74,42 @@ var modelPrecisionForWikidata = map[int]string{
 	12: "hour",
 	13: "minute",
 	14: "second",
+}
+
+// modelPrecisionOrder runs coarsest to finest. FinestBucketFor cannot stand in
+// for it: hour, minute and second all cap at the same render bucket, so it
+// cannot rank them against each other.
+var modelPrecisionOrder = []string{
+	"billion_year", "million_year", "millennium", "century", "decade",
+	"year", "month", "day", "hour", "minute", "second",
+}
+
+// modelPrecisionSeconds is the nominal length of each precision unit, used to
+// pick an honest label for a window that stated uncertainty has widened.
+var modelPrecisionSeconds = map[string]float64{
+	"billion_year": 1e9 * model.SecondsPerYear,
+	"million_year": 1e6 * model.SecondsPerYear,
+	"millennium":   1e3 * model.SecondsPerYear,
+	"century":      100 * model.SecondsPerYear,
+	"decade":       10 * model.SecondsPerYear,
+	"year":         model.SecondsPerYear,
+	"month":        model.SecondsPerYear / 12,
+	"day":          86400,
+	"hour":         3600,
+	"minute":       60,
+	"second":       1,
+}
+
+// precisionForSpan returns the finest label whose unit still covers the span,
+// so a value widened by its own before/after uncertainty stops claiming the
+// precision of its unwidened form.
+func precisionForSpan(span float64) string {
+	for _, precision := range modelPrecisionOrder {
+		if modelPrecisionSeconds[precision] >= span {
+			return precision
+		}
+	}
+	return modelPrecisionOrder[len(modelPrecisionOrder)-1]
 }
 
 // wikidataPrecisionUnitYears covers the precisions coarser than a year, where
@@ -119,10 +158,20 @@ func ConvertWikidataTime(fact wikidataDumpTimeFact) (WikidataTimeWindow, error) 
 	if err != nil {
 		return WikidataTimeWindow{}, err
 	}
+	// The attribution year is the one the source stated, floored to its own
+	// unit, in its own calendar. Recovering it from `start` instead would read
+	// a Julian date against the Gregorian calendar, which lands a year early
+	// for most of antiquity: exactly the range the census is about.
+	year := float64(ts.year)
+	if unit, ok := wikidataPrecisionUnitYears[fact.Precision]; ok {
+		year = math.Floor(float64(ts.year)/unit) * unit
+	}
 	if fact.Before > 0 || fact.After > 0 {
 		unit := end - start
 		start -= float64(fact.Before) * unit
 		end += float64(fact.After) * unit
+		// A 61-day window is not a day-precision value however it was stated.
+		precision = coarserPrecision(precision, precisionForSpan(end-start))
 	}
 	if !(end > start) || math.IsNaN(start) || math.IsInf(start, 0) || math.IsInf(end, 0) {
 		return WikidataTimeWindow{}, fmt.Errorf("degenerate time window [%v,%v]", start, end)
@@ -131,7 +180,7 @@ func ConvertWikidataTime(fact wikidataDumpTimeFact) (WikidataTimeWindow, error) 
 		T0:            start,
 		T1:            end,
 		Precision:     precision,
-		Year:          model.SecondsToYear(start),
+		Year:          normalizeSignedZero(year),
 		CalendarModel: calendar,
 	}, nil
 }
@@ -258,9 +307,10 @@ func parseWikidataTimestamp(value string, precision int) (wikidataTimestamp, err
 	return ts, nil
 }
 
-// daysInMonth uses the Gregorian leap rule as an upper bound. A Julian
-// 29 February in a Gregorian common year is accepted here and resolves
-// correctly through the Julian JDN; the check only rejects impossible days.
+// daysInMonth uses the Julian leap rule, which is the more permissive of the
+// two, as an upper bound. It only rejects days that exist in neither calendar;
+// a Gregorian 1900-02-29 slips through and resolves to 1 March through the
+// JDN conversion, which is not worth a second calendar-specific branch.
 func daysInMonth(year int64, month int) int {
 	switch month {
 	case 1, 3, 5, 7, 8, 10, 12:
@@ -345,9 +395,7 @@ var (
 type WikidataItemTime struct {
 	T0, T1        float64
 	Precision     string
-	Year          float64
-	StartProperty string
-	EndProperty   string
+	Year          float64 // attribution year, in the calendar the source used
 	CalendarModel string
 }
 
@@ -358,7 +406,7 @@ func resolveWikidataItemTime(counters *dumpCounters, claims []wikidataDumpTimeFa
 	earliest := func(candidate, best WikidataTimeWindow) bool { return candidate.T0 < best.T0 }
 	latest := func(candidate, best WikidataTimeWindow) bool { return candidate.T1 > best.T1 }
 
-	start, startProperty, ok := selectWindow(counters, claims, wikidataStartTimeProperties, earliest)
+	start, ok := selectWindow(counters, claims, wikidataStartTimeProperties, earliest)
 	if !ok {
 		return WikidataItemTime{}, false
 	}
@@ -367,12 +415,10 @@ func resolveWikidataItemTime(counters *dumpCounters, claims []wikidataDumpTimeFa
 		T1:            start.T1,
 		Precision:     start.Precision,
 		Year:          start.Year,
-		StartProperty: startProperty,
 		CalendarModel: start.CalendarModel,
 	}
-	if end, endProperty, ok := selectWindow(counters, claims, wikidataEndTimeProperties, latest); ok && end.T1 >= start.T0 {
+	if end, ok := selectWindow(counters, claims, wikidataEndTimeProperties, latest); ok && end.T1 >= start.T0 {
 		resolved.T1 = end.T1
-		resolved.EndProperty = endProperty
 		resolved.Precision = coarserPrecision(start.Precision, end.Precision)
 	}
 	return resolved, true
@@ -386,7 +432,7 @@ func selectWindow(
 	claims []wikidataDumpTimeFact,
 	properties []string,
 	better func(candidate, best WikidataTimeWindow) bool,
-) (WikidataTimeWindow, string, bool) {
+) (WikidataTimeWindow, bool) {
 	for _, property := range properties {
 		best := WikidataTimeWindow{}
 		found := false
@@ -404,26 +450,27 @@ func selectWindow(
 			}
 		}
 		if found {
-			return best, property, true
+			return best, true
 		}
 	}
-	return WikidataTimeWindow{}, "", false
+	return WikidataTimeWindow{}, false
 }
 
-// coarserPrecision returns whichever of two model precisions renders at the
-// coarser bucket. Unknown names cannot reach here: ConvertWikidataTime only
-// emits vocabulary members.
+// coarserPrecision returns whichever of two model precisions is the coarser.
+// Unknown names cannot reach here: ConvertWikidataTime only emits vocabulary
+// members.
 func coarserPrecision(a, b string) string {
-	aBucket, aOK := model.FinestBucketFor(a)
-	bBucket, bOK := model.FinestBucketFor(b)
-	switch {
-	case !aOK:
+	if precisionRank(b) < precisionRank(a) {
 		return b
-	case !bOK:
-		return a
-	case bBucket < aBucket:
-		return b
-	default:
-		return a
 	}
+	return a
+}
+
+func precisionRank(precision string) int {
+	for rank, name := range modelPrecisionOrder {
+		if name == precision {
+			return rank
+		}
+	}
+	return len(modelPrecisionOrder)
 }
