@@ -7,21 +7,45 @@ validation instead: `internal/ingest/geo.go` rejects the bake outright on a
 malformed file, an unknown entity reference, coverage windows that do not tile,
 or a front sequence whose positions do not share a vertex count.
 
-Two of the four source sets are **fetched, not committed**:
+Three of the five source sets are **fetched, not committed**:
 
 | directory | origin | in git? |
 |---|---|---|
 | `borders/` | `baker fetch-borders` from historical-basemaps (GPL-3.0) | no, ~16 MB |
 | `paleo/` | `baker fetch-paleo` from the GPlates Web Service (CC-BY 4.0) | no, ~6.6 MB |
+| `basemap/` | `baker fetch-basemap` from the pinned Protomaps daily planet build | no, ~45 MB |
 | `ohm/` | pinned OHM Overpass response (CC0 unless a relation says otherwise) | yes, ~173 KB |
 | `fronts/` | hand-curated | yes |
 
 Run `make fetch-geo` once after cloning; `make verify-geo` proves both fetched
-layers are whole and validates the committed OHM pins and payload. CI caches
-the fetched layers on `baker geo-fingerprint`, a hash of the pinned upstream
-commit, plate model and slice list, so an unchanged pin never touches the
-network. Each fetched directory keeps a committed `NOTICE.md` recording its
-provenance, licence and the modifications the fetch applies.
+time layers are whole, validates the committed OHM pins and payload, and checks
+the basemap's exact size and SHA-256 digest. CI caches the fetched inputs on
+`baker geo-fingerprint`, a hash of the complete generated-file restore
+contract, so an unchanged pin never touches the network. Each fetched
+directory keeps a committed `NOTICE.md` recording its provenance, licence and
+the modifications the fetch applies.
+
+## `basemap/` - pinned Protomaps archive
+
+`protomaps-20260829-z0-6.pmtiles` is generated from the pinned Protomaps planet
+build with `github.com/protomaps/go-pmtiles@v1.30.0`. Both source and generated
+files are PMTiles v3 archives containing MVT vector tiles; the generated
+archive uses Protomaps schema 4.15.2. The reproducible extraction is:
+
+```sh
+go run github.com/protomaps/go-pmtiles@v1.30.0 extract \
+  https://build.protomaps.com/20260829.pmtiles \
+  data/geo/basemap/protomaps-20260829-z0-6.pmtiles \
+  --bbox=-180,-85.0511,180,85.0511 --maxzoom=6 --overfetch=0
+```
+
+`baker fetch-basemap` performs that extraction through a temporary path and
+accepts it only at 44,856,992 bytes with SHA-256
+`9a6cd0b9b26b4bcf13fb3167755431816058659552c0f33f5d1df3793d093082` before
+replacing an existing archive.
+
+The file is a static input to the baker, not a time-sliced overlay. Its source,
+licences and downstream attribution are recorded in `basemap/NOTICE.md`.
 
 ## `ohm/` - pinned OpenHistoricalMap input
 

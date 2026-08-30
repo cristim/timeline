@@ -5,7 +5,7 @@
 S3_ENV = S3_ENDPOINT=http://localhost:9000 S3_FORCE_PATH_STYLE=true \
          AWS_ACCESS_KEY_ID=wkadmin AWS_SECRET_ACCESS_KEY=wk-dev-minio AWS_REGION=us-east-1
 
-.PHONY: up down bake bake-full bake-docker fetch-wikidata fetch-geo verify-geo census smoke test vet fmt web-install e2e e2e-static
+.PHONY: up down bake bake-full bake-docker fetch-wikidata fetch-basemap fetch-geo verify-geo census smoke test vet fmt web-install e2e e2e-static
 
 up:
 	docker compose up -d minio minio-init gateway web
@@ -22,15 +22,19 @@ bake-full:
 fetch-wikidata:
 	$(S3_ENV) go run ./cmd/baker fetch-wikidata
 
-# The two big map layers are derived from pinned upstreams, not committed.
+fetch-basemap:
+	go run ./cmd/baker fetch-basemap
+
+# The three large map inputs are derived from pinned upstreams, not committed.
 # Run once after cloning; re-run only when a pin moves. CI caches the result
 # on `baker geo-fingerprint`.
 fetch-geo:
 	go run ./cmd/baker fetch-borders
 	go run ./cmd/baker fetch-paleo
+	$(MAKE) fetch-basemap
 
-# Fails unless both layers tile their whole range - how a partial or stale
-# fetch is caught before a bake trusts it.
+# Fails unless both time layers tile their range and the basemap matches its
+# size and digest pin - how a partial or stale fetch is caught before a bake.
 verify-geo:
 	go run ./cmd/baker geo-verify
 

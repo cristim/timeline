@@ -23,10 +23,12 @@ const usageText = `usage: baker <command>
                                border slices into data/geo/borders
   fetch-paleo [--out <dir>]    pull + simplify GPlates reconstructed coastlines
                                into data/geo/paleo
+  fetch-basemap [--out <dir>]  extract the pinned zoom 0-6 Protomaps archive
+                               into data/geo/basemap
   geo-fingerprint              hash of the pinned upstreams; the CI cache key
-                               for the two fetched layers
-  geo-verify [--geo <dir>]     prove both fetched layers tile their range with
-                               no gaps (fails a partial or stale fetch)
+                               for the three fetched map inputs
+  geo-verify [--geo <dir>]     prove fetched layers tile their range and the
+                               basemap matches its size and digest pin
   census [--seed <dir>] [--seed-only | --warm-file <path>]
                                deterministic census from seed plus default
                                BUCKET_WARM/` + warmEventsKey + `, or explicit
@@ -48,6 +50,8 @@ func main() {
 		err = runFetchBorders(ctx, os.Args[2:])
 	case "fetch-paleo":
 		err = runFetchPaleo(ctx, os.Args[2:])
+	case "fetch-basemap":
+		err = runFetchBasemap(ctx, os.Args[2:])
 	case "geo-fingerprint":
 		err = runGeoFingerprint()
 	case "geo-verify":
