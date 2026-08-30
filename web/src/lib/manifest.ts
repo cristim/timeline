@@ -66,6 +66,42 @@ function manifestString(value: unknown, field: string): string {
   return value;
 }
 
+/**
+ * Window runs are the one part of the manifest whose shape changed after the
+ * client shipped, and the manifest is the only mutable object (API-0): a
+ * browser can hold a fresh bundle against a manifest up to its 60s max-age old,
+ * and an ARCH-2 rollback can repoint at a dataset baked before the change.
+ * Reading a bare window index as a run throws deep inside rendering, so the
+ * mismatch is caught here, where the load already has an error path.
+ */
+function manifestWindows(value: unknown, field: string): Record<string, WindowRun[]> | undefined {
+  if (value === undefined) return undefined;
+  const raw = manifestObject(value, field);
+  const out: Record<string, WindowRun[]> = {};
+  for (const [category, runs] of Object.entries(raw)) {
+    if (!Array.isArray(runs)) {
+      throw new Error(`${field}.${category} must be an array of [start,end] runs`);
+    }
+    out[category] = runs.map((run) => {
+      if (
+        !Array.isArray(run) ||
+        run.length !== 2 ||
+        typeof run[0] !== "number" ||
+        typeof run[1] !== "number"
+      ) {
+        throw new Error(
+          `${field}.${category} must hold [start,end] window runs, got ${JSON.stringify(run)}`,
+        );
+      }
+      if (run[1] < run[0]) {
+        throw new Error(`${field}.${category} run ${JSON.stringify(run)} ends before it starts`);
+      }
+      return [run[0], run[1]] as WindowRun;
+    });
+  }
+  return out;
+}
+
 function decodeManifest(value: unknown): Manifest {
   const raw = manifestObject(value, "manifest");
   const dataset = manifestString(raw.dataset, "manifest.dataset");
@@ -95,10 +131,22 @@ function decodeManifest(value: unknown): Manifest {
     throw new Error("manifest.basemap.sha256 must be 64 lowercase hexadecimal characters");
   }
 
+  if (!Array.isArray(raw.buckets)) {
+    throw new Error("manifest.buckets must be an array");
+  }
+  const buckets = raw.buckets.map((value, i) => {
+    const bucket = manifestObject(value, `manifest.buckets[${i}]`);
+    return {
+      ...(bucket as unknown as Bucket),
+      windows: manifestWindows(bucket.windows, `manifest.buckets[${i}].windows`),
+    };
+  });
+
   return {
     ...(raw as unknown as Manifest),
     dataset,
     basemap: { key, source, attribution, sha256 },
+    buckets,
   };
 }
 

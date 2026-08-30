@@ -62,7 +62,8 @@ attribution travel with the descriptor so clients can verify and credit the exac
 
   tb        time bucket in view (T0..T13, ZOOM-3)
   window    time window index: floor(t / bucket_window_seconds), from the
-            manifest grid - the client snaps its continuous view to it
+            manifest grid - the client snaps its continuous view to it,
+            then resolves it to the first window of its run (see below)
   tile      map tile address z/x/y at the bucket's configured zoom,
             or "world" for global views
   category  ONE category, or "all" (top tier across categories)</pre>
@@ -89,9 +90,17 @@ engine". Chunk content (ranking baked per <a href="07-semantic-zoom.html">ZOOM-4
 <li><strong>Bounded by construction:</strong> each chunk holds at most N items (per-bucket cap from
 ZOOM-4, including the diversity guard); entities spanning windows are duplicated into every window
 they overlap (ARCH-4). A view unions a handful of chunks, never the dataset.</li>
-<li><strong>Empty is a file:</strong> windows/tiles with no qualifying entities bake as an empty
-<code>{"items":[]}</code> chunk. A 404 on a manifest-valid key is a bake bug, not a normal condition;
-the client reports it.</li>
+<li><strong>Window runs:</strong> a chunk's contents only change where an entity's span starts or
+ends, so consecutive windows overwhelmingly hold identical bodies. The manifest lists, per
+<code>(bucket, category)</code>, the runs of consecutive windows that share one body as
+<code>[start, end]</code> pairs, and that body is stored once at <code>start</code>. The client
+resolves a snapped window to the run containing it and fetches that key; every window inside a run
+yields exactly the chunk it would have held alone, so the collapse is invisible to the query engine
+and only ever reduces the fetch count. Without it the artifact count tracks the number of windows
+rather than the data: the 142-entity seed needed 8,173 chunk objects for 897 distinct bodies.</li>
+<li><strong>Empty is not a file:</strong> windows with no qualifying entities are covered by no run,
+bake no chunk, and render as empty locally. A 404 on a key the manifest's runs resolve to is a bake
+bug, not a normal condition; the client reports it.</li>
 <li>Size budget: p95 chunk ≤ 64 KB gzipped; fetch p95 &lt; 30 ms through the local gateway
 (<a href="11-local-dev.html">DEV-6 M2</a>).</li>
 </ul>

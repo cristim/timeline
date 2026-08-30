@@ -215,18 +215,58 @@ func TestWindowRunsServeEveryWindowUnchanged(t *testing.T) {
 		t.Errorf("runs cover %d windows, want exactly the %d populated ones", runWindows, len(want))
 	}
 
-	// And the collapse has to actually happen, or this test proves nothing:
-	// WWII spans 72 month-windows at T11 whose bodies never change.
+	// And the collapse has to actually happen, or the equivalence above is
+	// satisfied by writing every window as before. WWII runs from 1939.67 to
+	// 1945.67 and is the only war entity outside Stalingrad's months, so its
+	// T11 war windows must resolve to a handful of artifacts, not 72.
+	t11 := model.Buckets[11]
+	starts := map[int64]bool{}
+	windows := 0
+	for w := t11.WindowIndex(model.YearToSeconds(1939.67)); w <= t11.WindowIndex(model.YearToSeconds(1945.67)); w++ {
+		windows++
+		start, ok := runStart(m.Buckets[11].Windows["war"], w)
+		if !ok {
+			t.Fatalf("T11 war has no run for window %d", w)
+		}
+		starts[start] = true
+	}
+	if windows < 60 {
+		t.Fatalf("fixture only spans %d T11 windows; too few to prove a collapse", windows)
+	}
+	if len(starts) > 5 {
+		t.Errorf("WWII's %d T11 war windows resolve to %d artifacts, want them collapsed to a few",
+			windows, len(starts))
+	}
+
 	chunkObjects := 0
 	for key := range sink.objects {
 		if strings.Contains(key, "/chunks/") {
 			chunkObjects++
 		}
 	}
-	if chunkObjects >= len(want) {
-		t.Errorf("%d chunk objects for %d windows: nothing collapsed", chunkObjects, len(want))
+	if chunkObjects*4 > len(want) {
+		t.Errorf("%d chunk objects for %d windows: barely collapsed", chunkObjects, len(want))
 	}
-	t.Logf("%d windows served by %d artifacts", len(want), chunkObjects)
+	t.Logf("%d windows served by %d artifacts (%d T11 war windows -> %d)",
+		len(want), chunkObjects, windows, len(starts))
+}
+
+// TestWindowRunsSerializeAsPairs pins the wire shape the client destructures.
+// Go and TS unit tests would both stay green if WindowRun became a struct, and
+// only the browser suite would catch it (API-5: a drift between the two sides
+// is the failure mode of this architecture).
+func TestWindowRunsSerializeAsPairs(t *testing.T) {
+	body, err := json.Marshal(model.Bucket{
+		ID: "T10", WindowS: 1,
+		Windows: map[string][]model.WindowRun{"war": {{-31, -29}, {7, 7}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"id":"T10","window_s":1,"windows":{"war":[[-31,-29],[7,7]]}}`
+	if string(body) != want {
+		t.Errorf("bucket JSON =\n %s\nwant\n %s", body, want)
+	}
 }
 
 // TestWindowRunsStopAtEmptyWindows pins the range half of the collapse: a run

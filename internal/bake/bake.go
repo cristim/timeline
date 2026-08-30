@@ -244,7 +244,7 @@ func bakeChunks(w *writer, dataset string, entities []*model.Entity, childCount 
 		bucketID := model.Buckets[g.bucket].ID
 
 		// The open run: its first window, the body every window in it shares,
-		// and the last window admitted so far.
+		// and the last window admitted so far. A nil body means no run is open.
 		var anchorWindow, lastWindow int64
 		var anchorBody []byte
 
@@ -254,7 +254,7 @@ func bakeChunks(w *writer, dataset string, entities []*model.Entity, childCount 
 				anchorBody, "application/json")
 		}
 
-		for i, win := range ws {
+		for _, win := range ws {
 			items := rankCell(cells[cell{g.bucket, win, g.cat}], g.cat == "all", childCount)
 			file := chunkFile{Items: items}
 			body, err := json.Marshal(file)
@@ -266,26 +266,21 @@ func bakeChunks(w *writer, dataset string, entities []*model.Entity, childCount 
 			if goldenKeys[chunkRelKey(bucketID, win, g.cat)] {
 				captured[chunkRelKey(bucketID, win, g.cat)] = file
 			}
-			// A run means every window from Start to End, so it may only grow
-			// by a consecutive window. Today an empty window can never sit
-			// between two identical bodies (an entity covers a contiguous span,
-			// so it would cover the middle one too), but that is a property of
-			// how cells are filled, not of this loop; the ZOOM-4 overlap-factor
-			// work would end it by dropping entities from windows they barely
-			// overlap, and a run spanning a gap hands a viewport items from
-			// outside it.
-			if i > 0 && win == lastWindow+1 && bytes.Equal(body, anchorBody) {
+			// A run covers every window from Start to End, so only a
+			// consecutive window may join it: skipping one would serve its
+			// items to a viewport holding none of them.
+			if anchorBody != nil && win == lastWindow+1 && bytes.Equal(body, anchorBody) {
 				lastWindow = win
 				continue
 			}
-			if i > 0 {
+			if anchorBody != nil {
 				if err := emit(); err != nil {
 					return nil, nil, err
 				}
 			}
 			anchorWindow, lastWindow, anchorBody = win, win, body
 		}
-		if len(ws) > 0 {
+		if anchorBody != nil {
 			if err := emit(); err != nil {
 				return nil, nil, err
 			}

@@ -67,3 +67,50 @@ describe("manifest basemap descriptor", () => {
     await expect(loadManifest()).rejects.toThrow(field as string);
   });
 });
+
+describe("manifest window runs", () => {
+  const withBuckets = (windows: unknown) => ({
+    ...manifest,
+    buckets: [{ id: "T10", window_s: 31_556_952, windows }],
+  });
+
+  it("accepts runs and a bucket with no windows at all", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(withBuckets({ war: [[-31, -29]] })))),
+    );
+    await expect(loadManifest()).resolves.toMatchObject({
+      buckets: [{ id: "T10", windows: { war: [[-31, -29]] } }],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify(withBuckets(undefined)))),
+    );
+    await expect(loadManifest()).resolves.toMatchObject({ buckets: [{ id: "T10" }] });
+  });
+
+  it.each([
+    // A manifest baked before runs existed: the shape a rollback or a stale
+    // cached manifest hands a current bundle. It must fail the load, not throw
+    // mid-render.
+    ["bare window indexes", withBuckets({ war: [-31, -30, -29] })],
+    ["a one-element run", withBuckets({ war: [[-31]] })],
+    ["a three-element run", withBuckets({ war: [[-31, -29, 4]] })],
+    ["a non-numeric bound", withBuckets({ war: [["-31", -29]] })],
+    ["a run that ends before it starts", withBuckets({ war: [[-29, -31]] })],
+    ["a non-array category", withBuckets({ war: 3 })],
+    ["a non-object windows field", withBuckets([])],
+  ])("rejects %s", async (_name, body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body))));
+    await expect(loadManifest()).rejects.toThrow("manifest.buckets[0].windows");
+  });
+
+  it("rejects buckets that are not an array", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...manifest, buckets: {} }))),
+    );
+    await expect(loadManifest()).rejects.toThrow("manifest.buckets");
+  });
+});
