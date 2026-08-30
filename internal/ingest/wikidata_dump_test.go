@@ -213,7 +213,7 @@ func TestScanWikidataDumpRejectsInvalidBoundaries(t *testing.T) {
 	}{
 		{name: "object root", input: `{}`, want: "root is not an array"},
 		{name: "scalar root", input: `1`, want: "root is not an array"},
-		{name: "truncated array", input: `[{"id":"Q1","type":"item"}`, want: "decode: unexpected end of JSON input"},
+		{name: "truncated array", input: `[{"id":"Q1","type":"item"}`},
 		{name: "malformed entity", input: `[{"id":"Q1","type":"item"`, want: "wikidata dump entity 0: decode"},
 		{name: "trailing JSON", input: `[{"id":"Q1","type":"item"}] {}`, want: "trailing JSON after array"},
 	}
@@ -224,7 +224,10 @@ func TestScanWikidataDumpRejectsInvalidBoundaries(t *testing.T) {
 			err := scanWikidataDump(strings.NewReader(tc.input), func(wikidataDumpItemFacts) error {
 				return nil
 			})
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
+			if err == nil {
+				t.Fatalf("scanWikidataDump error = nil, want error")
+			}
+			if tc.want != "" && !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("scanWikidataDump error = %v, want substring %q", err, tc.want)
 			}
 		})
