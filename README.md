@@ -64,24 +64,27 @@ Wikidata (SPARQL)   ──┤   baker (Go)                          client (Reac
   the Big Bang and the Cretaceous extinction") are evaluated inside every bake
   and a failure blocks publishing.
 - **Warm import diagnostics**: object-store bakes write deterministic ingest
-  diagnostics under `imports/<dataset>/<id>/`, with immutable
+  diagnostics under `reports/imports/<dataset>/<id>/`, with immutable
   `report.json` and `reject.parquet` addressed by content. The report records
   seed and warm source digests, parsed/accepted/rejected counts, skipped warm
   duplicates, and reject reason groups. The mutable latest pointer
-  `imports/<dataset>/manifest.json` is written last and is the only import
-  diagnostics object that carries `generated_at`.
+  `reports/imports/<dataset>/manifest.json` is written last and is the only
+  import diagnostics object that carries `generated_at`. Every per-run report
+  lives under `wk-warm/reports/` (DEV-5).
 - **Accepted-entity census**: `baker census` groups the validated seed and
-  normalized warm entities into sparse century and type rows, including date,
+  normalized warm entities into sparse time-slice and type rows, including date,
   coordinate, English Wikipedia, combined-coverage, and precision counts. The
   immutable report is written to `reports/census/<sha256>/report.json`; the
   latest pointer at `reports/census/manifest.json` is written last and is the
   only census object containing `generated_at`. The report identity depends
   only on its exact deterministic JSON bytes.
-- **Raw Wikidata coverage**: `baker census --wikidata-dump <path|->` streams a
-  decoded Wikidata JSON array and writes one deterministic aggregate report to
-  stdout. It counts English labels, validated dates, Earth coordinates,
-  sitelinks, combined date/coordinate/English-Wikipedia coverage, and time
-  claims by property and numeric precision without using S3.
+- **Wikidata dump census (ROAD-2)**: `baker census --wikidata-dump <path|->`
+  streams a dump and writes the deterministic census to stdout, optionally
+  publishing it with `--publish`. See "Wikidata census and bulk ingest" below.
+- **Bulk ingest and bake (ROAD-3 step 2)**: `baker ingest-wikidata-dump` turns a
+  dump into the normalized Parquet model plus a reject table and import report;
+  `baker bake --model <dir>` then bakes the HOT tier from that model instead of
+  the seed.
 - Deploying is `bake --out` plus a static web build - GitHub Pages runs the
   whole product through the pinned baker image (see
   `.github/workflows/pages.yml`). Static `bake --out` exercises the same
@@ -103,26 +106,96 @@ By default, `make census` requires the normalized
 `go run ./cmd/baker census --seed-only` for an explicit seed-only report, or
 `go run ./cmd/baker census --warm-file <path>` to use a local normalized warm
 artifact. The report describes accepted normalized entities after source
-filters. The current bulk feed contains only battles, wars, and sieges, so it
-is a deterministic precursor to ROAD-2 rather than the complete dump-scale
-census.
+filters.
 
-For raw dump coverage, pass decoded JSON from a file or pipe external
-decompression to stdin:
+## Wikidata census and bulk ingest
+
+The dump is read natively: `.json`, `.json.gz` and `.json.bz2` are detected by
+magic bytes, decompressed with the standard library, and streamed, so neither
+command needs an external tool and neither holds the dump in memory.
 
 ```sh
-go run ./cmd/baker census --wikidata-dump /path/to/latest-all.json
-bunzip2 -c /path/to/latest-all.json.bz2 | go run ./cmd/baker census --wikidata-dump -
+# ROAD-2 census: what is actually in the dump.
+go run ./cmd/baker census --wikidata-dump /path/to/latest-all.json.bz2
+go run ./cmd/baker census --wikidata-dump - --publish < latest-all.json.bz2
+
+# ROAD-3 step 2: the same dump as the normalized Parquet model.
+go run ./cmd/baker ingest-wikidata-dump \
+  --dump /path/to/latest-all.json.bz2 --out ./model --publish
+
+# Bake the HOT tier from that model (SRC-5).
+go run ./cmd/baker bake --model ./model --importance-floor 0.38 --out ./site
 ```
 
-This local mode emits `schema_version`, `coverage_basis`, `input_sha256`,
-`items`, and deterministically sorted `time_claims`. The digest covers the
-exact uncompressed JSON bytes consumed, including trailing whitespace, not the
-compressed dump artifact. Coverage is measured after statement validation and
-before taxonomy/type classification, recorded as
-`wikidata-item-facts-after-statement-validation-before-type-classification`.
-The command neither initializes S3 nor loads, normalizes, publishes, or retains
-all dump items.
+### What the census reports
+
+Per time slice (a century through recorded history, then ten-thousand-,
+million- and billion-year slices in deep time) and in total:
+
+- **per class and per type.** ROAD-2 asks how many battles, wars, political
+  events, disasters, scientific events, people, species and products exist,
+  which is a question in Wikidata's vocabulary; a battle and a war are both
+  `event` in ours. Class rows answer the question as asked, type rows answer it
+  in the model's terms.
+- **coverage** of dates, coordinates, English Wikipedia and any sitelink, as
+  counts and as ratios.
+- **time precision** in the model vocabulary, and a split by **calendar model
+  and era**, because Julian and Gregorian values are not interchangeable.
+- **excluded** items (Wikimedia housekeeping classes) and **unclassified** ones,
+  the latter ranked by class so the curated table grows from evidence rather
+  than guesswork. Nothing is dropped silently.
+- **skipped claims per reason**, so a dump-format change that starts discarding
+  claims shows up as a number instead of as a suspiciously small dataset.
+
+The report is deterministic: the same dump and the same code produce
+byte-identical JSON. `input_sha256` covers the input artifact exactly as
+supplied, compressed or not, so a report names the dump file it read.
+
+### Provisional HOT-tier targets
+
+SRC-5 budgets the HOT tier at 1-5M entities. The promotion knob is
+`--importance-floor`: the model in `wk-warm` holds every normalized entity, and
+only those at or above the floor become baked artifacts. Importance for bulk
+imports is derived from sitelink count, so the floor is a sitelink threshold:
+
+| sitelinks | 0 | 1 | 2 | 5 | 10 | 20 | 50 | 100 |
+|---|---|---|---|---|---|---|---|---|
+| importance | 0.22 | 0.28 | 0.32 | 0.38 | 0.44 | 0.49 | 0.57 | 0.64 |
+
+Provisional starting points, to be replaced by measured numbers once a full
+dump has been censused (these are SRC-5's budget, not yet an observation):
+events 500k-1M, people 500k, places/states/cities 200k, species 300k,
+inventions/technologies 50k, books/media/games 500k, vehicles/products 100k,
+papers 100k, patents 100k, other 500k. Start at a floor of **0.38** (five or
+more sitelinks) and read `accepted_by_type` in the import report against the
+budget above; the census's per-class counts and coverage ratios say how much
+headroom each type has before the floor has to move.
+
+### Bulk ingest gates
+
+The importer separates two things that are usually conflated:
+
+- **filtered** items are ones we deliberately do not want (a Wikimedia
+  housekeeping class, an unlabelled item, a class the curated table does not
+  cover, an item with no usable date). Each is counted by reason.
+- **rejected** items are ones we wanted but could not normalize. The reject
+  rate gates the run and a breach fails it, rather than shipping a quietly
+  smaller dataset (ROAD-3 step 2: "reject rates within gates"). Override with
+  `--max-reject-rate`.
+
+Rejects are data: they land in `reject.parquet` beside the model with source,
+line and reason. A repeated `wikidata_id` is fatal, because SRC-3 joins on it.
+The import report records provenance for the run (source, URL, CC0 licence,
+dump digest and container) and is content-addressed like the census.
+
+The model directory is self-describing: `import.json` is the content address
+the dataset version derives from, so the same dump and the same code always
+name the same version and a different dump never reuses one. `bake --model`
+reads it, so a bulk bake can always name the dump it came from.
+
+Golden views still gate a model bake, checked against the model's own version.
+A dump-derived dataset has no pinned expectations until someone writes them, so
+`--goldens ""` turns the gate off explicitly rather than by accident.
 
 Map geometry comes from four pinned upstreams. Borders, paleo coastlines, and
 the Protomaps extract are fetched by `make fetch-geo` and cached in CI; the

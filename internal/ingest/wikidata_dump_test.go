@@ -29,10 +29,10 @@ func TestScanWikidataDumpExtractsFacts(t *testing.T) {
 
 	want := []wikidataDumpItemFacts{
 		{
-			QID:             "Q1001",
-			EnglishLabel:    "Full item",
-			InstanceOfQIDs:  []string{"Q5"},
-			SubclassOfQIDs:  []string{"Q215627", "Q35120"},
+			QID:            "Q1001",
+			EnglishLabel:   "Full item",
+			InstanceOfQIDs: []string{"Q5"},
+			SubclassOfQIDs: []string{"Q215627", "Q35120"},
 			TimeClaims: []wikidataDumpTimeFact{
 				{
 					Property:      "P569",
