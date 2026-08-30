@@ -30,7 +30,7 @@ func TestScanWikidataDumpExtractsFacts(t *testing.T) {
 	want := []wikidataDumpItemFacts{
 		{
 			QID:             "Q1001",
-			HasEnglishLabel: true,
+			EnglishLabel:    "Full item",
 			InstanceOfQIDs:  []string{"Q5"},
 			SubclassOfQIDs:  []string{"Q215627", "Q35120"},
 			TimeClaims: []wikidataDumpTimeFact{
@@ -65,9 +65,12 @@ func TestScanWikidataDumpExtractsFacts(t *testing.T) {
 					CalendarModel: "http://www.wikidata.org/entity/Q1985727",
 				},
 			},
+			Point:               []float64{13.383333333333, 52.516666666667},
+			EnglishWikipedia:    "Full item",
+			SitelinkCount:       3,
+			HasEnglishLabel:     true,
 			HasCoordinates:      true,
 			HasEnglishWikipedia: true,
-			SitelinkCount:       3,
 		},
 		{
 			QID:                 "Q1002",

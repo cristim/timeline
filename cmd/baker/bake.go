@@ -14,6 +14,7 @@ import (
 	"wk/internal/blob"
 	"wk/internal/duck"
 	"wk/internal/ingest"
+	"wk/internal/model"
 	"wk/internal/rankzoom"
 )
 
@@ -43,17 +44,25 @@ func runBake(ctx context.Context, args []string) error {
 func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, basemapSpec ingest.BasemapSpec, args []string) error {
 	fs := flag.NewFlagSet("bake", flag.ContinueOnError)
 	seedDir := fs.String("seed", "", "path to the NDJSON seed directory")
+	modelDirFlag := fs.String("model", "", "bake from a normalized Parquet model directory (baker ingest-wikidata-dump --out) instead of the seed")
 	geoDir := fs.String("geo", "data/geo", "curated geometry directory (border time-steps, front lines)")
 	outDir := fs.String("out", "", "write artifacts to this directory instead of S3 (GitHub Pages / static hosting)")
 	withWarm := fs.Bool("warm", false, "merge the wk-warm Wikidata event set from S3 (M5)")
 	warmFile := fs.String("warm-file", "", "merge a local warm-events NDJSON file (CI path, no S3 needed)")
 	goldensPath := fs.String("goldens", "data/goldens.json", "golden-view expectations (ZOOM-5); failing views block publish")
 	allowRejects := fs.Bool("allow-rejects", false, "bake even if seed lines were rejected (report still written)")
+	importanceFloor := fs.Float64("importance-floor", 0, "bake only entities at or above this importance; the rest stay WARM (SRC-5)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *seedDir == "" {
-		return fmt.Errorf("--seed <dir> is required")
+	if (*seedDir == "") == (*modelDirFlag == "") {
+		return fmt.Errorf("exactly one of --seed <dir> and --model <dir> is required")
+	}
+	if *modelDirFlag != "" && (*withWarm || *warmFile != "") {
+		return fmt.Errorf("--model is mutually exclusive with --warm and --warm-file")
+	}
+	if *importanceFloor < 0 || *importanceFloor > 1 {
+		return fmt.Errorf("--importance-floor %v is outside [0,1]", *importanceFloor)
 	}
 	if *withWarm && *warmFile != "" {
 		return fmt.Errorf("--warm and --warm-file are mutually exclusive")
@@ -67,9 +76,26 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, basem
 		Attribution: basemapSpec.Attribution, SHA256: basemapSpec.SHA256,
 		Body: basemapBody,
 	}
-	goldens, err := bake.LoadGoldens(*goldensPath)
-	if err != nil {
-		return err
+	// A bulk bake has no pinned expectations until someone writes them against
+	// its dataset, so --goldens "" turns the gate off explicitly. The seed bake
+	// keeps it on by default.
+	var goldens *bake.GoldenFile
+	if *goldensPath != "" {
+		goldens, err = bake.LoadGoldens(*goldensPath)
+		if err != nil {
+			return err
+		}
+	}
+
+	if *modelDirFlag != "" {
+		return bakeFromModel(ctx, compiler, bakeModelRequest{
+			modelDir:        *modelDirFlag,
+			geoDir:          *geoDir,
+			outDir:          *outDir,
+			importanceFloor: *importanceFloor,
+			basemap:         basemap,
+			goldens:         goldens,
+		})
 	}
 
 	res, err := ingest.LoadSeed(*seedDir)
@@ -198,6 +224,101 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, basem
 	fmt.Printf("bake: %d artifacts written, %d unchanged in %s\n", stats.Written, stats.Unchanged, time.Since(start).Round(time.Millisecond))
 
 	return publishManifest(ctx, sink, *manifest)
+}
+
+type bakeModelRequest struct {
+	modelDir        string
+	geoDir          string
+	outDir          string
+	importanceFloor float64
+	basemap         bake.BasemapArtifact
+	goldens         *bake.GoldenFile
+}
+
+// bakeFromModel is the SRC-5 promotion step: the WARM Parquet model holds every
+// normalized entity, and the entities at or above the importance floor become
+// HOT serving artifacts. It is the same bake the seed takes, reading its
+// entities from Parquet rather than NDJSON.
+func bakeFromModel(ctx context.Context, compiler bake.LayerCompiler, req bakeModelRequest) error {
+	version, err := loadDumpModelVersion(req.modelDir)
+	if err != nil {
+		return err
+	}
+	entities, err := duck.ReadModel(ctx, req.modelDir)
+	if err != nil {
+		return fmt.Errorf("read model: %w", err)
+	}
+	promoted, held, droppedRels := applyImportanceFloor(entities, req.importanceFloor)
+	fmt.Printf("model %s: %d entities, %d promoted above importance %.2f, %d held WARM\n",
+		version, len(entities), len(promoted), req.importanceFloor, held)
+	if droppedRels > 0 {
+		fmt.Printf("model %s: %d relationships dropped with their held targets\n", version, droppedRels)
+	}
+	if len(promoted) == 0 {
+		return fmt.Errorf("model %s: the importance floor %.2f promoted no entities", version, req.importanceFloor)
+	}
+
+	var sink bake.Sink
+	if req.outDir != "" {
+		sink = &bake.FSSink{Root: req.outDir}
+	} else {
+		cli, err := blob.New(ctx)
+		if err != nil {
+			return err
+		}
+		sink = blob.BucketSink{Client: cli, Bucket: artifactsBucket()}
+	}
+
+	geo, err := ingest.LoadGeo(req.geoDir, promoted)
+	if err != nil {
+		return err
+	}
+	if err := rankzoom.Bucketize(promoted); err != nil {
+		return err
+	}
+
+	start := time.Now()
+	manifest, stats, err := bake.Run(ctx, sink, compiler, datasetVersion(), version, promoted, req.basemap, geo, req.goldens)
+	if err != nil {
+		return err
+	}
+	manifest.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	if req.goldens != nil {
+		fmt.Printf("golden views: %d passed\n", len(req.goldens.Views))
+	}
+	fmt.Printf("bake: %d artifacts written, %d unchanged in %s\n",
+		stats.Written, stats.Unchanged, time.Since(start).Round(time.Millisecond))
+	return publishManifest(ctx, sink, *manifest)
+}
+
+// applyImportanceFloor splits the model into the promoted set and the rest.
+// Relationships whose target stayed behind are dropped and counted: an entity
+// document must not point at something the bake never wrote.
+func applyImportanceFloor(entities []*model.Entity, floor float64) ([]*model.Entity, int, int) {
+	promoted := make([]*model.Entity, 0, len(entities))
+	kept := make(map[string]bool, len(entities))
+	for _, entity := range entities {
+		if entity.Importance >= floor {
+			promoted = append(promoted, entity)
+			kept[entity.SeedID] = true
+		}
+	}
+	droppedRels := 0
+	for _, entity := range promoted {
+		if len(entity.Rel) == 0 {
+			continue
+		}
+		surviving := entity.Rel[:0]
+		for _, rel := range entity.Rel {
+			if kept[rel.Target] {
+				surviving = append(surviving, rel)
+				continue
+			}
+			droppedRels++
+		}
+		entity.Rel = surviving
+	}
+	return promoted, len(entities) - len(promoted), droppedRels
 }
 
 func publishWarmModel(ctx context.Context, sink bake.Sink, dataset string, files []duck.ModelFile) error {

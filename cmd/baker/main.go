@@ -39,7 +39,13 @@ const usageText = `usage: baker <command>
   census [--seed <dir>] [--seed-only | --warm-file <path>]
                                deterministic census from seed plus default
                                BUCKET_WARM/` + warmEventsKey + `, or explicit
-                               --seed-only / --warm-file input`
+                               --seed-only / --warm-file input
+  ingest-wikidata-dump --dump <path|-> --out <dir>
+                               normalize a Wikidata dump (.json, .json.gz,
+                               .json.bz2 or stdin) into the Parquet model plus
+                               reject table and import report;
+                               --importance-floor promotes only entities at or
+                               above it, --publish writes to BUCKET_WARM`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -65,6 +71,8 @@ func main() {
 		err = runGeoVerify(os.Args[2:])
 	case "census":
 		err = runCensus(ctx, os.Args[2:])
+	case "ingest-wikidata-dump":
+		err = runIngestWikidataDump(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)

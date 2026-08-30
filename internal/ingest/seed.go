@@ -146,54 +146,15 @@ func (r *Result) loadFile(name string, body []byte) (int, int, error) {
 
 // Validate normalizes one seed record or returns a reject reason.
 func Validate(se *model.SeedEntity) (*model.Entity, string) {
-	switch {
-	case se.ID == "":
-		return nil, "missing id"
-	case se.Name == "":
-		return nil, "missing name"
-	case !model.EntityTypes[se.Type]:
-		return nil, fmt.Sprintf("unknown entity type %q", se.Type)
-	case !model.TemporalStatuses[se.Status]:
-		return nil, fmt.Sprintf("unknown temporal status %q", se.Status)
-	case se.Importance <= 0 || se.Importance > 1:
-		return nil, fmt.Sprintf("importance %v outside (0,1]", se.Importance)
-	case len(se.Categories) == 0:
-		return nil, "no categories"
+	entity := &model.Entity{
+		SeedID: se.ID, Type: se.Type, Name: se.Name, Description: se.Description,
+		Precision: se.Precision, Status: se.Status,
+		Categories: se.Categories, Importance: se.Importance, Point: se.Point,
+		Wikidata: se.Wikidata, Wikipedia: se.Wikipedia, MediaThumb: se.MediaThumb,
+		Rel: se.Rel, Props: se.Props,
 	}
-	if _, ok := model.FinestBucketFor(se.Precision); !ok {
-		return nil, fmt.Sprintf("unknown time precision %q", se.Precision)
-	}
-	for _, c := range se.Categories {
-		if !model.Categories[c] {
-			return nil, fmt.Sprintf("unknown category %q", c)
-		}
-	}
-	for _, rel := range se.Rel {
-		if !model.RelationshipTypes[rel.Type] {
-			return nil, fmt.Sprintf("unknown relationship type %q", rel.Type)
-		}
-		if rel.Target == "" {
-			return nil, fmt.Sprintf("relationship %q with empty target", rel.Type)
-		}
-	}
-	for _, p := range se.Props {
-		switch {
-		case p.Property == "":
-			return nil, "property claim with empty property name"
-		case p.Source == "":
-			return nil, fmt.Sprintf("property %q missing source (DM-5)", p.Property)
-		case p.PublishedAt == "":
-			return nil, fmt.Sprintf("property %q missing published_at (DM-5)", p.Property)
-		case !model.ValueTypes[p.ValueType]:
-			return nil, fmt.Sprintf("property %q unknown value_type %q", p.Property, p.ValueType)
-		case p.Value == nil && (p.Min == nil || p.Max == nil):
-			return nil, fmt.Sprintf("property %q needs value or min+max", p.Property)
-		}
-	}
-	if se.Point != nil {
-		if len(se.Point) != 2 || !model.ValidLonLat(se.Point[0], se.Point[1]) {
-			return nil, fmt.Sprintf("point %v not a valid [lon,lat]", se.Point)
-		}
+	if reason := validateEntityFields(entity); reason != "" {
+		return nil, reason
 	}
 
 	t0, err := model.ParseSeedTime(se.T0)
@@ -207,23 +168,87 @@ func Validate(se *model.SeedEntity) (*model.Entity, string) {
 			return nil, "t1: " + err.Error()
 		}
 	}
-	if math.IsNaN(t0) || math.IsNaN(t1) || t1 < t0 {
-		return nil, fmt.Sprintf("invalid time range t0=%v t1=%v", t0, t1)
+	entity.T0, entity.T1 = t0, t1
+	if reason := validateEntityTimes(entity); reason != "" {
+		return nil, reason
+	}
+	return entity, ""
+}
+
+// ValidateEntity applies the same gate to an entity normalized outside the
+// seed path (the Wikidata dump importer), so bulk rows meet exactly the
+// vocabulary and range rules curated rows do.
+func ValidateEntity(entity *model.Entity) string {
+	if reason := validateEntityFields(entity); reason != "" {
+		return reason
+	}
+	return validateEntityTimes(entity)
+}
+
+func validateEntityFields(entity *model.Entity) string {
+	switch {
+	case entity.SeedID == "":
+		return "missing id"
+	case entity.Name == "":
+		return "missing name"
+	case !model.EntityTypes[entity.Type]:
+		return fmt.Sprintf("unknown entity type %q", entity.Type)
+	case !model.TemporalStatuses[entity.Status]:
+		return fmt.Sprintf("unknown temporal status %q", entity.Status)
+	case entity.Importance <= 0 || entity.Importance > 1:
+		return fmt.Sprintf("importance %v outside (0,1]", entity.Importance)
+	case len(entity.Categories) == 0:
+		return "no categories"
+	}
+	if _, ok := model.FinestBucketFor(entity.Precision); !ok {
+		return fmt.Sprintf("unknown time precision %q", entity.Precision)
+	}
+	for _, c := range entity.Categories {
+		if !model.Categories[c] {
+			return fmt.Sprintf("unknown category %q", c)
+		}
+	}
+	for _, rel := range entity.Rel {
+		if !model.RelationshipTypes[rel.Type] {
+			return fmt.Sprintf("unknown relationship type %q", rel.Type)
+		}
+		if rel.Target == "" {
+			return fmt.Sprintf("relationship %q with empty target", rel.Type)
+		}
+	}
+	for _, p := range entity.Props {
+		switch {
+		case p.Property == "":
+			return "property claim with empty property name"
+		case p.Source == "":
+			return fmt.Sprintf("property %q missing source (DM-5)", p.Property)
+		case p.PublishedAt == "":
+			return fmt.Sprintf("property %q missing published_at (DM-5)", p.Property)
+		case !model.ValueTypes[p.ValueType]:
+			return fmt.Sprintf("property %q unknown value_type %q", p.Property, p.ValueType)
+		case p.Value == nil && (p.Min == nil || p.Max == nil):
+			return fmt.Sprintf("property %q needs value or min+max", p.Property)
+		}
+	}
+	if entity.Point != nil {
+		if len(entity.Point) != 2 || !model.ValidLonLat(entity.Point[0], entity.Point[1]) {
+			return fmt.Sprintf("point %v not a valid [lon,lat]", entity.Point)
+		}
+	}
+	return ""
+}
+
+func validateEntityTimes(entity *model.Entity) string {
+	if math.IsNaN(entity.T0) || math.IsNaN(entity.T1) || entity.T1 < entity.T0 {
+		return fmt.Sprintf("invalid time range t0=%v t1=%v", entity.T0, entity.T1)
 	}
 	// Far past/future must carry correspondingly coarse precision, or the
 	// windowed-bucket int64 guard (model.MaxWindowedTime) breaks.
-	if fb, _ := model.FinestBucketFor(se.Precision); fb > 2 &&
-		(math.Abs(t0) > model.MaxWindowedTime || math.Abs(t1) > model.MaxWindowedTime) {
-		return nil, fmt.Sprintf("time beyond +/-1e18s requires billion_year precision, got %q", se.Precision)
+	if fb, _ := model.FinestBucketFor(entity.Precision); fb > 2 &&
+		(math.Abs(entity.T0) > model.MaxWindowedTime || math.Abs(entity.T1) > model.MaxWindowedTime) {
+		return fmt.Sprintf("time beyond +/-1e18s requires billion_year precision, got %q", entity.Precision)
 	}
-
-	return &model.Entity{
-		SeedID: se.ID, Type: se.Type, Name: se.Name, Description: se.Description,
-		T0: t0, T1: t1, Precision: se.Precision, Status: se.Status,
-		Categories: se.Categories, Importance: se.Importance, Point: se.Point,
-		Wikidata: se.Wikidata, Wikipedia: se.Wikipedia, MediaThumb: se.MediaThumb,
-		Rel: se.Rel, Props: se.Props,
-	}, ""
+	return ""
 }
 
 func (r *Result) checkRelTargets() error {

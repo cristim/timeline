@@ -215,8 +215,8 @@ func TestPublishImportArtifactsUsesContentAddressedKeysAndWritesManifestLast(t *
 	if first.puts[0].contentType != parquetContentType || first.puts[1].contentType != "application/json" || first.puts[2].contentType != "application/json" {
 		t.Fatalf("content types = %#v", first.puts)
 	}
-	if first.puts[2].key != "imports/dataset-1/manifest.json" {
-		t.Fatalf("last key = %q, want imports/dataset-1/manifest.json", first.puts[2].key)
+	if first.puts[2].key != "reports/imports/dataset-1/manifest.json" {
+		t.Fatalf("last key = %q, want reports/imports/dataset-1/manifest.json", first.puts[2].key)
 	}
 
 	var firstManifest importManifest
@@ -229,10 +229,10 @@ func TestPublishImportArtifactsUsesContentAddressedKeysAndWritesManifestLast(t *
 	if firstManifest.GeneratedAt != firstTime.Format(time.RFC3339) {
 		t.Fatalf("GeneratedAt = %q, want %q", firstManifest.GeneratedAt, firstTime.Format(time.RFC3339))
 	}
-	if firstManifest.Report.Key != "imports/dataset-1/"+firstManifest.ImportID+"/report.json" {
+	if firstManifest.Report.Key != "reports/imports/dataset-1/"+firstManifest.ImportID+"/report.json" {
 		t.Fatalf("report key = %q", firstManifest.Report.Key)
 	}
-	if firstManifest.Rejects.Key != "imports/dataset-1/"+firstManifest.ImportID+"/reject.parquet" {
+	if firstManifest.Rejects.Key != "reports/imports/dataset-1/"+firstManifest.ImportID+"/reject.parquet" {
 		t.Fatalf("reject key = %q", firstManifest.Rejects.Key)
 	}
 	if firstManifest.Rejects.Rows != rejectFile.Rows {
@@ -313,7 +313,7 @@ func TestPublishImportArtifactsDoesNotWriteManifestAfterImmutableFailures(t *tes
 			t.Fatalf("failAt=%d error = %v", failAt, err)
 		}
 		for _, put := range sink.puts {
-			if put.key == "imports/dataset-1/manifest.json" {
+			if put.key == "reports/imports/dataset-1/manifest.json" {
 				t.Fatalf("failAt=%d wrote manifest after immutable failure", failAt)
 			}
 		}
@@ -552,7 +552,7 @@ func TestRunBakeSeedRejectPublishesImportDiagnosticsButNoModelOrHot(t *testing.T
 	}
 
 	requests := server.requests()
-	if !containsRequest(requests, "/wk-warm-test/imports/dev/") {
+	if !containsRequest(requests, "/wk-warm-test/reports/imports/dev/") {
 		t.Fatalf("import diagnostics were not published: %v", requests)
 	}
 	if containsRequest(requests, "/wk-warm-test/model/") {
@@ -596,7 +596,7 @@ func TestRunBakeAllowRejectsContinuesWithStaticOutput(t *testing.T) {
 
 func TestRunBakeImportImmutableFailureStopsBeforeModelOrHot(t *testing.T) {
 	server := newBakeS3Server(nil)
-	server.failPutSubstring = "/wk-warm-test/imports/dev/"
+	server.failPutSubstring = "/wk-warm-test/reports/imports/dev/"
 	defer server.Close()
 	server.installEnv(t)
 
@@ -620,7 +620,7 @@ func TestRunBakeImportImmutableFailureStopsBeforeModelOrHot(t *testing.T) {
 
 func TestRunBakeImportPointerFailureStopsBeforeModelOrHot(t *testing.T) {
 	server := newBakeS3Server(nil)
-	server.failPutSubstring = "/wk-warm-test/imports/dev/manifest.json"
+	server.failPutSubstring = "/wk-warm-test/reports/imports/dev/manifest.json"
 	defer server.Close()
 	server.installEnv(t)
 
@@ -836,8 +836,15 @@ func writeTestBasemap(t *testing.T, geoDir string) {
 
 func geoDirForEntity(t *testing.T, entityID string) string {
 	t.Helper()
+	return geoDirForEntityBetween(t, entityID, "1900-01-01", "1901-01-01")
+}
+
+// geoDirForEntityBetween writes a front sequence inside the entity's own time
+// range, which the geo loader insists on.
+func geoDirForEntityBetween(t *testing.T, entityID, from, to string) string {
+	t.Helper()
 	dir := emptyGeoDir(t)
-	front := fmt.Sprintf(`{"type":"FeatureCollection","properties":{"entity":%q,"source":"test"},"features":[{"type":"Feature","properties":{"valid_from":"1900-01-01","label":"A","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[20,50],[21,51]]}},{"type":"Feature","properties":{"valid_from":"1901-01-01","label":"B","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[22,50],[23,51]]}}]}`, entityID)
+	front := fmt.Sprintf(`{"type":"FeatureCollection","properties":{"entity":%q,"source":"test"},"features":[{"type":"Feature","properties":{"valid_from":%q,"label":"A","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[20,50],[21,51]]}},{"type":"Feature","properties":{"valid_from":%q,"label":"B","representation":"estimated"},"geometry":{"type":"LineString","coordinates":[[22,50],[23,51]]}}]}`, entityID, from, to)
 	if err := os.WriteFile(filepath.Join(dir, "fronts", "test.geojson"), []byte(front), 0o644); err != nil {
 		t.Fatal(err)
 	}
