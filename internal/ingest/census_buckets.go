@@ -8,17 +8,22 @@ import (
 
 // Time attribution for both censuses.
 //
-// A census row has to say which century (or, in deep time, which coarser slice)
+// A census row has to say which century, or in deep time which coarser slice,
 // an entity falls in. Two things make that less obvious than flooring a number:
 //
-//   - The model stores seconds, and an entity's seconds come from one of two
-//     encodings: an exact calendar date, or the average-year approximation the
-//     {"y": n} authoring form and every coarse Wikidata precision use. The two
-//     differ by up to a day, which is nothing next to a century except exactly
-//     at a century boundary, where it silently moves the row. 1900-01-01 at
-//     century precision used to land in the 1800s for precisely this reason.
-//   - A single century-sized bucket is meaningless at 4.5 billion years. Deep
-//     time needs coarser slices or the report is one row per entity.
+//   - A single century-sized slice is meaningless at 4.5 billion years, so the
+//     span widens with distance from the present or the report degenerates into
+//     one row per entity.
+//   - The model stores seconds, and they come from one of two encodings: an
+//     exact calendar date, or the average-year approximation the {"y": n}
+//     authoring form and every coarse Wikidata precision use. Reading one with
+//     the other's arithmetic moves a row by a fraction of a day, which is
+//     nothing anywhere except exactly at a slice boundary, where it moves the
+//     row a whole century. See censusYearAt.
+//
+// The dump census does not use censusYearAt: an imported item still knows the
+// year its source stated, in the calendar it stated it in, which is better than
+// anything recoverable from the seconds afterwards.
 
 // censusBucketTiers are ordered from the finest span to the coarsest; the first
 // tier whose limit covers |year| wins.
