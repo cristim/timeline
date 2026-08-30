@@ -111,8 +111,17 @@ func LoadGeo(dir string, entities []*model.Entity) (*model.GeoSet, error) {
 				last.TTo, set.Borders[0].TFrom)
 		}
 	}
-	if err := loadFronts(filepath.Join(dir, "fronts"), bySeedID, set); err != nil {
-		return nil, err
+	// Front lines are curated against specific entities, so a dataset that does
+	// not contain those entities (a bulk Wikidata bake) legitimately has no
+	// fronts directory. Same rule as paleo above: absent is a configuration,
+	// present but broken is still fatal.
+	frontsDir := filepath.Join(dir, "fronts")
+	if _, statErr := os.Stat(frontsDir); statErr == nil {
+		if err := loadFronts(frontsDir, bySeedID, set); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(statErr) {
+		return nil, statErr
 	}
 	return set, nil
 }

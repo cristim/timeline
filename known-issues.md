@@ -1,12 +1,44 @@
 # Known issues
 
-- **The deterministic census is not the full ROAD-2 census.** It measures
-  accepted normalized seed entities plus the current bounded Wikidata feed,
-  and its local dump mode now streams decoded Wikidata JSON into aggregate raw
-  fact and time-precision coverage. It still lacks taxonomy/type
-  classification, calendar conversion, per-century attribution, native dump
-  decompression, S3 publication, normalized bulk ingest and bulk bake, and
-  final dump-scale HOT-tier targets.
+- **ROAD-2 and ROAD-3 step 2 are built but have never been run on a real
+  dump.** Classification, calendar conversion, time-slice attribution, native
+  bz2/gz decompression, S3 publication, the normalized bulk ingest and the
+  `bake --model` path are all in and proven end to end on the truncated
+  fixture. Nothing has been measured at 115M items, so: the HOT-tier targets
+  in the README are SRC-5's budget rather than an observation, the importance
+  floor that hits 1-5M entities is a guess, and the bake time and artifact
+  count at dump scale are unknown (see the artifact-count issue below, which
+  bites first). Run the census on a full dump before trusting any of them.
+
+- **The curated Wikidata class table maps directly and does not walk the
+  subclass tree.** An item whose only `P31` is an unlisted descendant of a
+  listed class (a "naval battle" that is not `Q178561`) lands in the
+  unclassified bucket instead of folding into its ancestor, so real recall is
+  below what the table's size suggests. The census reports unmatched classes
+  ranked by count precisely so the table can be grown from evidence; the
+  alternative, a two-pass P279 closure over the whole class graph, is worth
+  building only once those counts show it is needed.
+
+- **The Parquet model has no per-row provenance columns.** SRC-2/DM-9 want
+  `source, source_id, license, attribution, source_url, retrieved_at` on every
+  record. Today provenance is recorded per import run (the report carries the
+  source, URL, CC0 licence, dump digest and container) because both current
+  sources are uniformly licensed. The columns become necessary as soon as a
+  third source with per-record licensing lands, and OHM already has per-feature
+  `license=*` tags.
+
+- **Several SRC-3 validation gates do not exist.** The reject-rate gate and the
+  duplicate-`wikidata_id` check are enforced; cross-entity date sanity,
+  coordinate-versus-country checks, >5σ outlier detection and a
+  reject-rate-jump comparison against the previous run are not.
+
+- **Curated geometry is pinned to seed entities, so a bulk bake gets no front
+  lines.** `data/geo/fronts/` resolves each file against a seed id, which a
+  dump-derived dataset does not have, so `bake --model` has to point at a geo
+  directory without them (an absent `fronts/` is now a legitimate
+  configuration, matching the paleo layer). Reconciling upstream and curated
+  geometry against bulk entities is the same unsolved problem as the
+  unclickable fetched border shapes below.
 
 - **Artifact count grows ~27x entity count at fine buckets.** The 10.5k-entity
   warm bake produces ~280k chunk objects (window duplication x categories,
