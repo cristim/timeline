@@ -1,7 +1,10 @@
 package ingest
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -17,7 +20,7 @@ func TestScanWikidataDumpExtractsFacts(t *testing.T) {
 	}
 
 	var got []wikidataDumpItemFacts
-	if err := scanWikidataDump(strings.NewReader(string(body)), func(facts wikidataDumpItemFacts) error {
+	if _, err := scanWikidataDump(strings.NewReader(string(body)), func(facts wikidataDumpItemFacts) error {
 		got = append(got, facts)
 		return nil
 	}); err != nil {
@@ -90,7 +93,7 @@ func TestScanWikidataDumpVisitorErrorsIncludeIndexAndWrap(t *testing.T) {
 {"id":"P31","type":"property","claims":{}},
 {"id":"Q1001","type":"item","labels":{"en":{"value":"Item"}},"claims":{}}
 ]`
-	err := scanWikidataDump(strings.NewReader(input), func(wikidataDumpItemFacts) error {
+	_, err := scanWikidataDump(strings.NewReader(input), func(wikidataDumpItemFacts) error {
 		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
@@ -112,7 +115,7 @@ func TestScanWikidataDumpSkipsMalformedStatementElementAndKeepsValidSiblings(t *
 ]}}
 ]`
 	var got []wikidataDumpItemFacts
-	if err := scanWikidataDump(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
+	if _, err := scanWikidataDump(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
 		got = append(got, facts)
 		return nil
 	}); err != nil {
@@ -150,7 +153,7 @@ func TestScanWikidataDumpCoordinateCoverageBranches(t *testing.T) {
 ]}}
 ]`
 	got := map[string]bool{}
-	if err := scanWikidataDump(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
+	if _, err := scanWikidataDump(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
 		got[facts.QID] = facts.HasCoordinates
 		return nil
 	}); err != nil {
@@ -178,7 +181,7 @@ func TestScanWikidataDumpIgnoresFractionalAndOutOfRangeTimePrecision(t *testing.
 ]}}
 ]`
 	var got []wikidataDumpItemFacts
-	if err := scanWikidataDump(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
+	if _, err := scanWikidataDump(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
 		got = append(got, facts)
 		return nil
 	}); err != nil {
@@ -207,21 +210,29 @@ func TestScanWikidataDumpRejectsInvalidBoundaries(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name  string
-		input string
-		want  string
+		name       string
+		input      string
+		want       string
+		wantSyntax bool  // a truncated array surfaces as a typed json.SyntaxError
+		wantErr    error // an unterminated record surfaces as io.ErrUnexpectedEOF
 	}{
 		{name: "object root", input: `{}`, want: "root is not an array"},
 		{name: "scalar root", input: `1`, want: "root is not an array"},
-		{name: "truncated array", input: `[{"id":"Q1","type":"item"}`},
-		{name: "malformed entity", input: `[{"id":"Q1","type":"item"`, want: "wikidata dump entity 0: decode"},
+		{
+			name: "truncated array", input: `[{"id":"Q1","type":"item"}`,
+			want: "wikidata dump entity 1: decode", wantSyntax: true,
+		},
+		{
+			name: "malformed entity", input: `[{"id":"Q1","type":"item"`,
+			want: "wikidata dump entity 0: decode", wantErr: io.ErrUnexpectedEOF,
+		},
 		{name: "trailing JSON", input: `[{"id":"Q1","type":"item"}] {}`, want: "trailing JSON after array"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := scanWikidataDump(strings.NewReader(tc.input), func(wikidataDumpItemFacts) error {
+			_, err := scanWikidataDump(strings.NewReader(tc.input), func(wikidataDumpItemFacts) error {
 				return nil
 			})
 			if err == nil {
@@ -230,17 +241,117 @@ func TestScanWikidataDumpRejectsInvalidBoundaries(t *testing.T) {
 			if tc.want != "" && !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("scanWikidataDump error = %v, want substring %q", err, tc.want)
 			}
+			var syntaxErr *json.SyntaxError
+			if tc.wantSyntax && !errors.As(err, &syntaxErr) {
+				t.Fatalf("scanWikidataDump error = %v (%T), want a wrapped *json.SyntaxError", err, err)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("scanWikidataDump error = %v, want one wrapping %v", err, tc.wantErr)
+			}
 		})
+	}
+}
+
+// A single hostile or corrupt record must not be buffered into memory in full.
+func TestScanWikidataDumpBoundsOneRecord(t *testing.T) {
+	t.Parallel()
+
+	oversized := `[{"id":"Q1","type":"item","labels":{"en":{"value":"` + strings.Repeat("x", 4096) + `"}}}]`
+	_, err := scanWikidataDumpLimited(strings.NewReader(oversized), 512, func(wikidataDumpItemFacts) error {
+		return nil
+	})
+	if !errors.Is(err, errDumpRecordTooLarge) {
+		t.Fatalf("scanWikidataDumpLimited error = %v, want one wrapping errDumpRecordTooLarge", err)
+	}
+	if !strings.Contains(err.Error(), "Q1") {
+		t.Fatalf("error %q does not name the offending record", err)
+	}
+
+	// An unterminated record cannot be read into memory without end: the
+	// buffer guard fires before the decoder ever produces a value.
+	unterminated := `[{"id":"Q1","type":"item","labels":{"en":{"value":"` + strings.Repeat("x", 400_000)
+	if _, err := scanWikidataDumpLimited(strings.NewReader(unterminated), 512, func(wikidataDumpItemFacts) error {
+		return nil
+	}); !errors.Is(err, errDumpBufferOverrun) {
+		t.Fatalf("scanWikidataDumpLimited error = %v, want one wrapping errDumpBufferOverrun", err)
+	}
+
+	// The same limit accepts a dump whose records are individually small,
+	// however many of them there are.
+	var record strings.Builder
+	record.WriteString(`[`)
+	for i := 0; i < 40; i++ {
+		if i > 0 {
+			record.WriteString(",")
+		}
+		fmt.Fprintf(&record, `{"id":"Q%d","type":"item","labels":{"en":{"value":"name"}}}`, i+1)
+	}
+	record.WriteString(`]`)
+	stats, err := scanWikidataDumpLimited(strings.NewReader(record.String()), 512, func(wikidataDumpItemFacts) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanWikidataDumpLimited over many small records: %v", err)
+	}
+	if stats.Items != 40 {
+		t.Fatalf("items = %d, want 40", stats.Items)
+	}
+}
+
+func TestScanWikidataDumpRejectsNonPositiveRecordLimit(t *testing.T) {
+	t.Parallel()
+
+	_, err := scanWikidataDumpLimited(strings.NewReader(`[]`), 0, func(wikidataDumpItemFacts) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "record size limit must be positive") {
+		t.Fatalf("scanWikidataDumpLimited error = %v", err)
+	}
+}
+
+// Every declined claim increments a named counter; nothing is dropped silently.
+func TestScanWikidataDumpCountsEveryDropReason(t *testing.T) {
+	t.Parallel()
+
+	input := `[
+{"id":"Q3001","type":"item","claims":{
+"P31":"not an array",
+"P279":[{"mainsnak":{"snaktype":"value","property":"P279","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"property","id":"P31"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P585":[
+{"mainsnak":{"snaktype":"somevalue","property":"P585","datatype":"time"},"rank":"normal"},
+{"mainsnak":{"snaktype":"value","property":"P585","datatype":"time","datavalue":{"value":{"time":"","precision":9,"calendarmodel":"c"},"type":"time"}},"rank":"normal"},
+"not an object"
+],
+"P625":[
+{"mainsnak":{"snaktype":"value","property":"P625","datatype":"globe-coordinate","datavalue":{"value":{"latitude":4.5,"longitude":137.4,"globe":"http://www.wikidata.org/entity/Q111"},"type":"globecoordinate"}},"rank":"normal"},
+{"mainsnak":{"snaktype":"value","property":"P625","datatype":"globe-coordinate","datavalue":{"value":{"latitude":91,"longitude":0,"globe":"http://www.wikidata.org/entity/Q2"},"type":"globecoordinate"}},"rank":"normal"},
+{"mainsnak":{"snaktype":"value","property":"P625","datatype":"globe-coordinate","datavalue":{"value":{"latitude":1,"longitude":1,"globe":"http://www.wikidata.org/entity/Q2"},"type":"globecoordinate"}},"rank":"deprecated"}
+]}}
+]`
+	stats, err := scanWikidataDump(strings.NewReader(input), func(wikidataDumpItemFacts) error { return nil })
+	if err != nil {
+		t.Fatalf("scanWikidataDump: %v", err)
+	}
+	want := map[WikidataDumpSkipReason]int{
+		SkipClaimGroupNotArray:   1,
+		SkipStatementNotObject:   1,
+		SkipEntityValueInvalid:   1,
+		SkipSnakShape:            1,
+		SkipTimeValueInvalid:     1,
+		SkipCoordinateNotOnEarth: 1,
+		SkipCoordinateOutOfRange: 1,
+		SkipStatementRank:        1,
+	}
+	if !reflect.DeepEqual(stats.Skips, want) {
+		t.Fatalf("skips = %#v, want %#v", stats.Skips, want)
 	}
 }
 
 func TestScanWikidataDumpRejectsNilBoundaries(t *testing.T) {
 	t.Parallel()
 
-	if err := scanWikidataDump(nil, func(wikidataDumpItemFacts) error { return nil }); err == nil || !strings.Contains(err.Error(), "nil reader") {
+	if _, err := scanWikidataDump(nil, func(wikidataDumpItemFacts) error { return nil }); err == nil || !strings.Contains(err.Error(), "nil reader") {
 		t.Fatalf("nil reader error = %v, want nil reader", err)
 	}
-	if err := scanWikidataDump(strings.NewReader(`[]`), nil); err == nil || !strings.Contains(err.Error(), "nil visitor") {
+	if _, err := scanWikidataDump(strings.NewReader(`[]`), nil); err == nil || !strings.Contains(err.Error(), "nil visitor") {
 		t.Fatalf("nil visitor error = %v, want nil visitor", err)
 	}
 }
@@ -268,7 +379,7 @@ func TestScanWikidataDumpRejectsInvalidEntities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := scanWikidataDump(strings.NewReader("["+tc.entity+"]"), func(wikidataDumpItemFacts) error {
+			_, err := scanWikidataDump(strings.NewReader("["+tc.entity+"]"), func(wikidataDumpItemFacts) error {
 				return nil
 			})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {

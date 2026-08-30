@@ -30,12 +30,22 @@ type WikidataDumpTimeClaimCount struct {
 	Count     int    `json:"count"`
 }
 
+// WikidataDumpSkipCount reports one reason the scanner declined a claim. Every
+// drop path in the scanner lands here; a dump-format change that starts
+// discarding claims shows up as a count instead of as silence.
+type WikidataDumpSkipCount struct {
+	Reason WikidataDumpSkipReason `json:"reason"`
+	Count  int                    `json:"count"`
+}
+
 type WikidataDumpCoverageReport struct {
 	SchemaVersion int                          `json:"schema_version"`
 	CoverageBasis string                       `json:"coverage_basis"`
 	InputSHA256   string                       `json:"input_sha256"`
 	Items         WikidataDumpCoverageStats    `json:"items"`
+	Properties    int                          `json:"properties"`
 	TimeClaims    []WikidataDumpTimeClaimCount `json:"time_claims"`
+	SkippedClaims []WikidataDumpSkipCount      `json:"skipped_claims"`
 }
 
 type wikidataDumpTimeClaimKey struct {
@@ -53,10 +63,11 @@ func BuildWikidataDumpCoverageReport(r io.Reader) (WikidataDumpCoverageReport, e
 		SchemaVersion: wikidataDumpCoverageReportSchemaVersion,
 		CoverageBasis: wikidataDumpCoverageBasis,
 		TimeClaims:    []WikidataDumpTimeClaimCount{},
+		SkippedClaims: []WikidataDumpSkipCount{},
 	}
 	timeClaimCounts := map[wikidataDumpTimeClaimKey]int{}
 
-	err := scanWikidataDump(io.TeeReader(r, digest), func(facts wikidataDumpItemFacts) error {
+	scan, err := scanWikidataDump(io.TeeReader(r, digest), func(facts wikidataDumpItemFacts) error {
 		hasDate := len(facts.TimeClaims) != 0
 		report.Items.Count++
 		if facts.HasEnglishLabel {
@@ -90,6 +101,8 @@ func BuildWikidataDumpCoverageReport(r io.Reader) (WikidataDumpCoverageReport, e
 	}
 
 	report.InputSHA256 = hex.EncodeToString(digest.Sum(nil))
+	report.Properties = scan.Properties
+	report.SkippedClaims = summarizeDumpSkips(scan.Skips)
 	for key, count := range timeClaimCounts {
 		report.TimeClaims = append(report.TimeClaims, WikidataDumpTimeClaimCount{
 			Property:  key.property,
@@ -104,4 +117,13 @@ func BuildWikidataDumpCoverageReport(r io.Reader) (WikidataDumpCoverageReport, e
 		return report.TimeClaims[i].Precision < report.TimeClaims[j].Precision
 	})
 	return report, nil
+}
+
+func summarizeDumpSkips(skips map[WikidataDumpSkipReason]int) []WikidataDumpSkipCount {
+	out := make([]WikidataDumpSkipCount, 0, len(skips))
+	for reason, count := range skips {
+		out = append(out, WikidataDumpSkipCount{Reason: reason, Count: count})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Reason < out[j].Reason })
+	return out
 }
