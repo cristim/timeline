@@ -77,6 +77,9 @@ on-screen objects; memory &lt; 300 MB.</li>
 <ul>
 <li>MapLibre GL JS with our vector tiles (<a href="04-architecture.html">ARCH-3</a>); deck.gl added only
 if a layer measurably exceeds MapLibre's rendering capacity.</li>
+<li>The required manifest basemap descriptor resolves through the same static or gateway artifact
+path as other data. MapLibre reads the local PMTiles archive with same-origin byte-range requests;
+the shipped style has no external style, glyph, sprite, raster, or tile dependency.</li>
 <li>Map and timeline are one control: moving the timeline re-requests time-dependent layers
 (borders, cities, events); panning/zooming the map re-issues the viewport query. Both update the URL
 (<a href="05-api.html">API-6</a>) debounced.</li>
@@ -98,10 +101,12 @@ source note; every layer is time-aware.</p>
 </div>
 
 <div class="req"><div class="req-head"><span class="req-id">FE-5</span><span class="req-title">Deep-time basemap switching</span><span class="badge v2">V2</span></div>
-<p>Beyond ~10k years ago the modern basemap fades to reconstructed paleogeography (ice sheets, coastlines,
-continental positions; Pangaea at 200 Ma). Basemap selection is automatic from the time cursor with a
-manual override. Fossils and species render on the reconstructed continents. MVP behavior: modern basemap
-with a visible "modern coastlines" disclaimer chip when viewing deep time.</p>
+<p>The local vector basemap supplies the present-day surface for ordinary historical views. Political
+views cover its modern land with an opaque neutral earth layer before drawing the active historical
+polities. Deep-time views cover it with an opaque ocean before drawing the active reconstructed
+coastline, and dates older than the reconstruction coverage show the explicit no-data globe. The
+selection is automatic from the time cursor, so modern countries never show through a historical or
+deep-time surface.</p>
 </div>
 
 <h2>Inspector</h2>

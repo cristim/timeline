@@ -23,8 +23,6 @@
   tabs (headless automation, background tabs) draws defer until the tab is
   visible again. Fine for real users; e2e tests must trigger a resize or wait
   for visibility before reading `window.__wkhits`.
-- **maplibre demotiles basemap is a remote dev dependency.** Replaced by a
-  local pmtiles basemap in M4 (FE-3).
 - **Phone/stacked layout (FE-1) not implemented yet.** Desktop/tablet only.
 - **Timeline keyboard navigation (FE-9) is only half done.** Arrow keys move
   the time cursor; FE-9 also asks for arrow-to-pan and +/- to zoom, which have

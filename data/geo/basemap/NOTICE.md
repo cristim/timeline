@@ -24,5 +24,8 @@ Required map attribution:
 > Contains modified Copernicus Sentinel data (2020) processed by ESA
 > WorldCover consortium (CC BY 4.0)
 
-This increment distributes neither a Protomaps style nor sprites, so Mapzen
-icon terms do not apply.
+The browser distributes a style derived and narrowed from Protomaps basemap
+style definitions. Its complete BSD 3-Clause terms and the upstream CC0
+visual-design notice are reproduced at
+`../../../web/public/licenses/protomaps-basemap-style.txt`. The style contains
+no sprites or icons, so Mapzen icon terms do not apply.

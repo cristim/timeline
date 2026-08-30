@@ -17,13 +17,16 @@ import type { MapMode } from "../lib/mapmode";
 import { categoryColor, FALLBACK_COLOR } from "../lib/colors";
 import { devHook } from "../lib/devhook";
 import { queryAreaFeature, SlotPair, type AreaLayerStyle } from "../lib/areaLayers";
+import {
+  BASEMAP_EARTH_SOURCE_LAYER,
+  BASEMAP_SOURCE_ID,
+  createBasemapStyle,
+} from "../lib/basemapStyle";
+import { basemapArtifactURL, type BasemapDescriptor } from "../lib/manifest";
 import { registerPMTilesProtocol } from "../lib/pmtilesProtocol";
 
 registerPMTilesProtocol();
 
-// The globe-ready demotiles style (projection: globe baked in). The plain
-// style.json renders an empty pale sphere under globe projection.
-const STYLE_URL = "https://demotiles.maplibre.org/globe.json";
 const SOURCE = "wk-items";
 
 const FADE_MS = 450;
@@ -64,30 +67,6 @@ const OCEAN_SOURCE = "wk-base-ocean";
 const OCEAN_LAYER = "wk-base-ocean-fill";
 const MODERN_LAND_LAYER = "wk-modern-land";
 
-// The demotiles source and source-layer that hold modern country polygons.
-// Reused as the neutral land base: they are the right geometry for recorded
-// history, they are already downloaded, and coastlines have barely moved.
-const BASEMAP_SOURCE = "maplibre";
-const BASEMAP_COUNTRIES = "countries";
-
-/**
- * The basemap layers that assert something about the *modern* world, and the
- * paint property that hides each. Zeroed whenever a slice is on screen, so a
- * modern label or frontier cannot read as part of the historical map.
- *
- * Opacity rather than `visibility: none` on purpose: a hidden layer stops its
- * source loading tiles, and `countries-fill` - which stays live under the
- * opaque ocean - is what keeps the vector tiles coming for the land layer.
- */
-const MODERN_ASSERTIONS: [layer: string, paint: keyof maplibregl.AllPaintProperties][] = [
-  ["coastline", "line-opacity"],
-  ["countries-boundary", "line-opacity"],
-  ["countries-label", "text-opacity"],
-  ["geolines", "line-opacity"],
-  ["geolines-label", "text-opacity"],
-  ["crimea-fill", "fill-opacity"],
-];
-
 /**
  * The globe, as four 90-degree longitude bands. This is the sphere's surface
  * whenever the basemap is not it: a `background` layer would paint the space
@@ -124,6 +103,8 @@ const FRONT_SOURCE = "wk-front";
 const FRONT_COLOR = "#c96b4a";
 
 interface Props {
+  dataset: string;
+  basemap: BasemapDescriptor;
   items: ChunkItem[];
   selected: string | null;
   /** What kind of world to draw at the cursor (lib/mapmode.ts). */
@@ -199,9 +180,6 @@ function applyMode(map: maplibregl.Map, mode: MapMode) {
   if (map.getLayer(MODERN_LAND_LAYER)) {
     map.setPaintProperty(MODERN_LAND_LAYER, "fill-opacity", mode === "political" ? 1 : 0);
   }
-  for (const [layer, paint] of MODERN_ASSERTIONS) {
-    if (map.getLayer(layer)) map.setPaintProperty(layer, paint, modern ? 1 : 0);
-  }
 }
 
 /** GeoJSON for the front sample, or an empty collection when there is none. */
@@ -229,6 +207,8 @@ interface Tip {
 }
 
 export function MapView({
+  dataset,
+  basemap,
   items,
   selected,
   mode,
@@ -259,7 +239,7 @@ export function MapView({
     if (!containerRef.current) return;
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: STYLE_URL,
+      style: createBasemapStyle(basemapArtifactURL(dataset, basemap), basemap.attribution),
       center: [15, 35],
       zoom: 1.4,
       minZoom: GLOBE_MIN_ZOOM,
@@ -279,27 +259,27 @@ export function MapView({
       }
     };
     container.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
-    // Area-source attribution is attached to each lazy vector source. The
-    // always-present basemap and entity data are named by the map control.
+    // Vector sources supply their own attribution. Entity data is Wikidata.
     map.addControl(
       new maplibregl.AttributionControl({
         compact: true,
-        customAttribution: [
-          "© OpenStreetMap contributors",
-          "Wikidata CC0",
-        ].join(" · "),
+        customAttribution: "Wikidata CC0",
       }),
     );
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     map.on("error", (event) => {
-      const areaError = event as unknown as { sourceId?: string; error?: unknown };
+      const sourceError = event as unknown as { sourceId?: string; error?: unknown };
+      if (sourceError.sourceId === BASEMAP_SOURCE_ID) {
+        console.error(`PMTiles basemap source ${BASEMAP_SOURCE_ID} failed:`, sourceError.error);
+        return;
+      }
       if (
-        !areaError.sourceId?.startsWith("wk-era-") &&
-        !areaError.sourceId?.startsWith("wk-paleo-")
+        !sourceError.sourceId?.startsWith("wk-era-") &&
+        !sourceError.sourceId?.startsWith("wk-paleo-")
       ) {
         return;
       }
-      console.error(`PMTiles area source ${areaError.sourceId} failed:`, areaError.error);
+      console.error(`PMTiles area source ${sourceError.sourceId} failed:`, sourceError.error);
     });
     map.on("load", () => {
       // The globe's surface goes down first: an opaque sphere over the whole
@@ -324,12 +304,12 @@ export function MapView({
       // coastlines are the right one at this scale. If the upstream style ever
       // drops the source, say so rather than silently reverting to a modern
       // political map under the historical one - the exact bug this replaces.
-      if (map.getSource(BASEMAP_SOURCE)) {
+      if (map.getSource(BASEMAP_SOURCE_ID)) {
         map.addLayer({
           id: MODERN_LAND_LAYER,
           type: "fill",
-          source: BASEMAP_SOURCE,
-          "source-layer": BASEMAP_COUNTRIES,
+          source: BASEMAP_SOURCE_ID,
+          "source-layer": BASEMAP_EARTH_SOURCE_LAYER,
           paint: {
             "fill-color": LAND,
             "fill-opacity": 0,
@@ -338,7 +318,7 @@ export function MapView({
         });
       } else {
         console.error(
-          `basemap source "${BASEMAP_SOURCE}" is missing: political slices will draw on bare ocean`,
+          `basemap source "${BASEMAP_SOURCE_ID}" is missing: political slices will draw on bare ocean`,
         );
       }
       map.addSource(SOURCE, { type: "geojson", data: dataRef.current });

@@ -25,16 +25,20 @@ async function booted(page: Page) {
 
 test("boots the whole-universe view with zero console errors", async ({ page }) => {
   const w = watch(page);
-  // The map worker fetches basemap tiles; a dead worker leaves an empty
-  // sphere with a clean console, so require at least one tile request.
-  const tileLoaded = page.waitForRequest(/demotiles\.maplibre\.org\/tiles\/\d/, {
-    timeout: 15_000,
-  });
+  const layers = watchLayers(page);
   await page.goto("./");
   await booted(page);
   await expect(page.locator(".bucket-badge")).toHaveText("T0");
   await expect(page.locator(".count")).toContainText("shown");
-  await tileLoaded;
+  await expect.poll(() => layers.basemapFetched.length, { timeout: 15_000 }).toBeGreaterThan(0);
+  expectPMTilesTransport(layers);
+
+  const attribution = page.locator(".maplibregl-ctrl-attrib-inner");
+  await expect(attribution.locator('a[href="https://github.com/protomaps/basemaps"]')).toHaveCount(1);
+  await expect(attribution.locator('a[href="https://www.openstreetmap.org/copyright"]')).toHaveCount(1);
+  await expect(attribution.locator('a[href="https://creativecommons.org/licenses/by/4.0/"]')).toHaveCount(1);
+  await expect(attribution).toContainText("ESA WorldCover project 2020");
+  await expect(attribution).toContainText("Wikidata CC0");
   expect(w.errors, "console errors").toEqual([]);
   expect(w.notFound, "same-origin 404s").toEqual([]);
 });
@@ -257,24 +261,54 @@ async function hoverLondonBoundary(page: Page) {
  */
 interface LayerWatch {
   fetched: string[];
+  basemapFetched: string[];
   missingRange: string[];
   badStatus: { url: string; status: number }[];
+  offOrigin: string[];
+  bannedMapAssets: string[];
   jsonBodies: string[];
 }
 
 function watchLayers(page: Page): LayerWatch {
-  const watched: LayerWatch = { fetched: [], missingRange: [], badStatus: [], jsonBodies: [] };
+  const watched: LayerWatch = {
+    fetched: [],
+    basemapFetched: [],
+    missingRange: [],
+    badStatus: [],
+    offOrigin: [],
+    bannedMapAssets: [],
+    jsonBodies: [],
+  };
   page.on("request", (req) => {
-    const path = new URL(req.url()).pathname;
-    const pmtiles = /\/layers\/([a-z]+)\/(-?\d+)\.pmtiles$/.exec(path);
-    if (pmtiles && !req.headers().range) watched.missingRange.push(req.url());
+    const url = new URL(req.url());
+    const path = url.pathname;
+    const layerPMTiles = /\/layers\/([a-z]+)\/(-?\d+)\.pmtiles$/.exec(path);
+    const basemapPMTiles = /\/v\/[^/]+\/basemap\/[^/]+\.pmtiles$/.test(path);
+    if ((layerPMTiles || basemapPMTiles) && !req.headers().range) {
+      watched.missingRange.push(req.url());
+    }
+    if ((layerPMTiles || basemapPMTiles) && url.origin !== new URL(page.url()).origin) {
+      watched.offOrigin.push(req.url());
+    }
+    const remoteMapHost =
+      url.hostname === "demotiles.maplibre.org" ||
+      url.hostname === "build.protomaps.com" ||
+      url.hostname.endsWith(".protomaps.com") ||
+      url.hostname === "protomaps.github.io";
+    const remoteMapAsset =
+      url.origin !== new URL(page.url()).origin &&
+      /(glyph|sprite|raster|style\.json|\/tiles?\/|\.(?:pbf|png|jpe?g|webp)$)/i.test(path);
+    if (remoteMapHost || remoteMapAsset) watched.bannedMapAssets.push(req.url());
     if (/\/layers\/[a-z]+\/-?\d+\.json$/.test(path)) watched.jsonBodies.push(req.url());
   });
   page.on("response", (res) => {
-    const match = /\/layers\/([a-z]+)\/(-?\d+)\.pmtiles$/.exec(new URL(res.url()).pathname);
-    if (!match) return;
+    const path = new URL(res.url()).pathname;
+    const layer = /\/layers\/([a-z]+)\/(-?\d+)\.pmtiles$/.exec(path);
+    const basemap = /\/v\/[^/]+\/basemap\/([^/]+\.pmtiles)$/.exec(path);
+    if (!layer && !basemap) return;
     if (res.status() !== 206) watched.badStatus.push({ url: res.url(), status: res.status() });
-    watched.fetched.push(`${match[1]}/${match[2]}`);
+    if (layer) watched.fetched.push(`${layer[1]}/${layer[2]}`);
+    if (basemap) watched.basemapFetched.push(basemap[1]);
   });
   return watched;
 }
@@ -282,6 +316,8 @@ function watchLayers(page: Page): LayerWatch {
 function expectPMTilesTransport(watched: LayerWatch) {
   expect(watched.missingRange, "PMTiles requests without Range").toEqual([]);
   expect(watched.badStatus, "PMTiles responses without 206").toEqual([]);
+  expect(watched.offOrigin, "PMTiles requests outside the app origin").toEqual([]);
+  expect(watched.bannedMapAssets, "remote map/style asset requests").toEqual([]);
   expect(watched.jsonBodies, "legacy layer JSON body requests").toEqual([]);
 }
 
@@ -333,6 +369,9 @@ test("deep time renders reconstructed coastlines and hides the modern world", as
   await expect(chip).toContainText("Ma");
   await expect(chip).toContainText("GPlates");
   await expect(chip).toHaveClass(/paleo/);
+  const attribution = page.locator(".maplibregl-ctrl-attrib-inner");
+  await expect(attribution).toContainText("Merdith et al. 2021");
+  await expect(attribution).not.toContainText("OpenHistoricalMap");
 
   await expect
     .poll(() => layers.fetched.filter((l) => l.startsWith("paleocoast/")).length, {
@@ -505,10 +544,6 @@ test("a war with curated fronts animates against the cursor", async ({ page }) =
 test("older than every reconstruction the globe says so and shows nothing", async ({ page }) => {
   const w = watch(page);
   const layers = watchLayers(page);
-  const basemapLoaded = page.waitForResponse(
-    (response) => /demotiles\.maplibre\.org\/tiles\/\d/.test(response.url()) && response.ok(),
-    { timeout: LAYER_FETCH_TIMEOUT_MS },
-  );
   await gotoYear(page, -2_000_000_000, 200_000_000 * SECONDS_PER_YEAR);
 
   const chip = page.locator(".era-chip");
@@ -517,7 +552,9 @@ test("older than every reconstruction the globe says so and shows nothing", asyn
   expect(layers.fetched).toEqual([]);
   expectPMTilesTransport(layers);
 
-  await basemapLoaded;
+  await expect
+    .poll(() => layers.basemapFetched.length, { timeout: LAYER_FETCH_TIMEOUT_MS })
+    .toBeGreaterThan(0);
   await expect
     .poll(async () => {
       const pixel = await mapCentrePixel(page);
@@ -607,6 +644,7 @@ test("the 1965 London boundary switch preserves transport and hover provenance",
       await expect(chip).toContainText("world borders · 1960");
       await expect(chip).toContainText("London boundaries · 1965 · OpenHistoricalMap");
     }
+    await expect(page.locator(".maplibregl-ctrl-attrib-inner")).toContainText("OpenHistoricalMap");
     const text = await hoverLondonBoundary(page);
     expect(text).toMatch(name);
     expect(text).toContain(`OpenHistoricalMap · ${sourceId}`);

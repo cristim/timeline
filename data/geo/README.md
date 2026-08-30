@@ -46,6 +46,10 @@ replacing an existing archive.
 
 The file is a static input to the baker, not a time-sliced overlay. Its source,
 licences and downstream attribution are recorded in `basemap/NOTICE.md`.
+The browser discovers the archive through the required manifest descriptor and
+range-loads it from the same origin as the app. The local style has no external
+glyph, sprite, raster, style, or tile dependencies. Its distributed licence
+notice is `web/public/licenses/protomaps-basemap-style.txt`.
 
 ## `ohm/` - pinned OpenHistoricalMap input
 

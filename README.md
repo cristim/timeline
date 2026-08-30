@@ -89,8 +89,9 @@ Seed entities are hand-curated NDJSON under `data/seed/` with per-claim
 sources. Bulk events come from [Wikidata](https://www.wikidata.org/) (CC0);
 raw fetch responses are archived for provenance and curated seed entries win
 over bulk imports on conflict. The baker publishes a pinned local Protomaps
-PMTiles archive with its complete attribution in the manifest. The current
-browser still uses MapLibre demotiles until the M4b-2b style switch.
+PMTiles archive with its complete attribution in the manifest. The browser
+range-loads that archive through the same static or gateway artifact path as
+the time layers; its basemap style makes no external map or style requests.
 
 By default, `make census` requires the normalized
 `BUCKET_WARM/wikidata/events.ndjson` object and fails if it cannot be read. Use
@@ -153,8 +154,7 @@ support byte ranges.
 | `data/seed/` | curated seed dataset + manifest |
 | `known-issues.md` | found-but-deferred items |
 
-Status: working prototype (spec milestones M0-M3, the PMTiles delivery half of
-M4, pinned OpenHistoricalMap ingest/rendering, the published local Protomaps
-archive, plus a bounded M5). Next: switch MapLibre to that local basemap,
-dump-scale ingestion, and the fun-test gate.
+Status: working prototype (spec milestones M0-M4, pinned OpenHistoricalMap
+ingest/rendering, the local Protomaps renderer, plus a bounded M5). Next:
+dump-scale ingestion and the fun-test gate.
 See `specs/10-roadmap.html` and `specs/11-local-dev.html`.

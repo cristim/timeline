@@ -272,6 +272,8 @@ export function App() {
       <div className="mid">
         <div className="stage">
           <MapView
+            dataset={manifest.dataset}
+            basemap={manifest.basemap}
             items={mapVisible}
             selected={view.selected}
             mode={mode}

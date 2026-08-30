@@ -5,6 +5,12 @@ import type { Manifest } from "./manifest";
 const manifest: Manifest = {
   dataset: "atlas-v1",
   generated_at: "2026-08-30T00:00:00Z",
+  basemap: {
+    key: "basemap/test.pmtiles",
+    source: "https://example.test/test.pmtiles",
+    attribution: "test attribution",
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+  },
   buckets: [],
   categories: [],
   layers: ["borders"],
