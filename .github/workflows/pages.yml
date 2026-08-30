@@ -49,6 +49,8 @@ jobs:
         run: make verify-geo
       - name: Test
         run: go test ./...
+      - name: Build baker image
+        run: docker build --tag world-knowledge-baker:pages .
       - name: Build web app
         working-directory: web
         env:
@@ -57,7 +59,7 @@ jobs:
           npm ci
           npm run build
       - name: Bake artifacts into the site
-        run: go run ./cmd/baker bake --seed data/seed --out web/dist
+        run: docker run --rm --user "$(id -u):$(id -g)" --volume "$PWD/data/seed:/seed:ro" --volume "$PWD/data/geo:/geo:ro" --volume "$PWD/data/goldens.json:/goldens.json:ro" --volume "$PWD/web/dist:/out" world-knowledge-baker:pages bake --seed /seed --geo /geo --goldens /goldens.json --out /out
       - name: SPA fallback
         run: cp web/dist/index.html web/dist/404.html
       - name: Install Playwright

@@ -37,7 +37,9 @@ jobs:
       - name: Run baker image
         run: docker run --rm --volume "$PWD/data/seed:/seed:ro" --volume "$PWD/data/geo:/geo:ro" --volume "$PWD/data/goldens.json:/goldens.json:ro" --volume "$RUNNER_TEMP/bake-out:/out" world-knowledge-baker:ci bake --seed /seed --geo /geo --goldens /goldens.json --out /out
       - name: Verify container bake output
-        run: test -f "$RUNNER_TEMP/bake-out/manifest.json"
+        run: test -f "$RUNNER_TEMP/bake-out/manifest.json" && test "$(find "$RUNNER_TEMP/bake-out/v/dev/layers" -type f -name '*.pmtiles' | wc -l)" -eq 89 && test -z "$(find "$RUNNER_TEMP/bake-out/v/dev/layers" -type f -name '*.json' ! -name index.json -print -quit)" && test -s "$RUNNER_TEMP/bake-out/v/dev/layers/borders/index.json" && test -s "$RUNNER_TEMP/bake-out/v/dev/layers/paleocoast/index.json" && grep -q '"source":' "$RUNNER_TEMP/bake-out/v/dev/layers/borders/index.json" && grep -q '"source":' "$RUNNER_TEMP/bake-out/v/dev/layers/paleocoast/index.json"
+      - name: Verify baker default user
+        run: test "$(docker image inspect --format '{{.Config.User}}' world-knowledge-baker:ci)" = nobody:nogroup && test "$(docker run --rm --entrypoint /usr/bin/id world-knowledge-baker:ci -u)" = 65534 && test "$(docker run --rm --entrypoint /usr/bin/id world-knowledge-baker:ci -g)" = 65534
 
   web:
     runs-on: ubuntu-latest
@@ -49,6 +51,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
+      - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npm run build

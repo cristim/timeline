@@ -61,7 +61,8 @@ e2e:
 # passing against an atlas the fetch left half-empty.
 e2e-static: verify-geo
 	cd web && VITE_BASE=/timeline/ npm run build
-	go run ./cmd/baker bake --seed data/seed --out web/dist
+	docker build --tag world-knowledge-baker:e2e .
+	docker run --rm --user "$$(id -u):$$(id -g)" --volume "$(CURDIR)/data/seed:/seed:ro" --volume "$(CURDIR)/data/geo:/geo:ro" --volume "$(CURDIR)/data/goldens.json:/goldens.json:ro" --volume "$(CURDIR)/web/dist:/out" world-knowledge-baker:e2e bake --seed /seed --geo /geo --goldens /goldens.json --out /out
 	cd web && VITE_BASE=/timeline/ E2E_STATIC=1 E2E_BASE_URL=http://localhost:4173/timeline/ npx playwright test
 
 smoke:
