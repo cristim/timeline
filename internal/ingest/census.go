@@ -60,7 +60,6 @@ type censusStatsAccumulator struct {
 }
 
 type censusBucketAccumulator struct {
-	span   float64
 	total  *censusStatsAccumulator
 	byType map[string]*censusStatsAccumulator
 }
@@ -80,7 +79,7 @@ func BuildCensusReport(result *Result, warmSource WarmSource, warmSHA256 string)
 
 	total := newCensusStatsAccumulator()
 	byType := map[string]*censusStatsAccumulator{}
-	byBucket := map[float64]*censusBucketAccumulator{}
+	byBucket := map[censusBucketKey]*censusBucketAccumulator{}
 
 	for idx, entity := range result.Entities {
 		if entity == nil {
@@ -96,15 +95,14 @@ func BuildCensusReport(result *Result, warmSource WarmSource, warmSHA256 string)
 		}
 		typeStats.add(entity)
 
-		bucketStart, bucketSpan := censusBucketFor(censusYearForEntity(entity))
-		bucket := byBucket[bucketStart]
+		key := censusBucketKeyFor(censusYearForEntity(entity))
+		bucket := byBucket[key]
 		if bucket == nil {
 			bucket = &censusBucketAccumulator{
-				span:   bucketSpan,
 				total:  newCensusStatsAccumulator(),
 				byType: map[string]*censusStatsAccumulator{},
 			}
-			byBucket[bucketStart] = bucket
+			byBucket[key] = bucket
 		}
 		bucket.total.add(entity)
 		bucketTypeStats := bucket.byType[entity.Type]
@@ -186,19 +184,27 @@ func buildCensusTypeRows(byType map[string]*censusStatsAccumulator) []CensusType
 	return rows
 }
 
-func buildCensusBucketRows(byBucket map[float64]*censusBucketAccumulator) []CensusBucketRow {
-	starts := make([]float64, 0, len(byBucket))
-	for start := range byBucket {
-		starts = append(starts, start)
+func buildCensusBucketRows(byBucket map[censusBucketKey]*censusBucketAccumulator) []CensusBucketRow {
+	keys := make([]censusBucketKey, 0, len(byBucket))
+	for key := range byBucket {
+		keys = append(keys, key)
 	}
-	slices.Sort(starts)
+	slices.SortFunc(keys, func(a, b censusBucketKey) int {
+		if lessCensusBucketKey(a, b) {
+			return -1
+		}
+		if lessCensusBucketKey(b, a) {
+			return 1
+		}
+		return 0
+	})
 
-	rows := make([]CensusBucketRow, 0, len(starts))
-	for _, start := range starts {
-		bucket := byBucket[start]
+	rows := make([]CensusBucketRow, 0, len(keys))
+	for _, key := range keys {
+		bucket := byBucket[key]
 		rows = append(rows, CensusBucketRow{
-			StartYear: start,
-			SpanYears: bucket.span,
+			StartYear: key.StartYear,
+			SpanYears: key.SpanYears,
 			Total:     bucket.total.snapshot(),
 			Types:     buildCensusTypeRows(bucket.byType),
 		})

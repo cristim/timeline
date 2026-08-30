@@ -20,7 +20,7 @@ func TestScanWikidataDumpExtractsFacts(t *testing.T) {
 	}
 
 	var got []wikidataDumpItemFacts
-	if _, err := scanWikidataDump(strings.NewReader(string(body)), func(facts wikidataDumpItemFacts) error {
+	if _, err := scanWikidataDumpForTest(strings.NewReader(string(body)), func(facts wikidataDumpItemFacts) error {
 		got = append(got, facts)
 		return nil
 	}); err != nil {
@@ -96,7 +96,7 @@ func TestScanWikidataDumpVisitorErrorsIncludeIndexAndWrap(t *testing.T) {
 {"id":"P31","type":"property","claims":{}},
 {"id":"Q1001","type":"item","labels":{"en":{"value":"Item"}},"claims":{}}
 ]`
-	_, err := scanWikidataDump(strings.NewReader(input), func(wikidataDumpItemFacts) error {
+	_, err := scanWikidataDumpForTest(strings.NewReader(input), func(wikidataDumpItemFacts) error {
 		return sentinel
 	})
 	if !errors.Is(err, sentinel) {
@@ -118,7 +118,7 @@ func TestScanWikidataDumpSkipsMalformedStatementElementAndKeepsValidSiblings(t *
 ]}}
 ]`
 	var got []wikidataDumpItemFacts
-	if _, err := scanWikidataDump(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
+	if _, err := scanWikidataDumpForTest(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
 		got = append(got, facts)
 		return nil
 	}); err != nil {
@@ -156,7 +156,7 @@ func TestScanWikidataDumpCoordinateCoverageBranches(t *testing.T) {
 ]}}
 ]`
 	got := map[string]bool{}
-	if _, err := scanWikidataDump(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
+	if _, err := scanWikidataDumpForTest(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
 		got[facts.QID] = facts.HasCoordinates
 		return nil
 	}); err != nil {
@@ -184,7 +184,7 @@ func TestScanWikidataDumpIgnoresFractionalAndOutOfRangeTimePrecision(t *testing.
 ]}}
 ]`
 	var got []wikidataDumpItemFacts
-	if _, err := scanWikidataDump(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
+	if _, err := scanWikidataDumpForTest(strings.NewReader(input), func(facts wikidataDumpItemFacts) error {
 		got = append(got, facts)
 		return nil
 	}); err != nil {
@@ -235,7 +235,7 @@ func TestScanWikidataDumpRejectsInvalidBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := scanWikidataDump(strings.NewReader(tc.input), func(wikidataDumpItemFacts) error {
+			_, err := scanWikidataDumpForTest(strings.NewReader(tc.input), func(wikidataDumpItemFacts) error {
 				return nil
 			})
 			if err == nil {
@@ -329,7 +329,7 @@ func TestScanWikidataDumpCountsEveryDropReason(t *testing.T) {
 {"mainsnak":{"snaktype":"value","property":"P625","datatype":"globe-coordinate","datavalue":{"value":{"latitude":1,"longitude":1,"globe":"http://www.wikidata.org/entity/Q2"},"type":"globecoordinate"}},"rank":"deprecated"}
 ]}}
 ]`
-	stats, err := scanWikidataDump(strings.NewReader(input), func(wikidataDumpItemFacts) error { return nil })
+	stats, err := scanWikidataDumpForTest(strings.NewReader(input), func(wikidataDumpItemFacts) error { return nil })
 	if err != nil {
 		t.Fatalf("scanWikidataDump: %v", err)
 	}
@@ -351,10 +351,10 @@ func TestScanWikidataDumpCountsEveryDropReason(t *testing.T) {
 func TestScanWikidataDumpRejectsNilBoundaries(t *testing.T) {
 	t.Parallel()
 
-	if _, err := scanWikidataDump(nil, func(wikidataDumpItemFacts) error { return nil }); err == nil || !strings.Contains(err.Error(), "nil reader") {
+	if _, err := scanWikidataDumpForTest(nil, func(wikidataDumpItemFacts) error { return nil }); err == nil || !strings.Contains(err.Error(), "nil reader") {
 		t.Fatalf("nil reader error = %v, want nil reader", err)
 	}
-	if _, err := scanWikidataDump(strings.NewReader(`[]`), nil); err == nil || !strings.Contains(err.Error(), "nil visitor") {
+	if _, err := scanWikidataDumpForTest(strings.NewReader(`[]`), nil); err == nil || !strings.Contains(err.Error(), "nil visitor") {
 		t.Fatalf("nil visitor error = %v, want nil visitor", err)
 	}
 }
@@ -382,7 +382,7 @@ func TestScanWikidataDumpRejectsInvalidEntities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := scanWikidataDump(strings.NewReader("["+tc.entity+"]"), func(wikidataDumpItemFacts) error {
+			_, err := scanWikidataDumpForTest(strings.NewReader("["+tc.entity+"]"), func(wikidataDumpItemFacts) error {
 				return nil
 			})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -423,4 +423,11 @@ func TestValidNumericEntityID(t *testing.T) {
 			t.Errorf("validNumericEntityID(%q, %q) = %t, want %t", tc.id, tc.prefix, got, tc.want)
 		}
 	}
+}
+
+// scanWikidataDumpForTest supplies the counter set production callers own, so
+// the tests can read the drop tallies back without threading one through every
+// call site.
+func scanWikidataDumpForTest(r io.Reader, visit func(wikidataDumpItemFacts) error) (wikidataDumpScanStats, error) {
+	return scanWikidataDump(r, newDumpCounters(), visit)
 }

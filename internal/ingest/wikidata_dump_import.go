@@ -16,6 +16,12 @@ import (
 // calendar) -> validate -> the normalized model, with an import report that is
 // deterministic and reproducible from the same dump.
 //
+// The dump is read as a stream, but the accepted entities and the set of seen
+// QIDs are held in memory until the caller writes them out, so peak memory
+// scales with the ACCEPTED set rather than with the archive. That is fine for
+// a filtered slice and is not fine for all 115M items; writing Parquet
+// incrementally is the open work (see known-issues.md).
+//
 // Filtering and rejection are kept apart on purpose. An item we deliberately do
 // not want (a Wikimedia housekeeping page, a class the curated table does not
 // cover) is FILTERED and counted by reason. An item we wanted but could not
@@ -36,11 +42,11 @@ const (
 	// RejectSourceWikidataDump labels reject rows from this importer.
 	RejectSourceWikidataDump RejectSource = "wikidata-dump"
 
-	// defaultMaxRejectRate is the SRC-3 quality gate. The importer only ever
+	// DefaultMaxRejectRate is the SRC-3 quality gate. The importer only ever
 	// tries to normalize items it has already classified and found a time for,
 	// so a reject rate above a few percent means the normalizer is wrong, not
 	// that Wikidata is messy.
-	defaultMaxRejectRate = 0.05
+	DefaultMaxRejectRate = 0.05
 )
 
 type WikidataDumpFilterReason string
@@ -88,11 +94,10 @@ type WikidataDumpTypeCount struct {
 }
 
 type WikidataDumpImportOptions struct {
-	// MaxRejectRate gates the run; zero means the default.
-	MaxRejectRate float64
-	// ImportanceFloor drops accepted entities below the floor before they
-	// reach the model. Zero keeps everything.
-	ImportanceFloor float64
+	// MaxRejectRate gates the run. Nil takes DefaultMaxRejectRate; an explicit
+	// 0 means "no reject at all is acceptable", which a sentinel zero could
+	// not express.
+	MaxRejectRate *float64
 }
 
 type WikidataDumpImport struct {
@@ -106,15 +111,12 @@ func ImportWikidataDump(r io.Reader, opts WikidataDumpImportOptions) (*WikidataD
 	if r == nil {
 		return nil, fmt.Errorf("import wikidata dump: nil reader")
 	}
-	maxRejectRate := opts.MaxRejectRate
-	if maxRejectRate == 0 {
-		maxRejectRate = defaultMaxRejectRate
+	maxRejectRate := DefaultMaxRejectRate
+	if opts.MaxRejectRate != nil {
+		maxRejectRate = *opts.MaxRejectRate
 	}
 	if maxRejectRate < 0 || maxRejectRate > 1 {
 		return nil, fmt.Errorf("import wikidata dump: max reject rate %v outside [0,1]", maxRejectRate)
-	}
-	if opts.ImportanceFloor < 0 || opts.ImportanceFloor > 1 {
-		return nil, fmt.Errorf("import wikidata dump: importance floor %v outside [0,1]", opts.ImportanceFloor)
 	}
 	taxonomy, err := NewWikidataTaxonomy()
 	if err != nil {
@@ -136,7 +138,7 @@ func ImportWikidataDump(r io.Reader, opts WikidataDumpImportOptions) (*WikidataD
 	}
 
 	counters := newDumpCounters()
-	scan, err := scanWikidataDumpWithCounters(stream, counters, func(facts wikidataDumpItemFacts) error {
+	scan, err := scanWikidataDump(stream, counters, func(facts wikidataDumpItemFacts) error {
 		position := index
 		index++
 
@@ -179,12 +181,6 @@ func ImportWikidataDump(r io.Reader, opts WikidataDumpImportOptions) (*WikidataD
 				Line:   position,
 				Reason: reason,
 			})
-			return nil
-		}
-		if entity.Importance < opts.ImportanceFloor {
-			// Held in the WARM tier rather than promoted (SRC-5). Counted as a
-			// filter so the reject gate keeps its meaning.
-			filterCounts[importanceFloorReason(opts.ImportanceFloor)]++
 			return nil
 		}
 		typeCounts[entity.Type]++
@@ -261,10 +257,6 @@ func normalizedDumpEntity(
 
 func wikidataSeedID(qid string) string {
 	return "wd-" + strings.ToLower(qid)
-}
-
-func importanceFloorReason(floor float64) string {
-	return fmt.Sprintf("below importance floor %.2f", floor)
 }
 
 func totalCount(counts map[string]int) int {

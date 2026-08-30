@@ -214,7 +214,6 @@ type dumpClassAccumulator struct {
 }
 
 type dumpBucketAccumulator struct {
-	span    float64
 	total   *dumpStatsAccumulator
 	byType  map[string]*dumpStatsAccumulator
 	byClass map[string]*dumpClassAccumulator
@@ -224,7 +223,7 @@ type dumpCensusAccumulator struct {
 	total     *dumpStatsAccumulator
 	byType    map[string]*dumpStatsAccumulator
 	byClass   map[string]*dumpClassAccumulator
-	byBucket  map[float64]*dumpBucketAccumulator
+	byBucket  map[censusBucketKey]*dumpBucketAccumulator
 	precision map[string]int
 	calendars map[wikidataDumpCalendarKey]int
 	unmatched map[string]int
@@ -236,7 +235,7 @@ func newDumpCensusAccumulator() *dumpCensusAccumulator {
 		total:     &dumpStatsAccumulator{},
 		byType:    map[string]*dumpStatsAccumulator{},
 		byClass:   map[string]*dumpClassAccumulator{},
-		byBucket:  map[float64]*dumpBucketAccumulator{},
+		byBucket:  map[censusBucketKey]*dumpBucketAccumulator{},
 		precision: map[string]int{},
 		calendars: map[wikidataDumpCalendarKey]int{},
 		unmatched: map[string]int{},
@@ -270,7 +269,7 @@ func BuildWikidataDumpCoverageReport(r io.Reader) (WikidataDumpCoverageReport, e
 	report.Compression = compression
 
 	counters := newDumpCounters()
-	scan, err := scanWikidataDumpWithCounters(stream, counters, func(facts wikidataDumpItemFacts) error {
+	scan, err := scanWikidataDump(stream, counters, func(facts wikidataDumpItemFacts) error {
 		classification := taxonomy.Classify(facts.InstanceOfQIDs, facts.SubclassOfQIDs)
 		resolved, hasTime := resolveWikidataItemTime(counters, facts.TimeClaims)
 		census.add(facts, classification, resolved, hasTime)
@@ -324,16 +323,17 @@ func (c *dumpCensusAccumulator) add(
 	c.precision[resolved.Precision]++
 	c.calendars[wikidataDumpCalendarKey{calendarModel: resolved.CalendarModel, era: eraFor(resolved.Year)}]++
 
-	start, span := censusBucketFor(censusYearAt(resolved.T0, resolved.Precision))
-	bucket := c.byBucket[start]
+	// Attribution uses the year the source stated, in the calendar it stated it
+	// in, so the era split and the time slice always agree.
+	key := censusBucketKeyFor(resolved.Year)
+	bucket := c.byBucket[key]
 	if bucket == nil {
 		bucket = &dumpBucketAccumulator{
-			span:    span,
 			total:   &dumpStatsAccumulator{},
 			byType:  map[string]*dumpStatsAccumulator{},
 			byClass: map[string]*dumpClassAccumulator{},
 		}
-		c.byBucket[start] = bucket
+		c.byBucket[key] = bucket
 	}
 	bucket.total.add(facts, hasTime)
 	statsFor(bucket.byType, classification.CensusType()).add(facts, hasTime)
@@ -348,17 +348,25 @@ func (c *dumpCensusAccumulator) fill(report *WikidataDumpCoverageReport) {
 	report.Classes = buildDumpClassRows(c.byClass)
 	report.ItemsWithoutTime = c.noTime
 
-	starts := make([]float64, 0, len(c.byBucket))
-	for start := range c.byBucket {
-		starts = append(starts, start)
+	keys := make([]censusBucketKey, 0, len(c.byBucket))
+	for key := range c.byBucket {
+		keys = append(keys, key)
 	}
-	slices.Sort(starts)
-	report.Buckets = make([]WikidataDumpBucketRow, 0, len(starts))
-	for _, start := range starts {
-		bucket := c.byBucket[start]
+	slices.SortFunc(keys, func(a, b censusBucketKey) int {
+		if lessCensusBucketKey(a, b) {
+			return -1
+		}
+		if lessCensusBucketKey(b, a) {
+			return 1
+		}
+		return 0
+	})
+	report.Buckets = make([]WikidataDumpBucketRow, 0, len(keys))
+	for _, key := range keys {
+		bucket := c.byBucket[key]
 		report.Buckets = append(report.Buckets, WikidataDumpBucketRow{
-			StartYear: start,
-			SpanYears: bucket.span,
+			StartYear: key.StartYear,
+			SpanYears: key.SpanYears,
 			Total:     bucket.total.snapshot(),
 			Types:     buildDumpTypeRows(bucket.byType),
 			Classes:   buildDumpClassRows(bucket.byClass),

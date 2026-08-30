@@ -32,6 +32,15 @@ var censusBucketTiers = []struct {
 	{limit: math.Inf(1), span: 1e9},
 }
 
+// censusBucketKey identifies one slice. Start year alone is ambiguous: the
+// first year of a century can also be the first year of a ten-thousand-year
+// slice (-10000 is both), and keying on it alone merges two slices of
+// different width into one row.
+type censusBucketKey struct {
+	StartYear float64
+	SpanYears float64
+}
+
 // censusBucketFor returns the start year and span of the slice holding a year.
 func censusBucketFor(year float64) (float64, float64) {
 	magnitude := math.Abs(year)
@@ -49,29 +58,37 @@ func censusYearForEntity(entity *model.Entity) float64 {
 	return censusYearAt(entity.T0, entity.Precision)
 }
 
-// censusYearAt resolves an instant to a year, reconciling the two encodings.
-// Below day precision an entity's start is a year boundary in whichever
-// encoding produced it, so an instant sitting less than a day short of the next
-// boundary belongs to that next year. At day precision and finer, 31 December
-// is a real date and is left alone.
+// censusYearAt resolves an instant to a year, picking the arithmetic that
+// matches the encoding the entity's precision implies.
+//
+// At day precision and finer the instant is an exact calendar date, so the
+// calendar answers: 31 December is a real date and belongs to its own year.
+//
+// Coarser than that, the start is a year boundary, and the two encodings
+// disagree about where that boundary sits by up to 1.2 days (measured over
+// [-4799, 12000]; the mean Gregorian year is exact over the calendar's
+// 400-year cycle, but not within it). Rounding on the mean-year scale inverts
+// the {"y": n} authoring form exactly and is within half a day of an exact
+// calendar date, which is nothing against a decade, let alone a century. Going
+// through the calendar here instead is what used to move an entity a whole
+// century at a boundary.
 func censusYearAt(seconds float64, precision string) float64 {
-	approximate := normalizeSignedZero(model.SecondsToYear(seconds))
+	if !usesExactCalendarDate(precision) {
+		return normalizeSignedZero(math.Round(model.SecondsToYear(seconds)))
+	}
 	year, ok := gregorianYearAt(seconds)
 	if !ok {
-		return approximate
-	}
-	if snapsToYearBoundary(precision) && jdnSeconds(gregorianJDN(year+1, 1, 1))-seconds <= 86400 {
-		year++
+		return normalizeSignedZero(model.SecondsToYear(seconds))
 	}
 	return normalizeSignedZero(float64(year))
 }
 
-func snapsToYearBoundary(precision string) bool {
+func usesExactCalendarDate(precision string) bool {
 	switch precision {
 	case "day", "hour", "minute", "second":
-		return false
-	default:
 		return true
+	default:
+		return false
 	}
 }
 
@@ -80,4 +97,18 @@ func normalizeSignedZero(value float64) float64 {
 		return 0
 	}
 	return value
+}
+
+func censusBucketKeyFor(year float64) censusBucketKey {
+	start, span := censusBucketFor(year)
+	return censusBucketKey{StartYear: start, SpanYears: span}
+}
+
+// lessCensusBucketKey orders slices by start year, then by width so a
+// coincident pair is still deterministic.
+func lessCensusBucketKey(a, b censusBucketKey) bool {
+	if a.StartYear != b.StartYear {
+		return a.StartYear < b.StartYear
+	}
+	return a.SpanYears < b.SpanYears
 }

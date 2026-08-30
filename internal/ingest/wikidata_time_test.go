@@ -33,6 +33,7 @@ func TestConvertWikidataTimeKnownConversions(t *testing.T) {
 		wantPrecision string
 		wantT0        float64
 		wantT1        float64
+		wantYear      float64 // zero means "not asserted"
 	}{
 		{
 			name:          "Apollo 11 landing, Gregorian day",
@@ -70,6 +71,7 @@ func TestConvertWikidataTimeKnownConversions(t *testing.T) {
 			wantPrecision: "day",
 			wantT0:        float64(1705426-unixEpochJDN) * 86400,
 			wantT1:        float64(1705427-unixEpochJDN) * 86400,
+			wantYear:      -43, // 44 BCE, stated in the Julian calendar
 		},
 		{
 			// 4 October 1582 Julian is the day before the Gregorian switch;
@@ -86,6 +88,7 @@ func TestConvertWikidataTimeKnownConversions(t *testing.T) {
 			wantPrecision: "day",
 			wantT0:        unixDate(t, "1917-11-07"),
 			wantT1:        unixDate(t, "1917-11-08"),
+			wantYear:      1917, // the Julian date's own year, not the Gregorian one
 		},
 		{
 			name:          "hour precision floors below the hour",
@@ -114,6 +117,7 @@ func TestConvertWikidataTimeKnownConversions(t *testing.T) {
 			wantPrecision: "century",
 			wantT0:        model.YearToSeconds(1800),
 			wantT1:        model.YearToSeconds(1900),
+			wantYear:      1800,
 		},
 		{
 			name:          "millennium precision",
@@ -135,6 +139,7 @@ func TestConvertWikidataTimeKnownConversions(t *testing.T) {
 			wantPrecision: "million_year",
 			wantT0:        model.YearToSeconds(-66000000),
 			wantT1:        model.YearToSeconds(-65000000),
+			wantYear:      -66000000,
 		},
 		{
 			name:          "billion year precision",
@@ -167,8 +172,13 @@ func TestConvertWikidataTimeKnownConversions(t *testing.T) {
 			if got.T1 != tt.wantT1 {
 				t.Fatalf("t1 = %v, want %v", got.T1, tt.wantT1)
 			}
-			if got.Year != model.SecondsToYear(got.T0) {
-				t.Fatalf("year = %v, want %v", got.Year, model.SecondsToYear(got.T0))
+			// Year is the year the source stated, in the source calendar, so
+			// it is always whole and never re-derived from the seconds.
+			if got.Year != math.Trunc(got.Year) {
+				t.Fatalf("year = %v, want a whole year", got.Year)
+			}
+			if tt.wantYear != 0 && got.Year != tt.wantYear {
+				t.Fatalf("year = %v, want %v", got.Year, tt.wantYear)
 			}
 		})
 	}
@@ -341,5 +351,73 @@ func TestCensusYearAtFallsBackInDeepTime(t *testing.T) {
 	got := censusYearAt(seconds, "billion_year")
 	if got != model.SecondsToYear(seconds) {
 		t.Fatalf("censusYearAt = %v, want the mean-year value %v", got, model.SecondsToYear(seconds))
+	}
+}
+
+// Wikidata's 100 My and 10 My precisions sit between the model's billion_year
+// and million_year, so they must round to the COARSER of the two. Labelling
+// them million_year claimed up to 100x the precision the source stated.
+func TestConvertWikidataTimeRoundsCoarseWhereTheModelHasNoPeer(t *testing.T) {
+	tests := []struct {
+		precision int
+		want      string
+	}{
+		{precision: 0, want: "billion_year"}, // 1 Gy
+		{precision: 1, want: "billion_year"}, // 100 My
+		{precision: 2, want: "billion_year"}, // 10 My
+		{precision: 3, want: "million_year"}, // 1 My, an exact peer
+		{precision: 4, want: "million_year"}, // 100 ky
+		{precision: 5, want: "million_year"}, // 10 ky
+		{precision: 6, want: "millennium"},
+	}
+	for _, tt := range tests {
+		got, err := ConvertWikidataTime(gregorianFact("-0066000-00-00T00:00:00Z", tt.precision))
+		if err != nil {
+			t.Fatalf("precision %d: %v", tt.precision, err)
+		}
+		if got.Precision != tt.want {
+			t.Fatalf("precision %d -> %q, want %q", tt.precision, got.Precision, tt.want)
+		}
+		// The window still carries the true span; only the label is coarse.
+		unit := wikidataPrecisionUnitYears[tt.precision]
+		if span := model.SecondsToYear(got.T1) - model.SecondsToYear(got.T0); math.Abs(span-unit) > 1 {
+			t.Fatalf("precision %d span = %v years, want %v", tt.precision, span, unit)
+		}
+	}
+}
+
+// Uncertainty that widens a window must widen its label too: a 61-day window
+// is not a day-precision value however it was stated.
+func TestConvertWikidataTimeWidensThePrecisionLabelWithTheWindow(t *testing.T) {
+	fact := gregorianFact("+1969-07-20T00:00:00Z", 11)
+	fact.Before = 30
+	fact.After = 30
+	got, err := ConvertWikidataTime(fact)
+	if err != nil {
+		t.Fatalf("ConvertWikidataTime: %v", err)
+	}
+	if got.Precision == "day" {
+		t.Fatal("a window widened to 61 days still claims day precision")
+	}
+	if unit := modelPrecisionSeconds[got.Precision]; unit < got.T1-got.T0 {
+		t.Fatalf("precision %q has unit %v, shorter than the %v window",
+			got.Precision, unit, got.T1-got.T0)
+	}
+}
+
+// coarserPrecision has to be a total order. hour, minute and second all cap at
+// the same render bucket, so ranking on that cannot separate them.
+func TestCoarserPrecisionIsATotalOrder(t *testing.T) {
+	for _, tt := range []struct{ a, b, want string }{
+		{"second", "hour", "hour"},
+		{"hour", "second", "hour"},
+		{"minute", "second", "minute"},
+		{"day", "minute", "day"},
+		{"century", "day", "century"},
+		{"year", "year", "year"},
+	} {
+		if got := coarserPrecision(tt.a, tt.b); got != tt.want {
+			t.Fatalf("coarserPrecision(%q, %q) = %q, want %q", tt.a, tt.b, got, tt.want)
+		}
 	}
 }
