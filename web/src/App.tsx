@@ -119,7 +119,7 @@ export function App() {
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
-  const { items, bucket, loading } = useViewportItems(
+  const { items, bucket, loading, error: chunkError } = useViewportItems(
     manifest,
     view.t0,
     view.t1,
@@ -365,7 +365,9 @@ export function App() {
               </button>
             )}
           </span>
-          <span className="count">{loading ? "…" : `${laneCount} shown`}</span>
+          <span className={`count ${chunkError ? "count-error" : ""}`} title={chunkError ?? undefined}>
+            {loading ? "…" : chunkError ? "data failed to load" : `${laneCount} shown`}
+          </span>
           <label className="imp">
             importance ≥ {view.minImportance.toFixed(2)}
             <input

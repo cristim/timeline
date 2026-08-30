@@ -662,6 +662,8 @@ const TC_ON = "-1.6302321403e%2B10"; // 1453.4
 
 test("a point event shows only near the cursor, and a selected one always", async ({ page }) => {
   const w = watch(page);
+  const failed: string[] = [];
+  page.on("requestfailed", (r) => failed.push(`${r.url()} :: ${r.failure()?.errorText}`));
 
   await page.goto(`./?${NARROW}&tc=${TC_OFF}`);
   await booted(page);
@@ -670,6 +672,10 @@ test("a point event shows only near the cursor, and a selected one always", asyn
   await expect(page.locator(".count")).toHaveText("0 shown");
   const without = await page.locator(".map-container").screenshot();
 
+  // Navigating away with PMTiles range reads still in flight makes Chromium
+  // report them as "Failed to fetch" - real console errors, but teardown
+  // artifacts of this multi-goto test, not app failures. Quiesce first.
+  await page.waitForLoadState("networkidle");
   await page.goto(`./?${NARROW}&tc=${TC_ON}`);
   await booted(page);
   await expect(page.locator(".era-chip")).toContainText("world borders · 1400");
@@ -680,12 +686,13 @@ test("a point event shows only near the cursor, and a selected one always", asyn
   await clickMapColor(page, [201, 107, 74]);
   await expect(page.locator(".inspector h2")).toHaveText("Fall of Constantinople");
 
+  await page.waitForLoadState("networkidle");
   await page.goto(`./?${NARROW}&tc=${TC_OFF}&sel=fall-of-constantinople`);
   await booted(page);
   await expect(page.locator(".inspector h2")).toHaveText("Fall of Constantinople");
   await page.waitForTimeout(2500);
   await expect(page.locator(".count")).toHaveText("1 shown");
-  expect(w.errors, "console errors").toEqual([]);
+  expect(w.errors, `console errors (failed requests: ${failed.join(" | ") || "none"})`).toEqual([]);
 });
 
 test("deep time is not littered with events from other eras", async ({ page }) => {

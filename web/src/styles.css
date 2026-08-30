@@ -261,6 +261,7 @@ body {
 }
 .cur-unpin:hover { color: var(--amber); }
 .count { color: var(--text-3); }
+.count.count-error { color: #e07a5f; }
 .imp { display: flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 10.5px; }
 .imp input { width: 90px; accent-color: var(--amber); }
 .status-key { margin-left: auto; display: flex; align-items: center; gap: 10px; color: var(--text-3); font-size: 10px; }

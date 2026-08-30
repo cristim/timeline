@@ -16,7 +16,7 @@ import type { FrontSample } from "../lib/fronts";
 import type { MapMode } from "../lib/mapmode";
 import { categoryColor, FALLBACK_COLOR } from "../lib/colors";
 import { devHook } from "../lib/devhook";
-import { queryAreaFeature, SlotPair, type AreaLayerStyle } from "../lib/areaLayers";
+import { isAbort, queryAreaFeature, SlotPair, type AreaLayerStyle } from "../lib/areaLayers";
 import {
   BASEMAP_EARTH_SOURCE_LAYER,
   BASEMAP_SOURCE_ID,
@@ -268,18 +268,21 @@ export function MapView({
     );
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
     map.on("error", (event) => {
+      // Registering any error listener disables MapLibre's own console
+      // logging, so every error must be logged here - swallowing unrecognised
+      // ones silences style validation failures, WebGL context loss, and
+      // worker deaths (the exact silent-map failure this project has hit).
       const sourceError = event as unknown as { sourceId?: string; error?: unknown };
-      if (sourceError.sourceId === BASEMAP_SOURCE_ID) {
-        console.error(`PMTiles basemap source ${BASEMAP_SOURCE_ID} failed:`, sourceError.error);
-        return;
-      }
+      if (isAbort(sourceError.error)) return; // cancelled fetch, not a failure
+      // Slice sources are owned end-to-end by their SlotPair (retry-then-blank).
       if (
-        !sourceError.sourceId?.startsWith("wk-era-") &&
-        !sourceError.sourceId?.startsWith("wk-paleo-")
+        eraSlots.current.ownsSource(sourceError.sourceId) ||
+        paleoSlots.current.ownsSource(sourceError.sourceId)
       ) {
         return;
       }
-      console.error(`PMTiles area source ${sourceError.sourceId} failed:`, sourceError.error);
+      const where = sourceError.sourceId ? `source ${sourceError.sourceId}` : "map";
+      console.error(`MapLibre ${where} error:`, sourceError.error ?? event);
     });
     map.on("load", () => {
       // The globe's surface goes down first: an opaque sphere over the whole

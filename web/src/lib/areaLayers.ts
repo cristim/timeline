@@ -20,7 +20,14 @@ export interface AreaLayerStyle {
 
 interface PendingLoad {
   slot: Slot;
+  slice: AreaLayerSlice;
   cancel: () => void;
+}
+
+/** Cancelled fetches (navigation teardown, a superseded slice) are lifecycle
+ * events, not failures - they must neither log as errors nor blank the map. */
+export function isAbort(error: unknown): boolean {
+  return (error as { name?: string } | undefined)?.name === "AbortError";
 }
 
 export interface AreaFeatureProperties {
@@ -35,6 +42,11 @@ export class SlotPair {
   private requestedUrl: string | null = null;
   private pending: PendingLoad | null = null;
   private readonly created = new Set<Slot>();
+  private visibleSlice: AreaLayerSlice | null = null;
+  private lastSlice: AreaLayerSlice | null = null;
+  private errorsOwned = false;
+  private retriedUrl: string | null = null;
+  private retryTimer: number | null = null;
 
   constructor(
     private readonly kind: string,
@@ -121,10 +133,20 @@ export class SlotPair {
     return this.visible === null ? null : this.fillLayerId(this.visible);
   }
 
+  /**
+   * True for map "error" events this pair owns end-to-end. MapView's catch-all
+   * error logger must skip these - the pair knows whether a failure is a
+   * cancellation, a first attempt worth retrying, or final.
+   */
+  ownsSource(sourceId: string | undefined): boolean {
+    return !!sourceId?.startsWith(`wk-${this.kind}-`);
+  }
+
   apply(map: maplibregl.Map, next: AreaLayerSlice | null): void {
     const url = next?.url ?? null;
     if (url === this.requestedUrl) return;
     this.requestedUrl = url;
+    this.ownErrors(map);
 
     const pendingSlot = this.pending?.slot ?? null;
     this.pending?.cancel();
@@ -136,6 +158,7 @@ export class SlotPair {
       return;
     }
 
+    this.lastSlice = next;
     const slot = pendingSlot ?? (this.visible === "a" ? "b" : "a");
     const outgoing = this.visible;
     const sourceId = this.sourceId(slot);
@@ -143,20 +166,72 @@ export class SlotPair {
       if (event.sourceId !== sourceId || !event.isSourceLoaded) return;
       map.off("sourcedata", onSourceData);
       this.pending = null;
+      this.retriedUrl = null;
       this.setOpacity(map, slot, true);
       if (outgoing !== null && outgoing !== slot) this.setOpacity(map, outgoing, false);
       this.visible = slot;
+      this.visibleSlice = next;
     };
     map.on("sourcedata", onSourceData);
-    this.pending = { slot, cancel: () => map.off("sourcedata", onSourceData) };
+    this.pending = { slot, slice: next, cancel: () => map.off("sourcedata", onSourceData) };
     this.ensureSlot(map, slot, next.url);
+  }
+
+  /**
+   * One permanent error listener per pair. A failed archive fires "error",
+   * never "sourcedata"; without this the old slice keeps painting under a
+   * chip naming the new one, forever. Cancellations are lifecycle noise; a
+   * first real failure gets one delayed retry (a camera move during boot can
+   * kill the shared archive fetch under every waiter); a second failure logs
+   * and blanks the layer, and forgets the URL so a cursor move tries again.
+   */
+  private ownErrors(map: maplibregl.Map): void {
+    if (this.errorsOwned) return;
+    this.errorsOwned = true;
+    map.on("error", (event) => {
+      const e = event as unknown as { sourceId?: string; error?: unknown };
+      if (!this.ownsSource(e.sourceId) || isAbort(e.error)) return;
+      const pending = this.pending;
+      // A slot that is neither pending nor visible can still report a late
+      // tile error (its load was superseded mid-flight); the last requested
+      // slice is what the map should be showing, so retry that.
+      const slice =
+        pending && e.sourceId === this.sourceId(pending.slot)
+          ? pending.slice
+          : this.visible !== null && e.sourceId === this.sourceId(this.visible)
+            ? this.visibleSlice
+            : this.lastSlice;
+      if (!slice) {
+        console.error(`area layer ${e.sourceId} error:`, e.error);
+        return;
+      }
+      pending?.cancel();
+      this.pending = null;
+      this.requestedUrl = null;
+      if (this.retriedUrl !== slice.url) {
+        this.retriedUrl = slice.url;
+        console.warn(`area layer ${e.sourceId} load interrupted; retrying:`, e.error);
+        this.retryTimer = window.setTimeout(() => this.apply(map, slice), 1000);
+        return;
+      }
+      console.error(`area layer ${e.sourceId} failed to load:`, e.error);
+      for (const s of this.created) this.setOpacity(map, s, false);
+      this.visible = null;
+      this.visibleSlice = null;
+    });
   }
 
   reset(): void {
     this.pending?.cancel();
+    if (this.retryTimer !== null) window.clearTimeout(this.retryTimer);
     this.visible = null;
+    this.visibleSlice = null;
+    this.lastSlice = null;
     this.requestedUrl = null;
     this.pending = null;
+    this.retriedUrl = null;
+    this.retryTimer = null;
+    this.errorsOwned = false;
     this.created.clear();
   }
 }

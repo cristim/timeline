@@ -55,7 +55,29 @@ describe("registerPMTilesProtocol", () => {
     expect(mocks.addProtocol).toHaveBeenCalledWith("pmtiles", expect.any(Function));
   });
 
-  it("opens each archive lazily with range caching disabled", async () => {
+  it("normalizes cancelled-fetch rejections to AbortError", async () => {
+    const { registerPMTilesProtocol } = await import("./pmtilesProtocol");
+    const controller = new AbortController();
+    controller.abort();
+    mocks.tile.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    registerPMTilesProtocol();
+    const registered = mocks.addProtocol.mock.calls[0][1];
+    await expect(
+      registered({ type: "arrayBuffer", url: "pmtiles://https://example.test/a.pmtiles/0/0/0" }, controller),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    // A failure with a live signal is a real failure and passes through.
+    mocks.tile.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(
+      registered(
+        { type: "arrayBuffer", url: "pmtiles://https://example.test/a.pmtiles/0/0/0" },
+        new AbortController(),
+      ),
+    ).rejects.toMatchObject({ name: "TypeError" });
+  });
+
+  it("opens each archive lazily with Chromium range caching disabled", async () => {
     const { registerPMTilesProtocol } = await import("./pmtilesProtocol");
     const controller = new AbortController();
     mocks.tile.mockResolvedValueOnce({ data: {} });
@@ -67,6 +89,8 @@ describe("registerPMTilesProtocol", () => {
       controller,
     );
 
+    // Chromium serves a cached 206 for the wrong range after navigation on
+    // every platform, not only the Windows case pmtiles detects itself.
     expect(mocks.fetchSources).toEqual([
       { url: "https://example.test/borders/1400.pmtiles", chromeWindowsNoCache: true },
     ]);

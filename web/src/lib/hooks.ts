@@ -25,6 +25,9 @@ export interface ViewportData {
   items: ChunkItem[];
   bucket: number; // bucket index in manifest.buckets
   loading: boolean;
+  /** Chunk fetch failure for the current window set (FE-9: explicit, not a
+   * silently empty timeline). Cleared by the next successful load. */
+  error: string | null;
 }
 
 /**
@@ -40,7 +43,12 @@ export function useViewportItems(
   cats: string[],
   minImportance: number,
 ): ViewportData {
-  const [state, setState] = useState<ViewportData>({ items: [], bucket: 0, loading: true });
+  const [state, setState] = useState<ViewportData>({
+    items: [],
+    bucket: 0,
+    loading: true,
+    error: null,
+  });
   const generation = useRef(0);
 
   const bucketIdx = useMemo(
@@ -81,12 +89,12 @@ export function useViewportItems(
         const items = [...bySlug.values()]
           .filter((i) => i.importance >= minImportance)
           .sort((a, b) => b.importance - a.importance || (a.slug < b.slug ? -1 : 1));
-        setState({ items, bucket: bucketIdx, loading: false });
+        setState({ items, bucket: bucketIdx, loading: false, error: null });
       })
       .catch((e: unknown) => {
         if (generation.current !== gen) return;
         console.error("viewport load failed:", e);
-        setState((s) => ({ ...s, loading: false }));
+        setState((s) => ({ ...s, loading: false, error: String(e) }));
       });
   }, [manifest, keysStr, bucketIdx, minImportance]);
 
