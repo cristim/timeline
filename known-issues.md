@@ -8,11 +8,19 @@
   decompression, S3 publication, normalized bulk ingest and bulk bake, and
   final dump-scale HOT-tier targets.
 
-- **Artifact count grows ~27x entity count at fine buckets.** The 10.5k-entity
-  warm bake produces ~280k chunk objects (window duplication x categories,
-  API-1), taking ~10 min against local MinIO even with a 48-way upload pool.
-  Fine for incremental re-bakes (unchanged objects skip), but revisit
-  per-bucket caps / coarse-bucket rollups before dump-scale (M5 full).
+- **Artifact count still tracks entity count at T11/T12.** Consecutive windows
+  holding identical chunk bodies now share one artifact (manifest window runs),
+  which removed the window-duplication multiplier: the seed bake went from
+  8,173 chunk objects to 897, and a dump-shaped synthetic set drops from 30.8x
+  entity count to 4.6x at 10k entities and from 7.5x to 2.0x at 1M. What runs
+  cannot touch is a window holding one moment event nobody else shares - 88% of
+  the residual at 1M is T11/T12 cells with a single item, where every entity is
+  its own boundary. That is ~2M objects at 1M entities and ~8M at 5M, so M5
+  still needs a lever runs do not provide: not baking T12/T13 for entities
+  below an importance floor, or letting the client fall back to the parent
+  bucket where the finer one has nothing of its own. Both change what the
+  client can find, unlike the run collapse, so both want their own ZOOM-3
+  review.
 
 - **Deep-time zoom can feel empty (T3-T5).** Zooming into e.g. 2.8 Gyr ago
   shows "0 shown": billion-year-precision entities (Sun, Earth, eras) are
