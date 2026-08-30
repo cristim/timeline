@@ -283,8 +283,13 @@ func BuildWikidataDumpCoverageReport(r io.Reader) (WikidataDumpCoverageReport, e
 		return WikidataDumpCoverageReport{}, fmt.Errorf("build wikidata dump coverage report: %w", err)
 	}
 
-	// A compressed container can end before its file does; drain so the digest
-	// covers every byte the caller handed us.
+	// Drain the DECODED stream first: a corrupt compression trailer after the
+	// JSON array closes only surfaces as a decoder error, and reading the raw
+	// bytes straight past it would swallow that. Then drain the raw side so the
+	// digest covers every byte the caller handed us.
+	if _, err := io.Copy(io.Discard, stream); err != nil {
+		return WikidataDumpCoverageReport{}, fmt.Errorf("build wikidata dump coverage report: drain decoded input: %w", err)
+	}
 	if _, err := io.Copy(io.Discard, tee); err != nil {
 		return WikidataDumpCoverageReport{}, fmt.Errorf("build wikidata dump coverage report: drain input: %w", err)
 	}

@@ -10,6 +10,15 @@
   count at dump scale are unknown (see the artifact-count issue below, which
   bites first). Run the census on a full dump before trusting any of them.
 
+- **The bulk importer holds the accepted set in memory.** The dump itself
+  streams and decompression is O(1) in the archive's size, but
+  `ImportWikidataDump` accumulates every accepted `*model.Entity` and every
+  seen QID before the caller writes Parquet, so peak memory scales with the
+  ACCEPTED set rather than with the 115M-item input. Fine for a filtered
+  slice, not fine for everything; writing Parquet in batches as the scan
+  proceeds is the fix, and it needs the duplicate-QID check to move to a
+  cheaper structure at the same time.
+
 - **The curated Wikidata class table maps directly and does not walk the
   subclass tree.** An item whose only `P31` is an unlisted descendant of a
   listed class (a "naval battle" that is not `Q178561`) lands in the
