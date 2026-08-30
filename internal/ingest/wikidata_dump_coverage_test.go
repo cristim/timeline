@@ -32,12 +32,22 @@ func TestBuildWikidataDumpCoverageReportBuildsExactFixtureReport(t *testing.T) {
 			HasAll:              1,
 			TotalSitelinks:      4,
 		},
+		Properties: 1,
 		TimeClaims: []WikidataDumpTimeClaimCount{
 			{Property: "P569", Precision: 11, Count: 1},
 			{Property: "P570", Precision: 9, Count: 1},
 			{Property: "P577", Precision: 10, Count: 1},
 			{Property: "P580", Precision: 11, Count: 1},
 			{Property: "P585", Precision: 7, Count: 1},
+		},
+		// The fixture's deliberately broken claims are now counted rather
+		// than silently discarded.
+		SkippedClaims: []WikidataDumpSkipCount{
+			{Reason: SkipClaimGroupNotArray, Count: 1},
+			{Reason: SkipEntityValueInvalid, Count: 1},
+			{Reason: SkipSnakShape, Count: 4},
+			{Reason: SkipStatementRank, Count: 4},
+			{Reason: SkipTimeValueInvalid, Count: 1},
 		},
 	}
 
