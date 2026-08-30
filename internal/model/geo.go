@@ -21,8 +21,8 @@ type GeoSet struct {
 	Fronts map[string][]FrontPosition
 }
 
-// BorderLayer is one time-step of the borders layer, baked to
-// layers/borders/<year>.json (API-4 key shape) and listed in the manifest's
+// BorderLayer is one source GeoJSON time-step, baked to
+// layers/<layer>/<year>.pmtiles (API-4 key shape) and listed in the manifest's
 // timesteps (API-0). TFrom/TTo bound the years the snapshot actually speaks
 // for, so the client can report "no data" instead of drawing the nearest era
 // at a date it never covered.

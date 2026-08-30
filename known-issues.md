@@ -30,13 +30,6 @@
   the time cursor; FE-9 also asks for arrow-to-pan and +/- to zoom, which have
   no binding. Whatever lands for those has to share the arrow keys with the
   cursor, probably by making pan the modified chord.
-- **The area layers are GeoJSON, not PMTiles.** `layers/<layer>/<year>.json`
-  matches the API-4 key shape and the manifest carries the time-steps
-  (API-0), but the bodies are plain FeatureCollections rather than the tile
-  archives ARCH-3 specifies. M4 replaces the body format; the key scheme, the
-  coverage-window index, the covering-slice lookup and the crossfade all carry
-  over unchanged. At 89 slices the bodies are 200-600 KB each, which the
-  client offsets by fetching lazily and evicting past 24 cached slices.
 - **The paleo layer is pinned by model name, not by version.** `fetch-borders`
   pins a git commit, and a re-fetch is byte-identical (verified). `fetch-paleo`
   can only ask the GPlates Web Service for `MERDITH2021`, so if EarthByte

@@ -29,15 +29,16 @@ borders from there to AD 2035, reconstructed coastlines from 540 Ma back to it.
 A paleo slice's year is its reconstruction time in years, so 250 Ma is
 `-250000000.geojson`; nothing about bucket or window maths changes for it.
 
-One GeoJSON `FeatureCollection` per time-step, baked to
-`/v/<dataset>/layers/<layer>/<year>.json` (the API-4 key shape) and listed in
-the manifest under `layers` / `timesteps` (API-0). The client renders the
-covering slice as a fill + outline that crossfades when the cursor crosses a
-slice boundary (FE-3, FE-4). Deep time additionally paints an opaque ocean
-under its landmasses, because there the modern basemap is not background, it
-is wrong.
+One source GeoJSON `FeatureCollection` per time-step, compiled to
+`/v/<dataset>/layers/<layer>/<year>.pmtiles` (the API-4 key shape) and listed
+in the manifest under `layers` / `timesteps` (API-0). Each archive is PMTiles
+v3 with vector source-layer `areas`, zooms 0 through 6, and the fixed source
+attribution. The client range-loads the covering archive and renders it as a
+fill + outline that crossfades when the cursor crosses a slice boundary (FE-3,
+FE-4). Deep time additionally paints an opaque ocean under its landmasses,
+because there the modern basemap is not background, it is wrong.
 
-Top-level `properties`:
+Source-file top-level `properties`:
 
 | field | meaning |
 |---|---|
@@ -56,6 +57,13 @@ The client picks the slice whose window *covers* the cursor, not the nearest
 one. With slices this unevenly spaced - 113,000 years between the first two,
 six between two of the last - the nearest slice year is routinely one whose
 window ended long before.
+
+The baked `layers/<layer>/index.json` keeps `year`, `t_from`, `t_to`, `label`,
+and `source` for every step, so the browser can choose a covering slice and
+show its provenance without opening archive metadata. The PMTiles metadata
+description repeats those exact fields as canonical JSON. S3/MinIO publishes
+archives as `application/vnd.pmtiles`; GitHub Pages controls its own static
+MIME, and the protocol relies on byte-range support rather than a tile server.
 
 Per-feature `properties`: `name`, `representation` (the DM-7 vocabulary), and
 an optional `entity` naming a **seed id** — the baker resolves it to the
@@ -86,8 +94,9 @@ Everything here is approximate and marked `representation: "estimated"`
 front lines are traced by eye from published atlases at 10-50 vertices. All of
 it is good enough to show *that* territory changed and roughly where. None of
 it is survey data, and none of it carries a claim about disputed frontiers.
-Baking the area layers to PMTiles rather than GeoJSON is still milestone M4
-(DEV-6); the key scheme and coverage index already match what that needs.
+The source remains GeoJSON because it is reviewable and validated before the
+bake. Serving uses PMTiles so the browser reads only the visible vector tiles
+instead of downloading an entire world snapshot.
 
 There is a line between a simplification and an error, and it is worth naming.
 A frontier drawn 200km off is a simplification. An empire that excludes its

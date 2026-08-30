@@ -8,15 +8,18 @@ going: solar system, Milky Way, observable universe.
 **Live demo:** https://cristim.github.io/timeline/
 
 There is no database and no API server. A batch "baker" turns curated and open
-data into static JSON artifacts (viewport chunks, entity documents, search
-shards, one manifest); the client computes every artifact URL itself and a CDN
-serves the files. Facts are stored as *claims*: sourced statements with
-uncertainty ranges that coexist rather than overwrite each other, so
+data into static artifacts (JSON viewport chunks, entity documents, search
+shards, PMTiles map layers, and one manifest); the client computes every
+artifact URL itself and a CDN serves the files. Facts are stored as *claims*:
+sourced statements with uncertainty ranges that coexist rather than overwrite
+each other, so
 "T. rex mass: 8.0-10.2 t across 2 estimates" is the honest answer the UI shows.
 
 ## Run it locally
 
-Prerequisites: Docker, Go 1.26+, Node 22+.
+Prerequisites: Docker, Go 1.26+, Node 22+. Native `baker bake` and `make bake`
+also require Tippecanoe 2.79.0 on `PATH`; Docker-based bakes use the pinned,
+checksum-verified compiler in the baker image.
 
 ```sh
 make up        # MinIO (S3 stand-in) + Caddy gateway (CDN stand-in) + web dev server
@@ -47,6 +50,7 @@ Wikidata (SPARQL)   ──┤   baker (Go)                          client (Reac
                       │   golden views must pass  ─────►      /v/<ds>/chunks/…
                       └─► publish = atomic manifest flip      /v/<ds>/entity/…
                                                               /v/<ds>/search/…
+                                                              /v/<ds>/layers/…/*.pmtiles
 ```
 
 - **Semantic zoom**: time is divided into buckets T0 (whole universe) through
@@ -73,9 +77,10 @@ Wikidata (SPARQL)   ──┤   baker (Go)                          client (Reac
   only census object containing `generated_at`. The report identity depends
   only on its exact deterministic JSON bytes.
 - Deploying is `bake --out` plus a static web build - GitHub Pages runs the
-  whole product (see `.github/workflows/pages.yml`). Static `bake --out`
-  exercises the same private import-diagnostics generation path, but it does
-  not publish warm model or import artifacts into the site output.
+  whole product through the pinned baker image (see
+  `.github/workflows/pages.yml`). Static `bake --out` exercises the same
+  private import-diagnostics generation path, but it does not publish warm
+  model or import artifacts into the site output.
 
 ## Data
 
@@ -112,6 +117,14 @@ The plate model is CC-BY 4.0 and asks to be cited: Merdith et al. (2021),
 214, [doi:10.1016/j.earscirev.2020.103477](https://doi.org/10.1016/j.earscirev.2020.103477).
 Both sources are named in the map's attribution control.
 
+The fetched `.geojson` snapshots are source inputs. The baker compiles each
+time step into a deterministic PMTiles v3 archive with vector source-layer
+`areas`, zooms 0 through 6, per-slice provenance/time metadata, and political
+feature colors. The browser keeps only the small JSON layer index in memory
+and reads the covering archive with HTTP byte-range requests. S3/MinIO objects
+use `application/vnd.pmtiles`; static hosts may choose their own MIME but must
+support byte ranges.
+
 ## Where things live
 
 | Path | What |
@@ -122,6 +135,7 @@ Both sources are named in the map's attribution control.
 | `data/seed/` | curated seed dataset + manifest |
 | `known-issues.md` | found-but-deferred items |
 
-Status: working prototype (spec milestones M0-M3 plus a bounded M5). Next:
-OpenHistoricalMap border tiles, dump-scale ingestion, the fun-test gate -
-see `specs/10-roadmap.html` and `specs/11-local-dev.html`.
+Status: working prototype (spec milestones M0-M3, the PMTiles delivery half of
+M4, plus a bounded M5). Next: OpenHistoricalMap ingestion and provenance,
+dump-scale ingestion, and the fun-test gate. See `specs/10-roadmap.html` and
+`specs/11-local-dev.html`.
