@@ -81,8 +81,15 @@ export function coveringTimestep<T extends CoverageWindow>(steps: T[], year: num
 }
 
 /**
- * The non-empty windows of `bucket` for one category overlapping [t0,t1]
- * (manifest-driven, API-1): only listed (window, category) pairs were baked.
+ * The windows of `bucket` to fetch for one category over [t0,t1]
+ * (manifest-driven, API-1).
+ *
+ * The manifest lists runs of consecutive windows that share one chunk body,
+ * and the artifact for a run lives at its first window. So this returns the
+ * first window of every run the range touches: one key per distinct body
+ * rather than one per window. A window inside a run resolves to the same items
+ * it would have had as its own artifact, which is what makes the collapse
+ * invisible to the caller.
  */
 export function windowsInRange(
   bucket: Bucket,
@@ -90,11 +97,11 @@ export function windowsInRange(
   t0: number,
   t1: number,
 ): number[] {
-  const windows = bucket.windows?.[category] ?? [];
+  const runs = bucket.windows?.[category] ?? [];
   if (bucket.window_s === 0) {
-    return windows.length ? [0] : [];
+    return runs.length ? [0] : [];
   }
   const w0 = windowIndex(bucket, t0);
   const w1 = windowIndex(bucket, t1);
-  return windows.filter((w) => w >= w0 && w <= w1);
+  return runs.filter(([start, end]) => end >= w0 && start <= w1).map(([start]) => start);
 }

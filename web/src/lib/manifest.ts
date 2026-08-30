@@ -1,11 +1,19 @@
 // API-0: the manifest is the only mutable object; every artifact key is
 // computed client-side from it.
+/**
+ * A maximal range of consecutive window indexes, [start, end] inclusive, whose
+ * chunk bodies are byte-identical. One artifact exists per run, at `start`, and
+ * fetching it from any window inside the range yields exactly the chunk that
+ * window holds. Mirrors model.WindowRun in internal/model/buckets.go.
+ */
+export type WindowRun = [start: number, end: number];
+
 export interface Bucket {
   id: string;
   window_s: number; // 0 = single window spanning all time
-  // Non-empty window indexes per category ("all" + each real category).
-  // Only listed (window, category) pairs exist as chunk files (API-1).
-  windows?: Record<string, number[]>;
+  // Baked window runs per category ("all" + each real category). Only windows
+  // covered by a listed run exist as chunk files (API-1).
+  windows?: Record<string, WindowRun[]>;
 }
 
 export interface BasemapDescriptor {

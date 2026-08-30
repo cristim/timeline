@@ -7,6 +7,7 @@ import {
   bucketForSpan,
   layerKey,
   coveringTimestep,
+  windowsInRange,
   SECONDS_PER_YEAR,
 } from "./keyscheme";
 import type { Bucket } from "./manifest";
@@ -80,6 +81,56 @@ describe("layer time-steps", () => {
     expect(coveringTimestep(steps, -5000)).toBeNull(); // in the layer's own gap
     expect(coveringTimestep(steps, 3000)).toBeNull(); // after the layer
     expect(coveringTimestep([], 1942)).toBeNull();
+  });
+});
+
+describe("windowsInRange", () => {
+  // The baker collapses consecutive windows with identical bodies into one
+  // artifact stored at the run's first window, so what comes back here is one
+  // key per run the range touches, not one per window.
+  const t10: Bucket = {
+    id: "T10",
+    window_s: SECONDS_PER_YEAR,
+    windows: {
+      war: [
+        [-155, -155], // 1815
+        [-31, -29], // 1939-41
+        [-28, -27], // 1942-43, Stalingrad joins and changes the body
+        [-26, -25], // 1944-45
+      ],
+      science: [[-20, -20]],
+    },
+  };
+  const at = (year: number) => (year - 1970) * SECONDS_PER_YEAR;
+  const inRange = (cat: string, y0: number, y1: number) =>
+    windowsInRange(t10, cat, at(y0), at(y1));
+
+  it("returns the run start for a range inside one run", () => {
+    expect(inRange("war", 1940, 1940.5)).toEqual([-31]);
+    expect(inRange("war", 1944.2, 1944.8)).toEqual([-26]);
+  });
+
+  it("returns every run the range overlaps, once each", () => {
+    expect(inRange("war", 1939, 1945.9)).toEqual([-31, -28, -26]);
+  });
+
+  it("finds a run entered from the middle, not just at its start", () => {
+    // 1941 is inside run [-31,-29] but is not its first window; the artifact
+    // still lives at -31, and missing this is how items would vanish.
+    expect(inRange("war", 1941, 1941)).toEqual([-31]);
+    expect(inRange("war", 1945, 1945)).toEqual([-26]);
+  });
+
+  it("returns nothing where the category has no run", () => {
+    expect(inRange("war", 1900, 1910)).toEqual([]);
+    expect(inRange("religion", 1940, 1945)).toEqual([]);
+    expect(inRange("science", 1940, 1945)).toEqual([]);
+  });
+
+  it("collapses a single-window bucket to window 0", () => {
+    const t0: Bucket = { id: "T0", window_s: 0, windows: { all: [[0, 0]] } };
+    expect(windowsInRange(t0, "all", -1e18, 1e18)).toEqual([0]);
+    expect(windowsInRange(t0, "war", -1e18, 1e18)).toEqual([]);
   });
 });
 

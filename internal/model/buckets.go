@@ -14,18 +14,32 @@ const (
 	MaxWindowedTime = 1e18
 )
 
+// WindowRun is a maximal range of consecutive window indexes, [Start,End]
+// inclusive, whose chunk bodies are byte-identical. Only one artifact exists
+// per run, at Start; a client resolving any window inside the range fetches
+// that object and gets exactly the chunk that window would have held.
+// Serialized as the two-element array [start,end].
+//
+// Runs are how the artifact count stops tracking the window count. A long-
+// lived entity like the Roman Empire spans ~500 year-windows at T10, and every
+// one of those windows used to be its own object holding the same handful of
+// items; they are now one.
+type WindowRun [2]int64
+
+func (r WindowRun) Start() int64 { return r[0] }
+func (r WindowRun) End() int64   { return r[1] }
+
 type Bucket struct {
 	ID      string  `json:"id"`
 	WindowS float64 `json:"window_s"` // 0 = single window spanning all time
-	// Windows lists the non-empty window indexes in the baked dataset, per
-	// category ("all" plus each real category). Set by bake, shipped in the
-	// manifest. The client only fetches (window, category) pairs listed here
-	// and renders everything else as empty locally - so no empty chunk files
-	// exist and a 404 on a listed key is a bake bug (API-1). Per-category
-	// lists matter: a window can hold war events but no science ones, and a
-	// category-blind list would send the client to keys that were never
-	// baked. Indexes stay < 2^53, safe as JSON numbers.
-	Windows map[string][]int64 `json:"windows,omitempty"`
+	// Windows lists the baked window runs, per category ("all" plus each real
+	// category). Set by bake, shipped in the manifest. The client only fetches
+	// runs listed here and renders everything else as empty locally - so no
+	// empty chunk files exist and a 404 on a listed key is a bake bug (API-1).
+	// Per-category lists matter: a window can hold war events but no science
+	// ones, and a category-blind list would send the client to keys that were
+	// never baked. Indexes stay < 2^53, safe as JSON numbers.
+	Windows map[string][]WindowRun `json:"windows,omitempty"`
 }
 
 // Buckets is ordered coarse -> fine. Index in this slice is the bucket number.

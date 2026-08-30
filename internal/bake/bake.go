@@ -4,7 +4,9 @@
 package bake
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -165,10 +167,25 @@ func Run(ctx context.Context, sink Sink, compiler LayerCompiler, dataset, seedVe
 	return m, stats, nil
 }
 
+// chunkRelKey is the chunk artifact key relative to /v/<dataset>/ (API-1). The
+// client computes the identical string from the manifest; keeping one
+// formatter here keeps the golden lookup and the upload on the same string.
+func chunkRelKey(bucketID string, window int64, cat string) string {
+	return fmt.Sprintf("chunks/%s/%d/world/%s.json", bucketID, window, cat)
+}
+
 // bakeChunks writes /v/<ds>/chunks/<tb>/<window>/world/<category>.json and
-// returns the bucket table with per-bucket non-empty window lists (shipped in
-// the manifest so the client never fetches, or 404s on, an empty window), plus
-// the chunks named by goldenKeys for evaluation.
+// returns the bucket table with per-bucket window runs (shipped in the manifest
+// so the client never fetches, or 404s on, an empty window), plus the chunks
+// named by goldenKeys for evaluation.
+//
+// Every (window, category) that holds anything is still ranked, and its ranked
+// body is what the client gets. What changed is how many objects that takes:
+// consecutive windows whose bodies come out byte-identical - the overwhelming
+// majority, because a chunk's contents only change when an entity's span starts
+// or ends - collapse into one artifact stored at the run's first window. The
+// artifact count therefore tracks the number of span boundaries rather than the
+// number of windows, which is what kept it from scaling (ARCH-4).
 func bakeChunks(w *writer, dataset string, entities []*model.Entity, childCount map[string]int, goldenKeys map[string]bool) ([]model.Bucket, map[string]chunkFile, error) {
 	type cell struct {
 		bucket int
@@ -193,54 +210,91 @@ func bakeChunks(w *writer, dataset string, entities []*model.Entity, childCount 
 		}
 	}
 
-	windowSets := make([]map[string]map[int64]bool, len(model.Buckets))
-	for i := range windowSets {
-		windowSets[i] = map[string]map[int64]bool{}
+	// Group the windows per (bucket, category); runs only ever form inside a
+	// group, since that is the axis the client scans.
+	type group struct {
+		bucket int
+		cat    string
 	}
-
-	keys := make([]cell, 0, len(cells))
+	windowsOf := map[group][]int64{}
 	for c := range cells {
-		keys = append(keys, c)
+		g := group{c.bucket, c.cat}
+		windowsOf[g] = append(windowsOf[g], c.window)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := keys[i], keys[j]
-		if a.bucket != b.bucket {
-			return a.bucket < b.bucket
+	groups := make([]group, 0, len(windowsOf))
+	for g := range windowsOf {
+		groups = append(groups, g)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].bucket != groups[j].bucket {
+			return groups[i].bucket < groups[j].bucket
 		}
-		if a.window != b.window {
-			return a.window < b.window
-		}
-		return a.cat < b.cat
+		return groups[i].cat < groups[j].cat
 	})
 
+	runs := make([]map[string][]model.WindowRun, len(model.Buckets))
+	for i := range runs {
+		runs[i] = map[string][]model.WindowRun{}
+	}
 	captured := map[string]chunkFile{}
-	for _, c := range keys {
-		items := rankCell(cells[c], c.cat == "all", childCount)
-		relKey := fmt.Sprintf("chunks/%s/%d/world/%s.json",
-			model.Buckets[c.bucket].ID, c.window, c.cat)
-		if err := w.putJSON(fmt.Sprintf("v/%s/%s", dataset, relKey), chunkFile{Items: items}); err != nil {
-			return nil, nil, err
+
+	for _, g := range groups {
+		ws := windowsOf[g]
+		slices.Sort(ws)
+		bucketID := model.Buckets[g.bucket].ID
+
+		// The open run: its first window, the body every window in it shares,
+		// and the last window admitted so far.
+		var anchorWindow, lastWindow int64
+		var anchorBody []byte
+
+		emit := func() error {
+			runs[g.bucket][g.cat] = append(runs[g.bucket][g.cat], model.WindowRun{anchorWindow, lastWindow})
+			return w.putBytes(fmt.Sprintf("v/%s/%s", dataset, chunkRelKey(bucketID, anchorWindow, g.cat)),
+				anchorBody, "application/json")
 		}
-		if goldenKeys[relKey] {
-			captured[relKey] = chunkFile{Items: items}
+
+		for i, win := range ws {
+			items := rankCell(cells[cell{g.bucket, win, g.cat}], g.cat == "all", childCount)
+			file := chunkFile{Items: items}
+			body, err := json.Marshal(file)
+			if err != nil {
+				return nil, nil, fmt.Errorf("marshal chunk %s: %w", chunkRelKey(bucketID, win, g.cat), err)
+			}
+			// Goldens pin what the client resolves at a window, so they are
+			// captured per window - not per artifact, which may sit earlier.
+			if goldenKeys[chunkRelKey(bucketID, win, g.cat)] {
+				captured[chunkRelKey(bucketID, win, g.cat)] = file
+			}
+			// A run means every window from Start to End, so it may only grow
+			// by a consecutive window. Today an empty window can never sit
+			// between two identical bodies (an entity covers a contiguous span,
+			// so it would cover the middle one too), but that is a property of
+			// how cells are filled, not of this loop; the ZOOM-4 overlap-factor
+			// work would end it by dropping entities from windows they barely
+			// overlap, and a run spanning a gap hands a viewport items from
+			// outside it.
+			if i > 0 && win == lastWindow+1 && bytes.Equal(body, anchorBody) {
+				lastWindow = win
+				continue
+			}
+			if i > 0 {
+				if err := emit(); err != nil {
+					return nil, nil, err
+				}
+			}
+			anchorWindow, lastWindow, anchorBody = win, win, body
 		}
-		if windowSets[c.bucket][c.cat] == nil {
-			windowSets[c.bucket][c.cat] = map[int64]bool{}
+		if len(ws) > 0 {
+			if err := emit(); err != nil {
+				return nil, nil, err
+			}
 		}
-		windowSets[c.bucket][c.cat][c.window] = true
 	}
 
 	out := make([]model.Bucket, len(model.Buckets))
 	for i, b := range model.Buckets {
-		b.Windows = map[string][]int64{}
-		for cat, set := range windowSets[i] {
-			ws := make([]int64, 0, len(set))
-			for w := range set {
-				ws = append(ws, w)
-			}
-			slices.Sort(ws)
-			b.Windows[cat] = ws
-		}
+		b.Windows = runs[i]
 		out[i] = b
 	}
 	return out, captured, nil

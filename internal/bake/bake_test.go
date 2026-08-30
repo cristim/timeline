@@ -1,6 +1,7 @@
 package bake
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -127,6 +128,170 @@ func testEntities(t *testing.T) []*model.Entity {
 	return es
 }
 
+// TestWindowRunsServeEveryWindowUnchanged is the contract proof for collapsing
+// consecutive identical windows into one artifact: for EVERY (bucket, window,
+// category) that holds anything, the object a client resolves through the
+// manifest must be byte-identical to the chunk that window would have been
+// baked as on its own. The expected side is enumerated here independently of
+// bakeChunks, so a change to either drifts the test rather than agreeing with
+// itself.
+func TestWindowRunsServeEveryWindowUnchanged(t *testing.T) {
+	es := testEntities(t)
+	sink := newMemSink()
+	m, _, err := Run(context.Background(), sink, new(recordingCompiler), "test", "seed-x", es, testBasemap(), testGeo(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Independent enumeration of every populated (bucket, window, category).
+	type cellKey struct {
+		bucket int
+		window int64
+		cat    string
+	}
+	want := map[cellKey][]*model.Entity{}
+	for _, e := range es {
+		for b := e.BucketMin; b <= e.BucketMax; b++ {
+			bk := model.Buckets[b]
+			for w := bk.WindowIndex(e.T0); w <= bk.WindowIndex(e.T1); w++ {
+				for _, c := range append(slices.Clone(e.Categories), "all") {
+					want[cellKey{b, w, c}] = append(want[cellKey{b, w, c}], e)
+				}
+			}
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("fixture produced no chunks")
+	}
+
+	childCount := map[string]int{}
+	for _, e := range es {
+		for _, r := range e.Rel {
+			if r.Type == "part_of" {
+				childCount[r.Target]++
+			}
+		}
+	}
+
+	for k, entities := range want {
+		expected, err := json.Marshal(chunkFile{Items: rankCell(entities, k.cat == "all", childCount)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		start, ok := runStart(m.Buckets[k.bucket].Windows[k.cat], k.window)
+		if !ok {
+			t.Fatalf("no %s run covers window %d at %s", k.cat, k.window, model.Buckets[k.bucket].ID)
+		}
+		got, ok := sink.objects[keyFor("test", k.bucket, start, k.cat)]
+		if !ok {
+			t.Fatalf("manifest points %s window %d (%s) at a missing artifact for window %d",
+				model.Buckets[k.bucket].ID, k.window, k.cat, start)
+		}
+		if !bytes.Equal(got, expected) {
+			t.Errorf("%s window %d (%s) resolves to window %d, whose body differs:\n got %s\nwant %s",
+				model.Buckets[k.bucket].ID, k.window, k.cat, start, got, expected)
+		}
+	}
+
+	// The reverse direction: a run must never cover a window that holds
+	// nothing, or the client would render items outside their own viewport.
+	runWindows := 0
+	for b := range m.Buckets {
+		for cat, runs := range m.Buckets[b].Windows {
+			for _, r := range runs {
+				if r.Start() > r.End() {
+					t.Fatalf("%s %s: inverted run %v", model.Buckets[b].ID, cat, r)
+				}
+				for w := r.Start(); w <= r.End(); w++ {
+					runWindows++
+					if _, ok := want[cellKey{b, w, cat}]; !ok {
+						t.Errorf("%s %s run %v covers empty window %d", model.Buckets[b].ID, cat, r, w)
+					}
+				}
+			}
+		}
+	}
+	if runWindows != len(want) {
+		t.Errorf("runs cover %d windows, want exactly the %d populated ones", runWindows, len(want))
+	}
+
+	// And the collapse has to actually happen, or this test proves nothing:
+	// WWII spans 72 month-windows at T11 whose bodies never change.
+	chunkObjects := 0
+	for key := range sink.objects {
+		if strings.Contains(key, "/chunks/") {
+			chunkObjects++
+		}
+	}
+	if chunkObjects >= len(want) {
+		t.Errorf("%d chunk objects for %d windows: nothing collapsed", chunkObjects, len(want))
+	}
+	t.Logf("%d windows served by %d artifacts", len(want), chunkObjects)
+}
+
+// TestWindowRunsStopAtEmptyWindows pins the range half of the collapse: a run
+// means "every window from Start to End", so it may only ever be built from
+// consecutive windows. Two wars a century apart leave the T10 war windows with
+// a long empty stretch between them, which no run may cross - a client sitting
+// in 1900 would otherwise be handed Waterloo and Stalingrad.
+func TestWindowRunsStopAtEmptyWindows(t *testing.T) {
+	es := []*model.Entity{
+		{SeedID: "waterloo", Type: "event", Name: "Battle of Waterloo",
+			T0: model.YearToSeconds(1815.46), T1: model.YearToSeconds(1815.46),
+			Precision: "day", Status: "documented",
+			Categories: []string{"war"}, Importance: 0.5},
+		{SeedID: "ww2", Type: "event", Name: "World War II",
+			T0: model.YearToSeconds(1939.67), T1: model.YearToSeconds(1945.67),
+			Precision: "day", Status: "documented",
+			Categories: []string{"war"}, Importance: 0.5},
+	}
+	if err := model.AssignSlugs(es); err != nil {
+		t.Fatal(err)
+	}
+	if err := rankzoom.Bucketize(es); err != nil {
+		t.Fatal(err)
+	}
+	sink := newMemSink()
+	m, _, err := Run(context.Background(), sink, new(recordingCompiler), "test", "seed-x", es,
+		testBasemap(), &model.GeoSet{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t10 := model.Buckets[10]
+	populated := map[int64]bool{}
+	for _, e := range es {
+		for w := t10.WindowIndex(e.T0); w <= t10.WindowIndex(e.T1); w++ {
+			populated[w] = true
+		}
+	}
+	runs := m.Buckets[10].Windows["war"]
+	if len(runs) < 2 {
+		t.Fatalf("T10 war runs = %v, want the 1815 and 1939-45 stretches kept apart", runs)
+	}
+	for _, r := range runs {
+		for w := r.Start(); w <= r.End(); w++ {
+			if !populated[w] {
+				t.Errorf("run %v covers window %d, which holds no war entity", r, w)
+			}
+		}
+	}
+	if _, ok := runStart(runs, t10.WindowIndex(model.YearToSeconds(1900))); ok {
+		t.Error("a run covers 1900, where nothing happened")
+	}
+}
+
+// runStart returns the window whose artifact serves w, i.e. the first window of
+// the run containing it. The Go twin of the run lookup in keyscheme.ts.
+func runStart(runs []model.WindowRun, w int64) (int64, bool) {
+	for _, r := range runs {
+		if w >= r.Start() && w <= r.End() {
+			return r.Start(), true
+		}
+	}
+	return 0, false
+}
+
 func testBasemap() BasemapArtifact {
 	body := []byte("tiny pmtiles fixture")
 	return BasemapArtifact{
@@ -199,7 +364,7 @@ func TestBakeChunksAndDocs(t *testing.T) {
 	// Stalingrad appears in the war chunk of its 1942 window at T10.
 	w := model.Buckets[10].WindowIndex(model.YearToSeconds(1942.7))
 	var t10 chunkFile
-	mustGet(t, sink, keyFor("test", 10, w, "war"), &t10)
+	resolveGet(t, sink, m, "test", 10, w, "war", &t10)
 	names = names[:0]
 	for _, i := range t10.Items {
 		names = append(names, i.Name)
@@ -210,7 +375,7 @@ func TestBakeChunksAndDocs(t *testing.T) {
 
 	// The parent's child_count reflects part_of.
 	var ww2 chunkFile
-	mustGet(t, sink, keyFor("test", 8, model.Buckets[8].WindowIndex(model.YearToSeconds(1940)), "all"), &ww2)
+	resolveGet(t, sink, m, "test", 8, model.Buckets[8].WindowIndex(model.YearToSeconds(1940)), "all", &ww2)
 	for _, i := range ww2.Items {
 		if i.Name == "World War II" && i.ChildCount != 1 {
 			t.Errorf("ww2 child_count = %d, want 1", i.ChildCount)
@@ -224,20 +389,20 @@ func TestBakeChunksAndDocs(t *testing.T) {
 		t.Errorf("ww2 children = %+v", doc.Children)
 	}
 
-	// Manifest window lists are per category and only contain baked windows.
-	if ws := m.Buckets[0].Windows["all"]; len(ws) != 1 || ws[0] != 0 {
+	// Manifest window runs are per category and only cover baked windows.
+	if ws := m.Buckets[0].Windows["all"]; len(ws) != 1 || ws[0] != (model.WindowRun{0, 0}) {
 		t.Errorf("T0 all-windows = %v", m.Buckets[0].Windows)
 	}
-	if ws := m.Buckets[0].Windows["war"]; len(ws) != 1 || ws[0] != 0 {
+	if ws := m.Buckets[0].Windows["war"]; len(ws) != 1 || ws[0] != (model.WindowRun{0, 0}) {
 		t.Errorf("T0 war-windows = %v", m.Buckets[0].Windows)
 	}
-	// A category with no entities in a window must not list that window:
+	// A category with no entities in a window must not cover that window:
 	// the client would 404 on it (the browser-found filtering bug).
 	w1942 := model.Buckets[10].WindowIndex(model.YearToSeconds(1942.7))
-	if !slices.Contains(m.Buckets[10].Windows["war"], w1942) {
+	if _, ok := runStart(m.Buckets[10].Windows["war"], w1942); !ok {
 		t.Errorf("T10 war windows missing 1942: %v", m.Buckets[10].Windows["war"])
 	}
-	if slices.Contains(m.Buckets[10].Windows["universe"], w1942) {
+	if _, ok := runStart(m.Buckets[10].Windows["universe"], w1942); ok {
 		t.Errorf("T10 universe windows should not contain 1942: %v", m.Buckets[10].Windows["universe"])
 	}
 
@@ -626,6 +791,18 @@ func TestPolityColorMatchesJavaScriptUTF16(t *testing.T) {
 
 func keyFor(ds string, bucket int, window int64, cat string) string {
 	return fmt.Sprintf("v/%s/chunks/%s/%d/world/%s.json", ds, model.Buckets[bucket].ID, window, cat)
+}
+
+// resolveGet fetches the chunk a client would get for (bucket, window, cat):
+// windows share an artifact with the rest of their run, so the key is the run's
+// first window. Mirrors windowsInRange in web/src/lib/keyscheme.ts.
+func resolveGet(t *testing.T, s *memSink, m *model.Manifest, ds string, bucket int, window int64, cat string, v any) {
+	t.Helper()
+	start, ok := runStart(m.Buckets[bucket].Windows[cat], window)
+	if !ok {
+		t.Fatalf("no %s run covers window %d at %s", cat, window, model.Buckets[bucket].ID)
+	}
+	mustGet(t, s, keyFor(ds, bucket, start, cat), v)
 }
 
 func mustGet(t *testing.T, s *memSink, key string, v any) {
