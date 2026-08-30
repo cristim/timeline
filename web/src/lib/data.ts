@@ -1,6 +1,5 @@
 // Artifact reads (the whole "query engine", API-1): fetch, cache, union.
 // Everything under /v/<dataset>/ is immutable, so caching is unconditional.
-import type { Geometry } from "geojson";
 import { layerIndexKey, layerKey } from "./keyscheme";
 import { artifactURL, type Manifest } from "./manifest";
 
@@ -72,32 +71,21 @@ export interface GeometryRecord {
   geometry: { type: "LineString"; coordinates: [number, number][] };
 }
 
-/**
- * One time-step of a map layer: a GeoJSON FeatureCollection carrying the era's
- * own coverage window, so the client never draws a snapshot at a date it does
- * not speak for.
- */
-export interface BorderLayerDoc {
-  type: "FeatureCollection";
-  properties: {
-    layer: string;
-    year: number;
-    t_from: number;
-    t_to: number;
-    label: string;
-    source: string;
-  };
-  features: {
-    type: "Feature";
-    properties: { name: string; slug?: string; representation: string };
-    geometry: Geometry;
-  }[];
-}
-
 /** layers/<layer>/index.json: every time-step with its coverage window. */
 export interface LayerIndexDoc {
   layer: string;
-  steps: { year: number; t_from: number; t_to: number; label: string }[];
+  steps: { year: number; t_from: number; t_to: number; label: string; source: string }[];
+}
+
+/** One immutable PMTiles archive selected from a layer's coverage index. */
+export interface AreaLayerSlice {
+  layer: string;
+  year: number;
+  t_from: number;
+  t_to: number;
+  label: string;
+  source: string;
+  url: string;
 }
 
 export interface SearchEntry {
@@ -112,16 +100,7 @@ export interface SearchEntry {
 
 const cache = new Map<string, Promise<unknown>>();
 
-/**
- * Layer bodies are the one artifact class worth evicting: ~200-500 KB each and
- * there are 89 of them, so scrubbing the cursor across all of history would
- * otherwise pin the entire atlas in memory. Chunks, entities and search shards
- * stay cached for the session, being small and immutable.
- */
-const LAYER_CACHE_MAX = 24;
-const layerCacheOrder: string[] = [];
-
-function fetchArtifact<T>(dataset: string, relKey: string, evictable = false): Promise<T> {
+function fetchArtifact<T>(dataset: string, relKey: string): Promise<T> {
   const url = artifactURL(`/v/${dataset}/${relKey}`);
   let p = cache.get(url);
   if (!p) {
@@ -134,12 +113,6 @@ function fetchArtifact<T>(dataset: string, relKey: string, evictable = false): P
     });
     p.catch(() => cache.delete(url)); // don't cache failures
     cache.set(url, p);
-    if (evictable) {
-      layerCacheOrder.push(url);
-      while (layerCacheOrder.length > LAYER_CACHE_MAX) {
-        cache.delete(layerCacheOrder.shift()!);
-      }
-    }
   }
   return p as Promise<T>;
 }
@@ -160,10 +133,14 @@ export function fetchLayerIndex(m: Manifest, layer: string): Promise<LayerIndexD
   return fetchArtifact(m.dataset, layerIndexKey(layer));
 }
 
-export function fetchBorderLayer(
+export function areaLayerSlice(
   m: Manifest,
   layer: string,
-  timestep: number,
-): Promise<BorderLayerDoc> {
-  return fetchArtifact(m.dataset, layerKey(layer, timestep), true);
+  step: LayerIndexDoc["steps"][number],
+): AreaLayerSlice {
+  return {
+    layer,
+    ...step,
+    url: `pmtiles://${artifactURL(`/v/${m.dataset}/${layerKey(layer, step.year)}`)}`,
+  };
 }

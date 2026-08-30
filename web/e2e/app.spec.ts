@@ -216,13 +216,34 @@ async function gotoYear(page: Page, year: number, span: number) {
  * is asserted through the two things that survive a production build: the URLs
  * requested, and the chip.
  */
-function watchLayers(page: Page) {
-  const fetched: string[] = [];
-  page.on("response", (res) => {
-    const m = /\/layers\/([a-z]+)\/(-?\d+)\.json$/.exec(new URL(res.url()).pathname);
-    if (m && res.ok()) fetched.push(`${m[1]}/${m[2]}`);
+interface LayerWatch {
+  fetched: string[];
+  missingRange: string[];
+  badStatus: { url: string; status: number }[];
+  jsonBodies: string[];
+}
+
+function watchLayers(page: Page): LayerWatch {
+  const watched: LayerWatch = { fetched: [], missingRange: [], badStatus: [], jsonBodies: [] };
+  page.on("request", (req) => {
+    const path = new URL(req.url()).pathname;
+    const pmtiles = /\/layers\/([a-z]+)\/(-?\d+)\.pmtiles$/.exec(path);
+    if (pmtiles && !req.headers().range) watched.missingRange.push(req.url());
+    if (/\/layers\/[a-z]+\/-?\d+\.json$/.test(path)) watched.jsonBodies.push(req.url());
   });
-  return fetched;
+  page.on("response", (res) => {
+    const match = /\/layers\/([a-z]+)\/(-?\d+)\.pmtiles$/.exec(new URL(res.url()).pathname);
+    if (!match) return;
+    if (res.status() !== 206) watched.badStatus.push({ url: res.url(), status: res.status() });
+    watched.fetched.push(`${match[1]}/${match[2]}`);
+  });
+  return watched;
+}
+
+function expectPMTilesTransport(watched: LayerWatch) {
+  expect(watched.missingRange, "PMTiles requests without Range").toEqual([]);
+  expect(watched.badStatus, "PMTiles responses without 206").toEqual([]);
+  expect(watched.jsonBodies, "legacy layer JSON body requests").toEqual([]);
 }
 
 // The whole point of replacing five hand-traced eras with a tiling dataset:
@@ -238,11 +259,12 @@ test("every date in recorded history shows a map", async ({ page }) => {
     await expect(chip, `chip at ${year}`).not.toHaveClass(/paleo/);
     // A political slice was actually downloaded, and deep time was not.
     await expect
-      .poll(() => layers.filter((l) => l.startsWith("borders/")).length, {
+      .poll(() => layers.fetched.filter((l) => l.startsWith("borders/")).length, {
         message: `borders fetched at ${year}`,
       })
       .toBeGreaterThan(0);
-    expect(layers.filter((l) => l.startsWith("paleocoast/")), `paleo at ${year}`).toEqual([]);
+    expect(layers.fetched.filter((l) => l.startsWith("paleocoast/")), `paleo at ${year}`).toEqual([]);
+    expectPMTilesTransport(layers);
   }
   expect(w.errors, "console errors").toEqual([]);
   expect(w.notFound, "same-origin 404s").toEqual([]);
@@ -257,7 +279,8 @@ test("dates outside every layer say so instead of staying modern", async ({ page
   await expect(page.locator(".era-chip")).toContainText("no map data");
   await expect(page.locator(".era-chip")).toHaveClass(/empty/);
   // The index answers "nothing covers this" without downloading a slice body.
-  expect(layers).toEqual([]);
+  expect(layers.fetched).toEqual([]);
+  expectPMTilesTransport(layers);
 });
 
 test("deep time renders reconstructed coastlines and hides the modern world", async ({ page }) => {
@@ -271,10 +294,10 @@ test("deep time renders reconstructed coastlines and hides the modern world", as
   await expect(chip).toHaveClass(/paleo/);
 
   await expect
-    .poll(() => layers.filter((l) => l.startsWith("paleocoast/")).length)
+    .poll(() => layers.fetched.filter((l) => l.startsWith("paleocoast/")).length)
     .toBeGreaterThan(0);
   // Political borders are meaningless here and must not be drawn.
-  expect(layers.filter((l) => l.startsWith("borders/"))).toEqual([]);
+  expect(layers.fetched.filter((l) => l.startsWith("borders/"))).toEqual([]);
 
   // The opaque ocean is what actually hides the modern basemap. Sample the
   // rendered canvas: with the globe filling the view, the centre pixel must be
@@ -285,6 +308,7 @@ test("deep time renders reconstructed coastlines and hides the modern world", as
   expect(centre.g, `centre pixel ${JSON.stringify(centre)}`).toBeLessThan(190);
   expect(w.errors, "console errors").toEqual([]);
   expect(w.notFound, "same-origin 404s").toEqual([]);
+  expectPMTilesTransport(layers);
 });
 
 /**
@@ -321,6 +345,51 @@ async function mapPixel(page: Page, fx = 0.5, fy = 0.5) {
 
 const mapCentrePixel = (page: Page) => mapPixel(page);
 
+async function clickMapColor(page: Page, target: [number, number, number]) {
+  const map = page.locator(".map-container");
+  const shot = await map.screenshot();
+  const pixel = await page.evaluate(
+    ([b64, rgb]) =>
+      new Promise<{ x: number; y: number; width: number; height: number } | null>((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const context = canvas.getContext("2d")!;
+          context.drawImage(img, 0, 0);
+          const pixels = context.getImageData(0, 0, img.width, img.height).data;
+          let closest: { x: number; y: number; distance: number } | null = null;
+          const expectedX = img.width * 0.55;
+          const expectedY = img.height * 0.45;
+          for (let y = 0; y < img.height; y++) {
+            for (let x = 0; x < img.width; x++) {
+              const offset = (y * img.width + x) * 4;
+              if (
+                Math.abs(pixels[offset] - rgb[0]) > 4 ||
+                Math.abs(pixels[offset + 1] - rgb[1]) > 4 ||
+                Math.abs(pixels[offset + 2] - rgb[2]) > 4
+              ) {
+                continue;
+              }
+              const distance = Math.hypot(x - expectedX, y - expectedY);
+              if (!closest || distance < closest.distance) closest = { x, y, distance };
+            }
+          }
+          resolve(closest ? { ...closest, width: img.width, height: img.height } : null);
+        };
+        img.src = `data:image/png;base64,${b64}`;
+      }),
+    [shot.toString("base64"), target] as const,
+  );
+  expect(pixel, `map color ${target.join(",")}`).not.toBeNull();
+  const box = (await map.boundingBox())!;
+  await page.mouse.click(
+    box.x + (pixel!.x / pixel!.width) * box.width,
+    box.y + (pixel!.y / pixel!.height) * box.height,
+  );
+}
+
 // The one moment the map changes kind. A gap here blanks the world; an
 // overlap would draw both at once.
 test("deep time hands over to recorded history at the boundary", async ({ page }) => {
@@ -328,8 +397,9 @@ test("deep time hands over to recorded history at the boundary", async ({ page }
   const before = watchLayers(page);
   await gotoYear(page, -123_001, 1000 * SECONDS_PER_YEAR);
   await expect(page.locator(".era-chip")).toHaveClass(/paleo/);
-  await expect.poll(() => before.filter((l) => l.startsWith("paleocoast/")).length).toBeGreaterThan(0);
-  expect(before.filter((l) => l.startsWith("borders/"))).toEqual([]);
+  await expect.poll(() => before.fetched.filter((l) => l.startsWith("paleocoast/")).length).toBeGreaterThan(0);
+  expect(before.fetched.filter((l) => l.startsWith("borders/"))).toEqual([]);
+  expectPMTilesTransport(before);
 
   // 123000 BC is the first year of the political layer's oldest slice.
   const after = watchLayers(page);
@@ -338,7 +408,8 @@ test("deep time hands over to recorded history at the boundary", async ({ page }
   await expect(chip).not.toHaveClass(/paleo/);
   await expect(chip).not.toHaveClass(/empty/);
   await expect(chip).toContainText("123000 BC");
-  await expect.poll(() => after.filter((l) => l.startsWith("borders/")).length).toBeGreaterThan(0);
+  await expect.poll(() => after.fetched.filter((l) => l.startsWith("borders/")).length).toBeGreaterThan(0);
+  expectPMTilesTransport(after);
 });
 
 // Scrubbing must walk the slices, not jump between a favoured few: each
@@ -387,7 +458,8 @@ test("older than every reconstruction the globe says so and shows nothing", asyn
   const chip = page.locator(".era-chip");
   await expect(chip).toContainText("no reconstruction earlier than 540 Ma");
   await expect(chip).toHaveClass(/void/);
-  expect(layers).toEqual([]);
+  expect(layers.fetched).toEqual([]);
+  expectPMTilesTransport(layers);
 
   await page.waitForTimeout(2500);
   const centre = await mapCentrePixel(page);
@@ -475,6 +547,8 @@ test("a point event shows only near the cursor, and a selected one always", asyn
   await expect(page.locator(".count")).toHaveText("1 shown");
   const withIt = await page.locator(".map-container").screenshot();
   expect(Buffer.compare(without, withIt), "the marker must appear on the map").not.toBe(0);
+  await clickMapColor(page, [201, 107, 74]);
+  await expect(page.locator(".inspector h2")).toHaveText("Fall of Constantinople");
 
   await page.goto(`./?${NARROW}&tc=${TC_OFF}&sel=fall-of-constantinople`);
   await booted(page);

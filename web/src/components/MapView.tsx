@@ -1,6 +1,5 @@
-// FE-3: MapLibre map, time-synchronized with the timeline. M3 uses the free
-// MapLibre demotiles world basemap; PMTiles layers arrive with M4.
-import { useEffect, useMemo, useRef, useState } from "react";
+// FE-3: MapLibre map, time-synchronized with the timeline.
+import { useEffect, useRef, useState } from "react";
 import * as maplibregl from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import "maplibre-gl/dist/maplibre-gl.css";
@@ -12,49 +11,46 @@ import "maplibre-gl/dist/maplibre-gl.css";
 // its dependency and hand back a servable URL.
 maplibregl.setWorkerUrl(maplibreWorkerUrl);
 import type { FeatureCollection, Point } from "geojson";
-import type { BorderLayerDoc, ChunkItem } from "../lib/data";
+import type { AreaLayerSlice, ChunkItem } from "../lib/data";
 import type { FrontSample } from "../lib/fronts";
 import type { MapMode } from "../lib/mapmode";
-import { categoryColor, FALLBACK_COLOR, polityColor } from "../lib/colors";
+import { categoryColor, FALLBACK_COLOR } from "../lib/colors";
 import { devHook } from "../lib/devhook";
+import { queryAreaFeature, SlotPair, type AreaLayerStyle } from "../lib/areaLayers";
+import { registerPMTilesProtocol } from "../lib/pmtilesProtocol";
+
+registerPMTilesProtocol();
 
 // The globe-ready demotiles style (projection: globe baked in). The plain
 // style.json renders an empty pale sphere under globe projection.
 const STYLE_URL = "https://demotiles.maplibre.org/globe.json";
 const SOURCE = "wk-items";
 
-// Two source slots so one slice can fade out while the next fades in (FE-2
-// asks for crossfades between datasets, not hard cuts).
-const SLOTS = ["a", "b"] as const;
 const FADE_MS = 450;
 const EMPTY_FC: FeatureCollection = { type: "FeatureCollection", features: [] };
 
-/** How one time-sliced area layer is painted. */
-interface LayerStyle {
-  /** A colour, or a MapLibre expression reading one off each feature. */
-  fill: NonNullable<maplibregl.AllPaintProperties["fill-color"]>;
-  line: string;
-  fillOpacity: number;
-  lineOpacity: number;
-  lineWidth: number;
-}
-
 // Political slices replace the modern political map rather than overlay it.
-const ERA_STYLE: LayerStyle = {
+const ERA_STYLE: AreaLayerStyle = {
   fill: ["get", "color"],
   line: "#101726",
   fillOpacity: 1,
   lineOpacity: 0.85,
   lineWidth: 1.2,
+  dashed: true,
+  attribution:
+    "historical-basemaps (GPL-3.0): https://github.com/aourednik/historical-basemaps",
 };
 
 // GPlates carries no feature names, so reconstructed land uses one colour.
-const PALEO_STYLE: LayerStyle = {
+const PALEO_STYLE: AreaLayerStyle = {
   fill: "#9a8c66",
   line: "#6d6144",
   fillOpacity: 1,
   lineOpacity: 0.85,
   lineWidth: 1,
+  dashed: false,
+  attribution:
+    "Merdith et al. 2021 (CC-BY 4.0): https://doi.org/10.1016/j.earscirev.2020.103477",
 };
 
 // The globe's own surface, under everything we draw and over everything the
@@ -133,9 +129,9 @@ interface Props {
   /** What kind of world to draw at the cursor (lib/mapmode.ts). */
   mode: MapMode;
   /** Political extents for the cursor time, or null outside recorded history. */
-  era: BorderLayerDoc | null;
+  era: AreaLayerSlice | null;
   /** Reconstructed coastlines when the cursor is in deep time, else null. */
-  paleo: BorderLayerDoc | null;
+  paleo: AreaLayerSlice | null;
   /** The selected war's front at the cursor time, or null for everything else. */
   front: FrontSample | null;
   /** Bounds framing the selection's geometry, when it has any. */
@@ -195,133 +191,6 @@ function toGeoJSON(items: ChunkItem[], selected: string | null): FeatureCollecti
   };
 }
 
-/**
- * The two-slot crossfade for one time-sliced area layer. Both area layers
- * (political borders, paleo coastlines) behave identically: load the incoming
- * slice into the idle slot, and swap opacities only once it has actually
- * parsed. Raising the incoming slot straight after setData would fade in an
- * empty layer and pop the shapes in afterwards, which is the hard cut the two
- * slots exist to avoid.
- */
-class SlotPair {
-  private live: (typeof SLOTS)[number] = "a";
-  private shown: number | null = null;
-  private pendingFade: (() => void) | null = null;
-
-  constructor(
-    private readonly kind: string,
-    private readonly style: LayerStyle,
-    private readonly dashed: boolean,
-  ) {}
-
-  add(map: maplibregl.Map) {
-    for (const slot of SLOTS) {
-      const source = `wk-${this.kind}-${slot}`;
-      map.addSource(source, { type: "geojson", data: EMPTY_FC });
-      map.addLayer({
-        id: `${source}-fill`,
-        type: "fill",
-        source,
-        paint: {
-          "fill-color": this.style.fill,
-          "fill-opacity": 0,
-          "fill-opacity-transition": { duration: FADE_MS },
-        },
-      });
-      map.addLayer({
-        id: `${source}-line`,
-        type: "line",
-        source,
-        paint: {
-          "line-color": this.style.line,
-          "line-width": this.style.lineWidth,
-          // Every slice is representation=estimated (DM-7), and FE-3 wants
-          // that drawn as a hedge, not a hard border. An exact layer would
-          // need its own solid line layer: line-dasharray is not data-driven.
-          ...(this.dashed ? { "line-dasharray": [3, 2] } : {}),
-          "line-opacity": 0,
-          "line-opacity-transition": { duration: FADE_MS },
-        },
-      });
-    }
-  }
-
-  fillLayerIds(): string[] {
-    return SLOTS.map((s) => `wk-${this.kind}-${s}-fill`);
-  }
-
-  /** The slot currently faded in - the one a hover should be read against. */
-  liveFillLayerId(): string {
-    return `wk-${this.kind}-${this.live}-fill`;
-  }
-
-  private setOpacity(map: maplibregl.Map, slot: string, on: boolean) {
-    map.setPaintProperty(
-      `wk-${this.kind}-${slot}-fill`,
-      "fill-opacity",
-      on ? this.style.fillOpacity : 0,
-    );
-    map.setPaintProperty(
-      `wk-${this.kind}-${slot}-line`,
-      "line-opacity",
-      on ? this.style.lineOpacity : 0,
-    );
-  }
-
-  /**
-   * The `shown` guard keeps a re-render from restarting a fade already
-   * running; `pendingFade` keeps a fast drag across two slice boundaries from
-   * leaving both slots visible.
-   */
-  apply(map: maplibregl.Map, next: BorderLayerDoc | null) {
-    const year = next?.properties.year ?? null;
-    if (year === this.shown) return;
-    this.shown = year;
-    this.pendingFade?.(); // settle any half-finished swap first
-    this.pendingFade = null;
-
-    if (!next) {
-      for (const slot of SLOTS) this.setOpacity(map, slot, false);
-      return;
-    }
-    const slot = this.live === "a" ? "b" : "a";
-    const outgoing = this.live;
-    this.live = slot;
-
-    const swap = () => {
-      map.off("sourcedata", onSourceData);
-      this.pendingFade = null;
-      this.setOpacity(map, slot, true);
-      this.setOpacity(map, outgoing, false);
-    };
-    const sourceId = `wk-${this.kind}-${slot}`;
-    const onSourceData = (e: maplibregl.MapSourceDataEvent) => {
-      if (e.sourceId === sourceId && e.isSourceLoaded) swap();
-    };
-    this.pendingFade = swap;
-    map.on("sourcedata", onSourceData);
-    (map.getSource(sourceId) as maplibregl.GeoJSONSource | undefined)?.setData(next);
-  }
-
-  /** A new map starts with both slots empty and transparent. */
-  reset() {
-    this.live = "a";
-    this.shown = null;
-    this.pendingFade = null;
-  }
-}
-
-/** Add client-side rendering colours without changing immutable artifacts. */
-function withPolityColors(doc: BorderLayerDoc): BorderLayerDoc {
-  return {
-    ...doc,
-    features: doc.features.map((f) => ({
-      ...f,
-      properties: { ...f.properties, color: polityColor(f.properties.name) },
-    })),
-  };
-}
-
 /** Paints the globe's surface and the basemap for one mode. */
 function applyMode(map: maplibregl.Map, mode: MapMode) {
   const modern = mode === "modern";
@@ -372,12 +241,11 @@ export function MapView({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const readyRef = useRef(false);
   const dataRef = useRef<FeatureCollection>({ type: "FeatureCollection", features: [] });
-  const painted = useMemo(() => (era ? withPolityColors(era) : null), [era]);
-  const eraRef = useRef<BorderLayerDoc | null>(painted);
-  const paleoRef = useRef<BorderLayerDoc | null>(paleo);
+  const eraRef = useRef<AreaLayerSlice | null>(era);
+  const paleoRef = useRef<AreaLayerSlice | null>(paleo);
   const modeRef = useRef<MapMode>(mode);
-  const eraSlots = useRef(new SlotPair("era", ERA_STYLE, true));
-  const paleoSlots = useRef(new SlotPair("paleo", PALEO_STYLE, false));
+  const eraSlots = useRef(new SlotPair("era", ERA_STYLE));
+  const paleoSlots = useRef(new SlotPair("paleo", PALEO_STYLE));
   const frontRef = useRef<FeatureCollection>(frontFC(front));
   const [tip, setTip] = useState<Tip | null>(null);
   const onSelectRef = useRef(onSelect);
@@ -409,21 +277,28 @@ export function MapView({
       }
     };
     container.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
-    // Both fetched layers carry licence conditions that require naming their
-    // source wherever the data is shown, so they are named here rather than
-    // only in the README. Full terms and citations: data/geo/*/NOTICE.md.
+    // Area-source attribution is attached to each lazy vector source. The
+    // always-present basemap and entity data are named by the map control.
     map.addControl(
       new maplibregl.AttributionControl({
         compact: true,
         customAttribution: [
           "© OpenStreetMap contributors",
           "Wikidata CC0",
-          '<a href="https://github.com/aourednik/historical-basemaps">historical-basemaps</a> GPL-3.0',
-          '<a href="https://doi.org/10.1016/j.earscirev.2020.103477">GPlates/Merdith et al. 2021</a> CC-BY 4.0',
         ].join(" · "),
       }),
     );
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");
+    map.on("error", (event) => {
+      const areaError = event as unknown as { sourceId?: string; error?: unknown };
+      if (
+        !areaError.sourceId?.startsWith("wk-era-") &&
+        !areaError.sourceId?.startsWith("wk-paleo-")
+      ) {
+        return;
+      }
+      console.error(`PMTiles area source ${areaError.sourceId} failed:`, areaError.error);
+    });
     map.on("load", () => {
       // The globe's surface goes down first: an opaque sphere over the whole
       // basemap. Then the neutral modern land for political mode, then the two
@@ -464,18 +339,6 @@ export function MapView({
           `basemap source "${BASEMAP_SOURCE}" is missing: political slices will draw on bare ocean`,
         );
       }
-      paleoSlots.current.add(map);
-      eraSlots.current.add(map);
-      for (const id of eraSlots.current.fillLayerIds()) {
-        map.on("click", id, (e: maplibregl.MapLayerMouseEvent) => {
-          // A dot on top of an extent is the more specific target, and its own
-          // handler will take the click.
-          if (map.queryRenderedFeatures(e.point, { layers: ["wk-dots"] }).length) return;
-          const slug = e.features?.[0]?.properties?.slug as string | undefined;
-          if (slug) onSelectRef.current(slug);
-        });
-      }
-
       map.addSource(SOURCE, { type: "geojson", data: dataRef.current });
       map.addLayer({
         id: "wk-halo",
@@ -501,6 +364,13 @@ export function MapView({
       });
       map.on("click", "wk-dots", (e: maplibregl.MapLayerMouseEvent) => {
         const slug = e.features?.[0]?.properties?.slug as string | undefined;
+        if (slug) onSelectRef.current(slug);
+      });
+      map.on("click", (e: maplibregl.MapMouseEvent) => {
+        // A dot on top of an extent is the more specific target, and its own
+        // handler handles the selection.
+        if (map.queryRenderedFeatures(e.point, { layers: ["wk-dots"] }).length) return;
+        const slug = queryAreaFeature(map, eraSlots.current, e.point)?.slug;
         if (slug) onSelectRef.current(slug);
       });
       map.on("mouseenter", "wk-dots", () => (map.getCanvas().style.cursor = "pointer"));
@@ -530,15 +400,13 @@ export function MapView({
       // Read against the live slot only: the outgoing one is still queryable
       // while it fades, and would answer with the previous century's polity.
       const onHover = (e: maplibregl.MapMouseEvent) => {
-        const fill = eraSlots.current.liveFillLayerId();
-        if (modeRef.current !== "political" || !map.getLayer(fill)) return setTip(null);
+        if (modeRef.current !== "political") return setTip(null);
         // A dot is the more specific target, as it is for clicks.
         if (map.queryRenderedFeatures(e.point, { layers: ["wk-dots"] }).length) {
           return setTip(null);
         }
-        const name = map.queryRenderedFeatures(e.point, { layers: [fill] })[0]?.properties
-          ?.name;
-        setTip(typeof name === "string" ? { x: e.point.x, y: e.point.y, name } : null);
+        const name = queryAreaFeature(map, eraSlots.current, e.point)?.name;
+        setTip(name ? { x: e.point.x, y: e.point.y, name } : null);
       };
       map.on("mousemove", onHover);
       map.on("mouseout", () => setTip(null));
@@ -559,12 +427,10 @@ export function MapView({
       container.removeEventListener("wheel", onWheelCapture, { capture: true });
       readyRef.current = false;
       liveMap = null;
-      map.remove();
-      mapRef.current = null;
-      // The next map starts with every slot empty and transparent, so the
-      // "what is already shown" bookkeeping has to start over with it.
       eraSlots.current.reset();
       paleoSlots.current.reset();
+      map.remove();
+      mapRef.current = null;
     };
   }, []);
 
@@ -578,11 +444,11 @@ export function MapView({
   }, [mode]);
 
   useEffect(() => {
-    eraRef.current = painted;
+    eraRef.current = era;
     const map = mapRef.current;
-    if (map && readyRef.current) eraSlots.current.apply(map, painted);
+    if (map && readyRef.current) eraSlots.current.apply(map, era);
     devHook("__wkera", era);
-  }, [painted, era]);
+  }, [era]);
 
   useEffect(() => {
     paleoRef.current = paleo;

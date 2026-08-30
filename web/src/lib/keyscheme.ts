@@ -45,7 +45,7 @@ export function chunkKey(bucket: Bucket, window: number, category: string): stri
 
 /** Map-layer artifact keys (API-4), relative to /v/<dataset>/. */
 export function layerKey(layer: string, timestep: number): string {
-  return `layers/${layer}/${timestep}.json`;
+  return `layers/${layer}/${timestep}.pmtiles`;
 }
 
 export function layerIndexKey(layer: string): string {

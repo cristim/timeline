@@ -54,8 +54,8 @@ describe("layer time-steps", () => {
   ];
 
   it("builds the API-4 layer key", () => {
-    expect(layerKey("borders", 1942)).toBe("layers/borders/1942.json");
-    expect(layerKey("borders", -500)).toBe("layers/borders/-500.json");
+    expect(layerKey("borders", 1942)).toBe("layers/borders/1942.pmtiles");
+    expect(layerKey("borders", -500)).toBe("layers/borders/-500.pmtiles");
   });
 
   it("picks the step whose window covers the year", () => {

@@ -132,8 +132,8 @@ export function App() {
   const tc = cursorTime(view);
   const eraLayer = useTimeLayer(manifest, tc, BORDERS_LAYER);
   const paleoLayer = useTimeLayer(manifest, tc, PALEO_LAYER);
-  const era = eraLayer.doc;
-  const paleo = paleoLayer.doc;
+  const era = eraLayer.slice;
+  const paleo = paleoLayer.slice;
   const cursorYear = secondsToYear(tc);
   const mode = mapMode({
     year: cursorYear,
@@ -291,7 +291,7 @@ export function App() {
               }`}
             >
               {mapLayer
-                ? mapLayer.properties.label
+                ? mapLayer.label
                 : (voidLabel ?? `no map data for ${cursorLabel}`)}
             </div>
             {front && (

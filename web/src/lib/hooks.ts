@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { bucketForSpan, chunkKey, coveringTimestep, secondsToYear, windowsInRange } from "./keyscheme";
 import {
-  fetchBorderLayer,
+  areaLayerSlice,
   fetchChunk,
   fetchEntity,
   fetchLayerIndex,
-  type BorderLayerDoc,
+  type AreaLayerSlice,
   type ChunkItem,
   type EntityDoc,
   type LayerIndexDoc,
@@ -94,29 +94,29 @@ export function useViewportItems(
 }
 
 /**
- * How long the cursor must settle before its slice is fetched. The layers tile
+ * How long the cursor must settle before its slice is selected. The layers tile
  * the whole timeline in 89 slices, so a fast drag crosses dozens of windows;
- * without this, each one would start a download the next instantly obsoletes.
+ * without this, each one would start PMTiles range reads the next obsoletes.
  * Well under the crossfade, so a deliberate scrub still lands on every slice.
  */
 const STEP_SETTLE_MS = 120;
 
 /**
- * The snapshot of one time-sliced map layer for the cursor time (FE-3: moving
+ * The descriptor of one time-sliced map layer for the cursor time (FE-3: moving
  * the timeline re-requests the time-dependent layers).
  *
  * The index is fetched once and answers "does any slice cover this date?";
- * only then is a body downloaded. Booting the whole-universe view therefore
- * costs one small fetch and correctly shows nothing, instead of pulling down
- * Roman Britain to render at 6 billion BCE.
+ * only then does MapLibre receive an immutable PMTiles URL. Booting the
+ * whole-universe view therefore costs one small fetch and correctly creates no
+ * vector source for Roman Britain at 6 billion BCE.
  *
  * Used once per area layer: political borders through recorded history,
  * reconstructed coastlines before it. Their coverage windows are disjoint, so
- * at most one of them ever returns a document.
+ * at most one of them ever returns a descriptor.
  */
 export interface TimeLayerState {
   /** The slice covering the cursor, or null when none does. */
-  doc: BorderLayerDoc | null;
+  slice: AreaLayerSlice | null;
   /**
    * The years this layer speaks for at all, across every slice; null until the
    * index lands. What separates "no reconstruction exists this far back" from
@@ -131,7 +131,6 @@ export function useTimeLayer(
   layer: string,
 ): TimeLayerState {
   const [index, setIndex] = useState<LayerIndexDoc | null>(null);
-  const [doc, setDoc] = useState<BorderLayerDoc | null>(null);
   // The cursor the fetch follows, a beat behind the one the map follows.
   const [settledTc, setSettledTc] = useState(tc);
 
@@ -163,26 +162,10 @@ export function useTimeLayer(
     [index, settledTc],
   );
 
-  useEffect(() => {
-    if (!manifest || !step) {
-      setDoc(null);
-      return;
-    }
-    // `live` is the latest-wins guard: React tears down the previous effect
-    // before running this one, so a slower earlier response cannot land after
-    // a faster later one.
-    let live = true;
-    fetchBorderLayer(manifest, layer, step.year).then(
-      (d) => live && setDoc(d),
-      (e: unknown) => {
-        console.error("map layer load failed:", e);
-        if (live) setDoc(null);
-      },
-    );
-    return () => {
-      live = false;
-    };
-  }, [manifest, layer, step]);
+  const slice = useMemo(
+    () => (manifest && step ? areaLayerSlice(manifest, layer, step) : null),
+    [manifest, layer, step],
+  );
 
   const coverage = useMemo(() => {
     if (!index?.steps.length) return null;
@@ -195,7 +178,7 @@ export function useTimeLayer(
     return { from, to };
   }, [index]);
 
-  return useMemo(() => ({ doc, coverage }), [doc, coverage]);
+  return useMemo(() => ({ slice, coverage }), [slice, coverage]);
 }
 
 export function useEntity(manifest: Manifest | null, slug: string | null): EntityDoc | null {
