@@ -36,6 +36,12 @@ CDN-cached forever (ARCH-2).</p>
 <pre>GET /manifest.json               -- the ONLY mutable object
 {
   "dataset": "2026-08",          -- everything else lives under /v/2026-08/...
+  "basemap": {
+    "key": "basemap/protomaps-20260829-z0-6.pmtiles",
+    "source": "https://build.protomaps.com/20260829.pmtiles",
+    "attribution": "&lt;a href=\"https://github.com/protomaps/basemaps\"&gt;Protomaps&lt;/a&gt; · © &lt;a href=\"https://www.openstreetmap.org/copyright\"&gt;OpenStreetMap contributors&lt;/a&gt; · &lt;a href=\"https://docs.overturemaps.org/attribution/\"&gt;© ESA WorldCover project 2020 / Contains modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium&lt;/a&gt; (&lt;a href=\"https://creativecommons.org/licenses/by/4.0/\"&gt;CC BY 4.0&lt;/a&gt;)",
+    "sha256": "9a6cd0b9b26b4bcf13fb3167755431816058659552c0f33f5d1df3793d093082"
+  },
   "buckets":  { "T9": { "window_s": ..., "grid_epoch": ... }, ... },
   "timesteps": { "borders": [ ... ] },     -- snapped tile time-steps (ARCH-3)
   "categories": [ "war", "politics", ... ],
@@ -43,6 +49,11 @@ CDN-cached forever (ARCH-2).</p>
 }</pre>
 <p>The client loads this once; every subsequent key is computed locally from it. A dataset release is
 a manifest repoint (ARCH-2); rollback likewise.</p>
+<p><code>basemap</code> is required. Its <code>key</code> is relative to
+<code>/v/&lt;dataset&gt;/</code> and is derived from the verified source filename. The archive is immutable,
+served as <code>application/vnd.pmtiles</code>, and remains outside <code>layers</code> and
+<code>timesteps</code> because it is not a time-sliced overlay. The source, SHA-256, and complete HTML
+attribution travel with the descriptor so clients can verify and credit the exact archive they render.</p>
 </div>
 
 <h2>The viewport chunks</h2>

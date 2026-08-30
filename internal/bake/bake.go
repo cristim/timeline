@@ -25,6 +25,15 @@ type Stats struct {
 	Unchanged int
 }
 
+// BasemapArtifact is a verified archive and the metadata published with it.
+type BasemapArtifact struct {
+	Key         string
+	Source      string
+	Attribution string
+	SHA256      string
+	Body        []byte
+}
+
 func (s *Stats) add(changed bool) {
 	if changed {
 		s.Written++
@@ -59,7 +68,7 @@ type chunkFile struct {
 // A non-nil goldens file is evaluated against the baked chunks; any failure
 // aborts before the manifest exists, so a failing golden view cannot publish
 // (ZOOM-5).
-func Run(ctx context.Context, sink Sink, compiler LayerCompiler, dataset, seedVersion string, entities []*model.Entity, geo *model.GeoSet, goldens *GoldenFile) (manifest *model.Manifest, stats *Stats, err error) {
+func Run(ctx context.Context, sink Sink, compiler LayerCompiler, dataset, seedVersion string, entities []*model.Entity, basemap BasemapArtifact, geo *model.GeoSet, goldens *GoldenFile) (manifest *model.Manifest, stats *Stats, err error) {
 	stats = &Stats{}
 
 	childCount := map[string]int{}
@@ -88,6 +97,9 @@ func Run(ctx context.Context, sink Sink, compiler LayerCompiler, dataset, seedVe
 			err = errors.Join(err, waitErr)
 		}
 	}()
+	if err := w.putBytes(fmt.Sprintf("v/%s/%s", dataset, basemap.Key), basemap.Body, PMTilesContentType); err != nil {
+		return nil, stats, err
+	}
 	buckets, captured, err := bakeChunks(w, dataset, entities, childCount, goldenKeys)
 	if err != nil {
 		return nil, stats, err
@@ -134,8 +146,12 @@ func Run(ctx context.Context, sink Sink, compiler LayerCompiler, dataset, seedVe
 		return nil, stats, err
 	}
 	m := &model.Manifest{
-		Dataset:      dataset,
-		SeedVersion:  seedVersion,
+		Dataset:     dataset,
+		SeedVersion: seedVersion,
+		Basemap: model.BasemapDescriptor{
+			Key: basemap.Key, Source: basemap.Source,
+			Attribution: basemap.Attribution, SHA256: basemap.SHA256,
+		},
 		Buckets:      buckets,
 		Categories:   categorySet(entities),
 		Layers:       layers,

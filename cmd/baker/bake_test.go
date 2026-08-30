@@ -21,7 +21,10 @@ import (
 	"wk/internal/bake"
 	"wk/internal/duck"
 	"wk/internal/ingest"
+	"wk/internal/model"
 )
+
+const testBasemapBody = "tiny basemap fixture"
 
 type testLayerCompiler struct{}
 
@@ -332,8 +335,9 @@ func TestPublishImportArtifactsPropagatesLatestManifestFailure(t *testing.T) {
 }
 
 func TestRunBakeOutRoundTripsWithoutPublishingWarmModel(t *testing.T) {
+	spec := testBasemapSpec()
 	outDir := t.TempDir()
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, spec, []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -348,6 +352,34 @@ func TestRunBakeOutRoundTripsWithoutPublishingWarmModel(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outDir, "v", "dev", "layers", "borders", "0.pmtiles")); err != nil {
 		t.Fatalf("PMTiles layer: %v", err)
 	}
+	basemapPath := filepath.Join(outDir, "v", "dev", filepath.FromSlash(spec.Key()))
+	basemapBody, err := os.ReadFile(basemapPath)
+	if err != nil {
+		t.Fatalf("basemap artifact: %v", err)
+	}
+	if string(basemapBody) != testBasemapBody {
+		t.Fatalf("basemap body = %q, want %q", basemapBody, testBasemapBody)
+	}
+	wantBasemap := model.BasemapDescriptor{
+		Key: spec.Key(), Source: spec.Source,
+		Attribution: spec.Attribution, SHA256: spec.SHA256,
+	}
+	for _, manifestPath := range []string{
+		filepath.Join(outDir, "manifest.json"),
+		filepath.Join(outDir, "v", "dev", "manifest.json"),
+	} {
+		body, err := os.ReadFile(manifestPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", manifestPath, err)
+		}
+		var manifest model.Manifest
+		if err := json.Unmarshal(body, &manifest); err != nil {
+			t.Fatalf("decode %s: %v", manifestPath, err)
+		}
+		if manifest.Basemap != wantBasemap {
+			t.Fatalf("%s basemap = %#v, want %#v", manifestPath, manifest.Basemap, wantBasemap)
+		}
+	}
 	if _, err := os.Stat(filepath.Join(outDir, "v", "dev", "layers", "borders", "0.json")); !os.IsNotExist(err) {
 		t.Fatalf("legacy GeoJSON layer exists: %v", err)
 	}
@@ -359,10 +391,52 @@ func TestRunBakeOutRoundTripsWithoutPublishingWarmModel(t *testing.T) {
 	}
 }
 
+func TestRunBakeRejectsBasemapBeforeWritingOutput(t *testing.T) {
+	spec := testBasemapSpec()
+	tests := []struct {
+		name string
+		body []byte
+		want string
+	}{
+		{name: "missing", want: spec.Filename},
+		{name: "changed", body: []byte(strings.Repeat("x", len(testBasemapBody))), want: "sha256 "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			geoDir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(geoDir, "basemap"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tt.body != nil {
+				if err := os.WriteFile(filepath.Join(geoDir, "basemap", spec.Filename), tt.body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			outDir := t.TempDir()
+			err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, spec, []string{
+				"--seed", "../../data/seed",
+				"--geo", geoDir,
+				"--goldens", "../../data/goldens.json",
+				"--out", outDir,
+			})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("runBake error = %v, want %q", err, tt.want)
+			}
+			entries, readErr := os.ReadDir(outDir)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("output contains artifacts after basemap failure: %v", entries)
+			}
+		})
+	}
+}
+
 func TestRunBakeReportsMissingTippecanoe(t *testing.T) {
 	t.Setenv("PATH", "")
 	outDir := t.TempDir()
-	err := runBake(context.Background(), []string{
+	err := runBakeWithCompiler(context.Background(), &bake.TippecanoeCompiler{}, testBasemapSpec(), []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -384,7 +458,7 @@ func TestRunBakeOutWithMalformedWarmFilePublishesHotOutputOnly(t *testing.T) {
 		t.Fatalf("write warm file: %v", err)
 	}
 
-	err = runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err = runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -417,7 +491,7 @@ func TestRunBakeOutFailsWhenImportTempDirCannotBeCreated(t *testing.T) {
 	t.Setenv("TMPDIR", tmpFile)
 
 	outDir := t.TempDir()
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -437,9 +511,11 @@ func TestRunBakeWarmModelFailureStopsBeforeHotPublication(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	unusedGeoDir := t.TempDir()
+	writeTestBasemap(t, unusedGeoDir)
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", "../../data/seed",
-		"--geo", filepath.Join(t.TempDir(), "unused"),
+		"--geo", unusedGeoDir,
 		"--goldens", "../../data/goldens.json",
 	})
 	if err == nil || !strings.Contains(err.Error(), "publish model file") {
@@ -459,7 +535,7 @@ func TestRunBakeSeedRejectPublishesImportDiagnosticsButNoModelOrHot(t *testing.T
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", writeSeedDir(t, seedFixture{
 			seedVersion: "seed-rejects",
 			files: map[string]string{
@@ -495,7 +571,7 @@ func TestRunBakeAllowRejectsContinuesWithStaticOutput(t *testing.T) {
 	goldensPath := writeGoldensFile(t, "seed-allow-rejects")
 	outDir := t.TempDir()
 
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", seedDir,
 		"--geo", geoDirForEntity(t, "entity-1"),
 		"--goldens", goldensPath,
@@ -522,7 +598,7 @@ func TestRunBakeImportImmutableFailureStopsBeforeModelOrHot(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -546,7 +622,7 @@ func TestRunBakeImportPointerFailureStopsBeforeModelOrHot(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -608,7 +684,7 @@ func TestRunBakeSeedManifestFailuresPublishNothing(t *testing.T) {
 			defer server.Close()
 			server.installEnv(t)
 
-			err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+			err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 				"--seed", writeSeedDir(t, tc.fixt),
 				"--geo", testGeoDir(t),
 				"--goldens", "../../data/goldens.json",
@@ -628,7 +704,7 @@ func TestRunBakeDuplicateSeedIDPublishesNothing(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", writeSeedDir(t, seedFixture{
 			seedVersion: "seed-dup-id",
 			files: map[string]string{
@@ -651,7 +727,7 @@ func TestRunBakeUnresolvedRelationshipPublishesNothing(t *testing.T) {
 	defer server.Close()
 	server.installEnv(t)
 
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", writeSeedDir(t, seedFixture{
 			seedVersion: "seed-bad-rel",
 			files: map[string]string{
@@ -679,7 +755,7 @@ func TestRunBakeOversizedWarmScannerFailurePublishesNothing(t *testing.T) {
 		t.Fatalf("write warm file: %v", err)
 	}
 
-	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, []string{
+	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--seed", "../../data/seed",
 		"--geo", testGeoDir(t),
 		"--goldens", "../../data/goldens.json",
@@ -721,7 +797,7 @@ func testGeoDir(t *testing.T) string {
 func emptyGeoDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, name := range []string{"borders", "fronts"} {
+	for _, name := range []string{"borders", "fronts", "basemap"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -730,7 +806,30 @@ func emptyGeoDir(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, "borders", "0.geojson"), []byte(border), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeTestBasemap(t, dir)
 	return dir
+}
+
+func testBasemapSpec() ingest.BasemapSpec {
+	digest := sha256.Sum256([]byte(testBasemapBody))
+	return ingest.BasemapSpec{
+		Source:      "https://example.test/basemap.pmtiles",
+		Filename:    "test.pmtiles",
+		Size:        int64(len(testBasemapBody)),
+		SHA256:      fmt.Sprintf("%x", digest),
+		Attribution: `<a href="https://github.com/protomaps/basemaps">Protomaps</a> · © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> · <a href="https://docs.overturemaps.org/attribution/">© ESA WorldCover project 2020 / Contains modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)`,
+	}
+}
+
+func writeTestBasemap(t *testing.T, geoDir string) {
+	t.Helper()
+	dir := filepath.Join(geoDir, "basemap")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, testBasemapSpec().Filename), []byte(testBasemapBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func geoDirForEntity(t *testing.T, entityID string) string {

@@ -2,7 +2,9 @@ package bake
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -65,6 +67,15 @@ type blockingSink struct {
 	once    sync.Once
 }
 
+type basemapFailSink struct{}
+
+func (basemapFailSink) Put(_ context.Context, key string, _ []byte, _ string) (bool, error) {
+	if key == "v/test/basemap/test.pmtiles" {
+		return false, errors.New("basemap upload failed")
+	}
+	return true, nil
+}
+
 func (s *blockingSink) Put(_ context.Context, key string, _ []byte, _ string) (bool, error) {
 	if key == "v/test/entity/world-war-ii.json" {
 		s.once.Do(func() { close(s.started) })
@@ -116,6 +127,17 @@ func testEntities(t *testing.T) []*model.Entity {
 	return es
 }
 
+func testBasemap() BasemapArtifact {
+	body := []byte("tiny pmtiles fixture")
+	return BasemapArtifact{
+		Key:         "basemap/test.pmtiles",
+		Source:      "https://example.test/basemap.pmtiles",
+		Attribution: `<a href="https://github.com/protomaps/basemaps">Protomaps</a> · © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> · <a href="https://docs.overturemaps.org/attribution/">© ESA WorldCover project 2020 / Contains modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)`,
+		SHA256:      fmt.Sprintf("%x", sha256.Sum256(body)),
+		Body:        body,
+	}
+}
+
 func TestBucketizeSemanticZoom(t *testing.T) {
 	es := testEntities(t)
 	byID := map[string]*model.Entity{}
@@ -140,12 +162,27 @@ func TestBakeChunksAndDocs(t *testing.T) {
 	es := testEntities(t)
 	sink := newMemSink()
 	compiler := new(recordingCompiler)
-	m, stats, err := Run(context.Background(), sink, compiler, "test", "seed-x", es, testGeo(), nil)
+	m, stats, err := Run(context.Background(), sink, compiler, "test", "seed-x", es, testBasemap(), testGeo(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stats.Written == 0 {
 		t.Fatal("nothing written")
+	}
+	basemap := testBasemap()
+	basemapKey := "v/test/" + basemap.Key
+	if got := string(sink.objects[basemapKey]); got != string(basemap.Body) {
+		t.Fatalf("basemap body = %q, want %q", got, basemap.Body)
+	}
+	if sink.types[basemapKey] != PMTilesContentType {
+		t.Fatalf("basemap MIME = %q, want %q", sink.types[basemapKey], PMTilesContentType)
+	}
+	wantDescriptor := model.BasemapDescriptor{
+		Key: basemap.Key, Source: basemap.Source,
+		Attribution: basemap.Attribution, SHA256: basemap.SHA256,
+	}
+	if m.Basemap != wantDescriptor {
+		t.Fatalf("manifest basemap = %#v, want %#v", m.Basemap, wantDescriptor)
 	}
 
 	// T0 world chunk holds only the high-importance entities.
@@ -205,12 +242,22 @@ func TestBakeChunksAndDocs(t *testing.T) {
 	}
 
 	// Idempotency: a second run writes nothing.
-	_, stats2, err := Run(context.Background(), sink, compiler, "test", "seed-x", es, testGeo(), nil)
+	_, stats2, err := Run(context.Background(), sink, compiler, "test", "seed-x", es, testBasemap(), testGeo(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats2.Written != 0 {
-		t.Errorf("re-bake wrote %d artifacts, want 0", stats2.Written)
+	if stats2.Written != 0 || stats2.Unchanged != stats.Written {
+		t.Errorf("re-bake stats = %#v, want 0 written and %d unchanged", stats2, stats.Written)
+	}
+}
+
+func TestBakeReturnsNoManifestWhenBasemapPublicationFails(t *testing.T) {
+	m, _, err := Run(context.Background(), basemapFailSink{}, nil, "test", "seed-x", testEntities(t), testBasemap(), &model.GeoSet{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "put v/test/basemap/test.pmtiles") || !strings.Contains(err.Error(), "basemap upload failed") {
+		t.Fatalf("Run error = %v", err)
+	}
+	if m != nil {
+		t.Fatalf("manifest = %#v, want nil", m)
 	}
 }
 
@@ -238,7 +285,7 @@ func TestBakeLayersAndGeometry(t *testing.T) {
 	es := testEntities(t)
 	sink := newMemSink()
 	compiler := new(recordingCompiler)
-	m, _, err := Run(context.Background(), sink, compiler, "test", "seed-x", es, testGeo(), nil)
+	m, _, err := Run(context.Background(), sink, compiler, "test", "seed-x", es, testBasemap(), testGeo(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,7 +373,7 @@ func TestBakeLayersAndGeometry(t *testing.T) {
 
 // Without curated geometry the manifest keeps the shape M2 published.
 func TestBakeWithoutGeo(t *testing.T) {
-	m, _, err := Run(context.Background(), newMemSink(), nil, "test", "seed-x", testEntities(t), &model.GeoSet{}, nil)
+	m, _, err := Run(context.Background(), newMemSink(), nil, "test", "seed-x", testEntities(t), testBasemap(), &model.GeoSet{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +383,7 @@ func TestBakeWithoutGeo(t *testing.T) {
 }
 
 func TestBakeAreaLayerRequiresCompiler(t *testing.T) {
-	_, _, err := Run(context.Background(), newMemSink(), nil, "test", "seed-x", testEntities(t), testGeo(), nil)
+	_, _, err := Run(context.Background(), newMemSink(), nil, "test", "seed-x", testEntities(t), testBasemap(), testGeo(), nil)
 	if err == nil || !strings.Contains(err.Error(), "layer compiler") {
 		t.Fatalf("Run error = %v", err)
 	}
@@ -344,7 +391,7 @@ func TestBakeAreaLayerRequiresCompiler(t *testing.T) {
 
 func TestBakeAreaLayerPropagatesCompilerFailure(t *testing.T) {
 	compiler := &recordingCompiler{err: fmt.Errorf("compiler exploded")}
-	_, _, err := Run(context.Background(), newMemSink(), compiler, "test", "seed-x", testEntities(t), testGeo(), nil)
+	_, _, err := Run(context.Background(), newMemSink(), compiler, "test", "seed-x", testEntities(t), testBasemap(), testGeo(), nil)
 	if err == nil || !strings.Contains(err.Error(), "compile borders layer 1942") || !strings.Contains(err.Error(), "compiler exploded") {
 		t.Fatalf("Run error = %v", err)
 	}
@@ -357,7 +404,7 @@ func TestRunDrainsOutstandingUploadsAfterCompilerFailure(t *testing.T) {
 	geo := testGeo()
 	result := make(chan error, 1)
 	go func() {
-		_, _, err := Run(context.Background(), sink, compiler, "test", "seed-x", entities, geo, nil)
+		_, _, err := Run(context.Background(), sink, compiler, "test", "seed-x", entities, testBasemap(), geo, nil)
 		result <- err
 	}()
 
@@ -491,7 +538,7 @@ func TestBakeComposedBorderWindowsKeepDistinctArtifactIdentities(t *testing.T) {
 	}}
 	sink := newMemSink()
 	compiler := new(recordingCompiler)
-	manifest, _, err := Run(context.Background(), sink, compiler, "test", "seed-x", testEntities(t), geo, nil)
+	manifest, _, err := Run(context.Background(), sink, compiler, "test", "seed-x", testEntities(t), testBasemap(), geo, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

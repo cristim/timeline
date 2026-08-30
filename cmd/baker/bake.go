@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"wk/internal/bake"
@@ -36,10 +37,10 @@ type warmModelManifest struct {
 // -> bucketize -> artifacts -> manifest publish. Artifacts go to S3/MinIO by
 // default or to a local directory with --out (the static-hosting/CI path).
 func runBake(ctx context.Context, args []string) error {
-	return runBakeWithCompiler(ctx, &bake.TippecanoeCompiler{}, args)
+	return runBakeWithCompiler(ctx, &bake.TippecanoeCompiler{}, ingest.ProductionBasemap, args)
 }
 
-func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, args []string) error {
+func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, basemapSpec ingest.BasemapSpec, args []string) error {
 	fs := flag.NewFlagSet("bake", flag.ContinueOnError)
 	seedDir := fs.String("seed", "", "path to the NDJSON seed directory")
 	geoDir := fs.String("geo", "data/geo", "curated geometry directory (border time-steps, front lines)")
@@ -56,6 +57,15 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, args 
 	}
 	if *withWarm && *warmFile != "" {
 		return fmt.Errorf("--warm and --warm-file are mutually exclusive")
+	}
+	basemapBody, err := ingest.VerifyBasemap(filepath.Join(*geoDir, "basemap"), basemapSpec)
+	if err != nil {
+		return err
+	}
+	basemap := bake.BasemapArtifact{
+		Key: basemapSpec.Key(), Source: basemapSpec.Source,
+		Attribution: basemapSpec.Attribution, SHA256: basemapSpec.SHA256,
+		Body: basemapBody,
 	}
 	goldens, err := bake.LoadGoldens(*goldensPath)
 	if err != nil {
@@ -179,7 +189,7 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, args 
 	}
 
 	start := time.Now()
-	manifest, stats, err := bake.Run(ctx, sink, compiler, dataset, res.SeedVersion, res.Entities, geo, goldens)
+	manifest, stats, err := bake.Run(ctx, sink, compiler, dataset, res.SeedVersion, res.Entities, basemap, geo, goldens)
 	if err != nil {
 		return err
 	}

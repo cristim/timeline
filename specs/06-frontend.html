@@ -153,8 +153,12 @@ uncertain value is a bug.</p>
 two-way bound to the URL; browser back/forward = view history.</li>
 <li>Attribution is automatic wherever media/geometry renders (license data from
 <a href="02-domain-model.html">DM-9</a>); a page-level credits popover lists active sources. The
-basemap carries its own required attribution independent of data layers: "&copy; OpenStreetMap
-contributors" for OSM-derived basemaps (incl. the protomaps pmtiles used in dev), alongside
+basemap carries its own required attribution independent of data layers. The manifest descriptor
+supplies this complete HTML: <code>&lt;a href="https://github.com/protomaps/basemaps"&gt;Protomaps&lt;/a&gt;
+· © &lt;a href="https://www.openstreetmap.org/copyright"&gt;OpenStreetMap contributors&lt;/a&gt; ·
+&lt;a href="https://docs.overturemaps.org/attribution/"&gt;© ESA WorldCover project 2020 / Contains
+modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium&lt;/a&gt;
+(&lt;a href="https://creativecommons.org/licenses/by/4.0/"&gt;CC BY 4.0&lt;/a&gt;)</code>, alongside
 OpenHistoricalMap and Wikidata credits.</li>
 <li>Accessibility floor: keyboard navigation for timeline (arrow = pan, +/- = zoom), focus management in
 inspector, alt text from media metadata, WCAG AA contrast.</li>
