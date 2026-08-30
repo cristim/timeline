@@ -335,6 +335,7 @@ func TestPublishImportArtifactsPropagatesLatestManifestFailure(t *testing.T) {
 }
 
 func TestRunBakeOutRoundTripsWithoutPublishingWarmModel(t *testing.T) {
+	t.Setenv("DATASET_VERSION", "dev")
 	spec := testBasemapSpec()
 	outDir := t.TempDir()
 	err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, spec, []string{
@@ -448,6 +449,7 @@ func TestRunBakeReportsMissingTippecanoe(t *testing.T) {
 }
 
 func TestRunBakeOutWithMalformedWarmFilePublishesHotOutputOnly(t *testing.T) {
+	t.Setenv("DATASET_VERSION", "dev")
 	outDir := t.TempDir()
 	warmPath := filepath.Join(t.TempDir(), "warm.ndjson")
 	validWarm, err := os.ReadFile("../../internal/ingest/testdata/warm-event.ndjson")
@@ -1047,4 +1049,24 @@ func writeGoldensFile(t *testing.T, seedVersion string) string {
 		t.Fatalf("write goldens: %v", err)
 	}
 	return path
+}
+
+func TestDatasetVersionDerivesFromContent(t *testing.T) {
+	t.Setenv("DATASET_VERSION", "")
+	t.Setenv("GITHUB_SHA", "")
+	a := datasetVersion("seed-1")
+	if a[:2] != "d-" || len(a) != 14 {
+		t.Fatalf("derived id shape: %q", a)
+	}
+	if b := datasetVersion("seed-2"); b == a {
+		t.Fatalf("seed change must change the dataset id")
+	}
+	t.Setenv("GITHUB_SHA", "abc123")
+	if c := datasetVersion("seed-1"); c == a {
+		t.Fatalf("code revision must change the dataset id")
+	}
+	t.Setenv("DATASET_VERSION", "pinned")
+	if got := datasetVersion("seed-1"); got != "pinned" {
+		t.Fatalf("explicit DATASET_VERSION must win, got %q", got)
+	}
 }

@@ -4,11 +4,14 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 
 	"wk/internal/bake"
+	"wk/internal/ingest"
 	"wk/internal/model"
 )
 
@@ -78,7 +81,22 @@ func usage() {
 
 func artifactsBucket() string { return envOr("BUCKET_ARTIFACTS", "wk-artifacts") }
 
-func datasetVersion() string { return envOr("DATASET_VERSION", "dev") }
+// datasetVersion names the /v/<dataset>/ prefix a bake writes into. An
+// explicit DATASET_VERSION wins; otherwise the id is derived from what the
+// bake will contain (seed version, pinned geo upstreams) plus the exact code
+// revision when CI provides one - so changed content always lands on a fresh
+// immutable prefix instead of mutating objects the CDN serves as immutable
+// (API-0/ARCH-2), which for range-read PMTiles means corruption, not staleness.
+func datasetVersion(seedVersion string) string {
+	if v := os.Getenv("DATASET_VERSION"); v != "" {
+		return v
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "seed=%s\n", seedVersion)
+	fmt.Fprintf(h, "geo=%s\n", geoFingerprint(ingest.ProductionBasemap))
+	fmt.Fprintf(h, "rev=%s\n", os.Getenv("GITHUB_SHA"))
+	return "d-" + hex.EncodeToString(h.Sum(nil))[:12]
+}
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

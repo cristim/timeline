@@ -133,7 +133,7 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, basem
 		return fmt.Errorf("create import directory: %w", err)
 	}
 	defer os.RemoveAll(importDir)
-	dataset := datasetVersion()
+	dataset := datasetVersion(res.SeedVersion)
 	var ohmSummary *ingest.OHMImportSummary
 	if seedRejectCount == 0 || *allowRejects {
 		ohmSummary, err = ingest.LoadOHMSummary(*geoDir)
