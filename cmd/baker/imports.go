@@ -40,16 +40,7 @@ func materializeImportArtifacts(ctx context.Context, dir string, result *ingest.
 	if err != nil {
 		return ingest.ImportReport{}, duck.ModelFile{}, fmt.Errorf("build import report: %w", err)
 	}
-	rejectRows := make([]duck.RejectRow, 0, len(result.Rejects))
-	for _, reject := range result.Rejects {
-		rejectRows = append(rejectRows, duck.RejectRow{
-			Source: string(reject.Source),
-			File:   reject.File,
-			Line:   reject.Line,
-			Reason: reject.Reason,
-		})
-	}
-	rejectFile, err := duck.WriteRejects(ctx, dir, rejectRows)
+	rejectFile, err := duck.WriteRejects(ctx, dir, rejectRows(result.Rejects))
 	if err != nil {
 		return ingest.ImportReport{}, duck.ModelFile{}, fmt.Errorf("write reject parquet: %w", err)
 	}
@@ -65,6 +56,21 @@ func materializeImportArtifacts(ctx context.Context, dir string, result *ingest.
 	return report, rejectFile, nil
 }
 
+// rejectRows converts the ingest reject list into the reject-Parquet shape.
+// Every importer writes the same table (DEV-5: "rejects are data").
+func rejectRows(rejects []ingest.Reject) []duck.RejectRow {
+	rows := make([]duck.RejectRow, 0, len(rejects))
+	for _, reject := range rejects {
+		rows = append(rows, duck.RejectRow{
+			Source: string(reject.Source),
+			File:   reject.File,
+			Line:   reject.Line,
+			Reason: reject.Reason,
+		})
+	}
+	return rows
+}
+
 func publishImportArtifacts(ctx context.Context, sink bake.Sink, dataset string, generatedAt time.Time, report ingest.ImportReport, rejectFile duck.ModelFile) error {
 	reportBody, err := json.Marshal(report)
 	if err != nil {
@@ -74,7 +80,28 @@ func publishImportArtifacts(ctx context.Context, sink bake.Sink, dataset string,
 	if err != nil {
 		return fmt.Errorf("read reject parquet: %w", err)
 	}
+	_, err = publishReportWithRejects(ctx, sink, reportPrefix("imports", dataset), generatedAt,
+		report.SchemaVersion, reportBody, rejectBody, rejectFile.Rows)
+	return err
+}
 
+// reportPrefix keeps every per-run report under wk-warm/reports/ (DEV-5).
+func reportPrefix(kind, dataset string) string {
+	return fmt.Sprintf("reports/%s/%s", kind, dataset)
+}
+
+// publishReportWithRejects writes the immutable, content-addressed report and
+// reject table first, then repoints the manifest, so a reader never sees a
+// pointer to an object that is not there yet (ARCH-2).
+func publishReportWithRejects(
+	ctx context.Context,
+	sink bake.Sink,
+	prefix string,
+	generatedAt time.Time,
+	schemaVersion int,
+	reportBody, rejectBody []byte,
+	rejectRowCount int,
+) (importManifest, error) {
 	reportDigest := sha256.Sum256(reportBody)
 	rejectDigest := sha256.Sum256(rejectBody)
 	identityBody, err := json.Marshal(struct {
@@ -82,45 +109,45 @@ func publishImportArtifacts(ctx context.Context, sink bake.Sink, dataset string,
 		ReportSHA256  string `json:"report_sha256"`
 		RejectSHA256  string `json:"reject_sha256"`
 	}{
-		SchemaVersion: report.SchemaVersion,
+		SchemaVersion: schemaVersion,
 		ReportSHA256:  fmt.Sprintf("%x", reportDigest),
 		RejectSHA256:  fmt.Sprintf("%x", rejectDigest),
 	})
 	if err != nil {
-		return fmt.Errorf("encode import identity: %w", err)
+		return importManifest{}, fmt.Errorf("encode import identity: %w", err)
 	}
 	importDigest := sha256.Sum256(identityBody)
 	importID := fmt.Sprintf("%x", importDigest)
 
 	manifest := importManifest{
-		SchemaVersion: report.SchemaVersion,
+		SchemaVersion: schemaVersion,
 		ImportID:      importID,
 		GeneratedAt:   generatedAt.UTC().Format(time.RFC3339),
 		Report: publicationObject{
-			Key:    fmt.Sprintf("imports/%s/%s/report.json", dataset, importID),
+			Key:    fmt.Sprintf("%s/%s/report.json", prefix, importID),
 			Size:   int64(len(reportBody)),
 			SHA256: fmt.Sprintf("%x", reportDigest),
 		},
 		Rejects: importRejectObject{
-			Key:    fmt.Sprintf("imports/%s/%s/reject.parquet", dataset, importID),
+			Key:    fmt.Sprintf("%s/%s/reject.parquet", prefix, importID),
 			Size:   int64(len(rejectBody)),
 			SHA256: fmt.Sprintf("%x", rejectDigest),
-			Rows:   rejectFile.Rows,
+			Rows:   rejectRowCount,
 		},
 	}
 
 	if _, err := sink.Put(ctx, manifest.Rejects.Key, rejectBody, parquetContentType); err != nil {
-		return fmt.Errorf("publish reject parquet: %w", err)
+		return importManifest{}, fmt.Errorf("publish reject parquet: %w", err)
 	}
 	if _, err := sink.Put(ctx, manifest.Report.Key, reportBody, "application/json"); err != nil {
-		return fmt.Errorf("publish import report: %w", err)
+		return importManifest{}, fmt.Errorf("publish import report: %w", err)
 	}
 	manifestBody, err := json.Marshal(manifest)
 	if err != nil {
-		return fmt.Errorf("encode import manifest: %w", err)
+		return importManifest{}, fmt.Errorf("encode import manifest: %w", err)
 	}
-	if _, err := sink.Put(ctx, fmt.Sprintf("imports/%s/manifest.json", dataset), manifestBody, "application/json"); err != nil {
-		return fmt.Errorf("publish import manifest: %w", err)
+	if _, err := sink.Put(ctx, prefix+"/manifest.json", manifestBody, "application/json"); err != nil {
+		return importManifest{}, fmt.Errorf("publish import manifest: %w", err)
 	}
-	return nil
+	return manifest, nil
 }

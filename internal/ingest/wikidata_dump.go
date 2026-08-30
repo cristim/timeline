@@ -31,21 +31,26 @@ type wikidataDumpTimeFact struct {
 
 type wikidataDumpItemFacts struct {
 	QID                 string
-	HasEnglishLabel     bool
+	EnglishLabel        string
+	EnglishDescription  string
 	InstanceOfQIDs      []string
 	SubclassOfQIDs      []string
 	TimeClaims          []wikidataDumpTimeFact
+	Point               []float64 // [lon, lat] when the item has an Earth coordinate
+	EnglishWikipedia    string    // enwiki sitelink title
+	SitelinkCount       int
+	HasEnglishLabel     bool
 	HasCoordinates      bool
 	HasEnglishWikipedia bool
-	SitelinkCount       int
 }
 
 type wikidataDumpEntity struct {
-	ID        string                          `json:"id"`
-	Type      string                          `json:"type"`
-	Labels    map[string]wikidataDumpLabel    `json:"labels"`
-	Claims    map[string]json.RawMessage      `json:"claims"`
-	Sitelinks map[string]wikidataDumpSitelink `json:"sitelinks"`
+	ID           string                          `json:"id"`
+	Type         string                          `json:"type"`
+	Labels       map[string]wikidataDumpLabel    `json:"labels"`
+	Descriptions map[string]wikidataDumpLabel    `json:"descriptions"`
+	Claims       map[string]json.RawMessage      `json:"claims"`
+	Sitelinks    map[string]wikidataDumpSitelink `json:"sitelinks"`
 }
 
 type wikidataDumpLabel struct {
@@ -278,10 +283,13 @@ func buildWikidataDumpFacts(counters *dumpCounters, entity wikidataDumpEntity) (
 
 	facts := wikidataDumpItemFacts{
 		QID:                 entity.ID,
-		HasEnglishLabel:     entity.Labels["en"].Value != "",
+		EnglishLabel:        entity.Labels["en"].Value,
+		EnglishDescription:  entity.Descriptions["en"].Value,
 		InstanceOfQIDs:      sortedWikidataDumpQIDs(counters, entity, "P31"),
 		SubclassOfQIDs:      sortedWikidataDumpQIDs(counters, entity, "P279"),
 		SitelinkCount:       len(entity.Sitelinks),
+		EnglishWikipedia:    entity.Sitelinks["enwiki"].Title,
+		HasEnglishLabel:     entity.Labels["en"].Value != "",
 		HasEnglishWikipedia: entity.Sitelinks["enwiki"].Title != "",
 	}
 
@@ -294,7 +302,8 @@ func buildWikidataDumpFacts(counters *dumpCounters, entity wikidataDumpEntity) (
 	}
 
 	for _, stmt := range wikidataDumpStatements(counters, entity.Claims["P625"]) {
-		if extractCoordinatePresence(counters, stmt) {
+		if point, ok := extractCoordinate(counters, stmt); ok {
+			facts.Point = point
 			facts.HasCoordinates = true
 			break
 		}
@@ -423,11 +432,6 @@ func extractCoordinate(counters *dumpCounters, stmt wikidataDumpStatement) ([]fl
 		return nil, false
 	}
 	return []float64{lon, lat}, true
-}
-
-func extractCoordinatePresence(counters *dumpCounters, stmt wikidataDumpStatement) bool {
-	_, ok := extractCoordinate(counters, stmt)
-	return ok
 }
 
 // usableStatement folds the rank and snak-shape gates together so each rejection
