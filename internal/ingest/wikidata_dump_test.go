@@ -257,7 +257,7 @@ func TestScanWikidataDumpBoundsOneRecord(t *testing.T) {
 	t.Parallel()
 
 	oversized := `[{"id":"Q1","type":"item","labels":{"en":{"value":"` + strings.Repeat("x", 4096) + `"}}}]`
-	_, err := scanWikidataDumpLimited(strings.NewReader(oversized), 512, func(wikidataDumpItemFacts) error {
+	_, err := scanWikidataDumpLimited(strings.NewReader(oversized), 512, newDumpCounters(), func(wikidataDumpItemFacts) error {
 		return nil
 	})
 	if !errors.Is(err, errDumpRecordTooLarge) {
@@ -270,7 +270,7 @@ func TestScanWikidataDumpBoundsOneRecord(t *testing.T) {
 	// An unterminated record cannot be read into memory without end: the
 	// buffer guard fires before the decoder ever produces a value.
 	unterminated := `[{"id":"Q1","type":"item","labels":{"en":{"value":"` + strings.Repeat("x", 400_000)
-	if _, err := scanWikidataDumpLimited(strings.NewReader(unterminated), 512, func(wikidataDumpItemFacts) error {
+	if _, err := scanWikidataDumpLimited(strings.NewReader(unterminated), 512, newDumpCounters(), func(wikidataDumpItemFacts) error {
 		return nil
 	}); !errors.Is(err, errDumpBufferOverrun) {
 		t.Fatalf("scanWikidataDumpLimited error = %v, want one wrapping errDumpBufferOverrun", err)
@@ -287,7 +287,7 @@ func TestScanWikidataDumpBoundsOneRecord(t *testing.T) {
 		fmt.Fprintf(&record, `{"id":"Q%d","type":"item","labels":{"en":{"value":"name"}}}`, i+1)
 	}
 	record.WriteString(`]`)
-	stats, err := scanWikidataDumpLimited(strings.NewReader(record.String()), 512, func(wikidataDumpItemFacts) error {
+	stats, err := scanWikidataDumpLimited(strings.NewReader(record.String()), 512, newDumpCounters(), func(wikidataDumpItemFacts) error {
 		return nil
 	})
 	if err != nil {
@@ -301,7 +301,7 @@ func TestScanWikidataDumpBoundsOneRecord(t *testing.T) {
 func TestScanWikidataDumpRejectsNonPositiveRecordLimit(t *testing.T) {
 	t.Parallel()
 
-	_, err := scanWikidataDumpLimited(strings.NewReader(`[]`), 0, func(wikidataDumpItemFacts) error { return nil })
+	_, err := scanWikidataDumpLimited(strings.NewReader(`[]`), 0, newDumpCounters(), func(wikidataDumpItemFacts) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "record size limit must be positive") {
 		t.Fatalf("scanWikidataDumpLimited error = %v", err)
 	}

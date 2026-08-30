@@ -300,3 +300,130 @@ func julianJDN(year int64, month, day int) int64 {
 func jdnSeconds(jdn int64) float64 {
 	return float64(jdn-unixEpochJDN) * 86400
 }
+
+// gregorianYearAt returns the proleptic Gregorian year containing an instant,
+// for the calendar range the JDN arithmetic covers.
+func gregorianYearAt(seconds float64) (int64, bool) {
+	days := math.Floor(seconds / 86400)
+	if math.Abs(days) > 4e11 { // keeps the JDN arithmetic inside int64
+		return 0, false
+	}
+	jdn := unixEpochJDN + int64(days)
+	// Newton-free: start from the mean-year estimate, then walk. The estimate
+	// is never more than a year out, so this settles in one or two steps.
+	year := int64(math.Floor(model.SecondsToYear(seconds)))
+	for gregorianJDN(year, 1, 1) > jdn {
+		year--
+	}
+	for gregorianJDN(year+1, 1, 1) <= jdn {
+		year++
+	}
+	if year < minCalendarYear || year > maxCalendarYear {
+		return 0, false
+	}
+	return year, true
+}
+
+// wikidataStartTimeProperties and wikidataEndTimeProperties give the order in
+// which an item's claims are consulted for the start and end of its span. A
+// person has no P580, a battle has no P569, so one global order suffices.
+var (
+	wikidataStartTimeProperties = []string{"P580", "P585", "P571", "P569", "P575", "P577", "P574"}
+	wikidataEndTimeProperties   = []string{"P582", "P576", "P570"}
+)
+
+// WikidataItemTime is an item's resolved span on the project timebase.
+type WikidataItemTime struct {
+	T0, T1        float64
+	Precision     string
+	Year          float64
+	StartProperty string
+	EndProperty   string
+	CalendarModel string
+}
+
+// resolveWikidataItemTime picks the item's span from its time claims. The
+// precision reported is the coarser of the two ends: a span is no more precise
+// than its blurriest bound.
+func resolveWikidataItemTime(counters *dumpCounters, claims []wikidataDumpTimeFact) (WikidataItemTime, bool) {
+	earliest := func(candidate, best WikidataTimeWindow) bool { return candidate.T0 < best.T0 }
+	latest := func(candidate, best WikidataTimeWindow) bool { return candidate.T1 > best.T1 }
+
+	start, startProperty, ok := selectWindow(counters, claims, wikidataStartTimeProperties, earliest)
+	if !ok {
+		return WikidataItemTime{}, false
+	}
+	resolved := WikidataItemTime{
+		T0:            start.T0,
+		T1:            start.T1,
+		Precision:     start.Precision,
+		Year:          start.Year,
+		StartProperty: startProperty,
+		CalendarModel: calendarModelFor(claims, startProperty),
+	}
+	if end, endProperty, ok := selectWindow(counters, claims, wikidataEndTimeProperties, latest); ok && end.T1 >= start.T0 {
+		resolved.T1 = end.T1
+		resolved.EndProperty = endProperty
+		resolved.Precision = coarserPrecision(start.Precision, end.Precision)
+	}
+	return resolved, true
+}
+
+// selectWindow walks the properties in priority order and, within the first
+// property that yields anything convertible, keeps the window `better` picks.
+// Conversion failures are counted, never silently ignored.
+func selectWindow(
+	counters *dumpCounters,
+	claims []wikidataDumpTimeFact,
+	properties []string,
+	better func(candidate, best WikidataTimeWindow) bool,
+) (WikidataTimeWindow, string, bool) {
+	for _, property := range properties {
+		best := WikidataTimeWindow{}
+		found := false
+		for _, claim := range claims {
+			if claim.Property != property {
+				continue
+			}
+			window, err := ConvertWikidataTime(claim)
+			if err != nil {
+				counters.skip(SkipUnconvertibleTimeFact)
+				continue
+			}
+			if !found || better(window, best) {
+				best, found = window, true
+			}
+		}
+		if found {
+			return best, property, true
+		}
+	}
+	return WikidataTimeWindow{}, "", false
+}
+
+func calendarModelFor(claims []wikidataDumpTimeFact, property string) string {
+	for _, claim := range claims {
+		if claim.Property == property {
+			return claim.CalendarModel
+		}
+	}
+	return ""
+}
+
+// coarserPrecision returns whichever of two model precisions renders at the
+// coarser bucket. Unknown names cannot reach here: ConvertWikidataTime only
+// emits vocabulary members.
+func coarserPrecision(a, b string) string {
+	aBucket, aOK := model.FinestBucketFor(a)
+	bBucket, bOK := model.FinestBucketFor(b)
+	switch {
+	case !aOK:
+		return b
+	case !bOK:
+		return a
+	case bBucket < aBucket:
+		return b
+	default:
+		return a
+	}
+}

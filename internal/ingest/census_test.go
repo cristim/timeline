@@ -11,7 +11,7 @@ import (
 	"wk/internal/model"
 )
 
-func TestCensusYearUsesCivilYearsAtCenturyBoundaries(t *testing.T) {
+func TestCensusYearUsesCalendarYearsAtCenturyBoundaries(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -25,15 +25,21 @@ func TestCensusYearUsesCivilYearsAtCenturyBoundaries(t *testing.T) {
 		{name: "1900-01-01", value: "1900-01-01T00:00:00Z", precision: "year", wantYear: 1900, wantStart: 1900},
 		{name: "1999-12-31", value: "1999-12-31T00:00:00Z", precision: "day", wantYear: 1999, wantStart: 1900},
 		{name: "2000-01-01", value: "2000-01-01T00:00:00Z", precision: "year", wantYear: 2000, wantStart: 2000},
+		// Precisions coarser than a year used to skip the calendar entirely and
+		// land a whole century early.
+		{name: "1900-01-01 century precision", value: "1900-01-01T00:00:00Z", precision: "century", wantYear: 1900, wantStart: 1900},
+		{name: "1900-01-01 decade precision", value: "1900-01-01T00:00:00Z", precision: "decade", wantYear: 1900, wantStart: 1900},
+		{name: "1900-01-01 millennium precision", value: "1900-01-01T00:00:00Z", precision: "millennium", wantYear: 1900, wantStart: 1900},
+		{name: "2000-01-01 century precision", value: "2000-01-01T00:00:00Z", precision: "century", wantYear: 2000, wantStart: 2000},
 	}
 
 	for _, tc := range cases {
 		entity := testEntity(t, tc.name, "event", tc.precision, mustUnixTime(t, tc.value))
-		if got := censusYear(entity); got != tc.wantYear {
-			t.Fatalf("%s censusYear = %v, want %v", tc.name, got, tc.wantYear)
+		if got := censusYearForEntity(entity); got != tc.wantYear {
+			t.Fatalf("%s censusYearForEntity = %v, want %v", tc.name, got, tc.wantYear)
 		}
-		if got := centuryStartYear(censusYear(entity)); got != tc.wantStart {
-			t.Fatalf("%s centuryStartYear = %v, want %v", tc.name, got, tc.wantStart)
+		if got, _ := censusBucketFor(censusYearForEntity(entity)); got != tc.wantStart {
+			t.Fatalf("%s bucket start = %v, want %v", tc.name, got, tc.wantStart)
 		}
 	}
 }
@@ -50,30 +56,64 @@ func TestCensusYearPreservesExactIntegralAstronomicalYears(t *testing.T) {
 	}{
 		{name: "exact 1900 year literal", t0: model.YearToSeconds(1900), precision: "year", wantYear: 1900, wantStart: 1900},
 		{name: "bce year", t0: model.YearToSeconds(-44), precision: "year", wantYear: -44, wantStart: -100},
-		{name: "far future", t0: model.YearToSeconds(1e20 + 45), precision: "billion_year", wantYear: model.SecondsToYear(model.YearToSeconds(1e20 + 45)), wantStart: centuryStartYear(model.SecondsToYear(model.YearToSeconds(1e20 + 45)))},
+		{name: "bce century precision", t0: model.YearToSeconds(-500), precision: "century", wantYear: -500, wantStart: -500},
+		{name: "bce millennium precision", t0: model.YearToSeconds(-3000), precision: "millennium", wantYear: -3000, wantStart: -3000},
+		{name: "far future", t0: model.YearToSeconds(1e20 + 45), precision: "billion_year", wantYear: model.SecondsToYear(model.YearToSeconds(1e20 + 45)), wantStart: farFutureBucketStart()},
 	}
 
 	for _, tc := range cases {
 		entity := testEntity(t, tc.name, "event", tc.precision, tc.t0)
-		if got := censusYear(entity); got != tc.wantYear {
-			t.Fatalf("%s censusYear = %v, want %v", tc.name, got, tc.wantYear)
+		if got := censusYearForEntity(entity); got != tc.wantYear {
+			t.Fatalf("%s censusYearForEntity = %v, want %v", tc.name, got, tc.wantYear)
 		}
-		if got := centuryStartYear(censusYear(entity)); got != tc.wantStart {
-			t.Fatalf("%s centuryStartYear = %v, want %v", tc.name, got, tc.wantStart)
+		if got, _ := censusBucketFor(censusYearForEntity(entity)); got != tc.wantStart {
+			t.Fatalf("%s bucket start = %v, want %v", tc.name, got, tc.wantStart)
 		}
 	}
 }
 
-func TestCenturyStartYearNormalizesSignedZero(t *testing.T) {
+func TestCensusBucketForNormalizesSignedZero(t *testing.T) {
 	t.Parallel()
 
-	got := centuryStartYear(math.Copysign(0, -1))
+	got, span := censusBucketFor(math.Copysign(0, -1))
 	if got != 0 {
-		t.Fatalf("centuryStartYear(-0) = %v, want 0", got)
+		t.Fatalf("censusBucketFor(-0) start = %v, want 0", got)
 	}
 	if math.Signbit(got) {
-		t.Fatalf("centuryStartYear(-0) kept a negative sign bit")
+		t.Fatalf("censusBucketFor(-0) kept a negative sign bit")
 	}
+	if span != 100 {
+		t.Fatalf("censusBucketFor(-0) span = %v, want 100", span)
+	}
+}
+
+// Deep time gets coarser slices; a century row at 4.5 billion years would be
+// one row per entity and would say nothing.
+func TestCensusBucketForWidensInDeepTime(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		year      float64
+		wantStart float64
+		wantSpan  float64
+	}{
+		{year: 1969, wantStart: 1900, wantSpan: 100},
+		{year: -44, wantStart: -100, wantSpan: 100},
+		{year: -12000, wantStart: -20000, wantSpan: 1e4},
+		{year: -66000000, wantStart: -66000000, wantSpan: 1e6},
+		{year: -4.5e9, wantStart: -5e9, wantSpan: 1e9},
+	}
+	for _, tc := range cases {
+		start, span := censusBucketFor(tc.year)
+		if start != tc.wantStart || span != tc.wantSpan {
+			t.Fatalf("censusBucketFor(%v) = (%v, %v), want (%v, %v)", tc.year, start, span, tc.wantStart, tc.wantSpan)
+		}
+	}
+}
+
+func farFutureBucketStart() float64 {
+	start, _ := censusBucketFor(model.SecondsToYear(model.YearToSeconds(1e20 + 45)))
+	return start
 }
 
 func TestBuildCensusReportAggregatesCoverageAndDeterministicJSON(t *testing.T) {
@@ -132,14 +172,14 @@ func TestBuildCensusReportAggregatesCoverageAndDeterministicJSON(t *testing.T) {
 		}
 	}
 
-	if len(report.Centuries) != 3 {
-		t.Fatalf("Centuries len = %d, want 3", len(report.Centuries))
+	if len(report.Buckets) != 3 {
+		t.Fatalf("Buckets len = %d, want 3", len(report.Buckets))
 	}
-	if report.Centuries[0].CenturyStartYear != 1900 || report.Centuries[1].CenturyStartYear != 2000 {
-		t.Fatalf("first centuries = %#v, want starts 1900 and 2000", report.Centuries[:2])
+	if report.Buckets[0].StartYear != 1900 || report.Buckets[1].StartYear != 2000 {
+		t.Fatalf("first buckets = %#v, want starts 1900 and 2000", report.Buckets[:2])
 	}
-	if report.Centuries[2].CenturyStartYear != centuryStartYear(model.SecondsToYear(model.YearToSeconds(1e20+45))) {
-		t.Fatalf("far-future century start = %v, want %v", report.Centuries[2].CenturyStartYear, centuryStartYear(model.SecondsToYear(model.YearToSeconds(1e20+45))))
+	if report.Buckets[2].StartYear != farFutureBucketStart() {
+		t.Fatalf("far-future bucket start = %v, want %v", report.Buckets[2].StartYear, farFutureBucketStart())
 	}
 
 	firstJSON, err := json.Marshal(report)
@@ -181,14 +221,14 @@ func TestBuildCensusReportKeepsEmptySlicesNonNil(t *testing.T) {
 		t.Fatalf("BuildCensusReport: %v", err)
 	}
 
-	if report.Types == nil || report.Centuries == nil || report.Total.Precision == nil {
+	if report.Types == nil || report.Buckets == nil || report.Total.Precision == nil {
 		t.Fatalf("nil slice found in %#v", report)
 	}
 	body, err := json.Marshal(report)
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)
 	}
-	want := `{"schema_version":1,"coverage_basis":"accepted-normalized-entities-after-source-filters","import_report":{"schema_version":2,"seed_version":"seed-empty","seed_input_sha256":"` + testSHA256("seed-empty") + `","warm_source":"none","warm_sha256":"","parsed":{"seed":0,"warm":0,"total":0},"accepted":{"seed":0,"warm":0,"total":0},"rejected":{"seed":0,"warm":0,"total":0},"skipped_warm_duplicates":0,"reject_reasons":[]},"total":{"count":0,"has_date":0,"has_coordinates":0,"has_english_wikipedia":0,"has_all":0,"precision":[]},"types":[],"centuries":[]}`
+	want := `{"schema_version":2,"coverage_basis":"accepted-normalized-entities-after-source-filters","import_report":{"schema_version":2,"seed_version":"seed-empty","seed_input_sha256":"` + testSHA256("seed-empty") + `","warm_source":"none","warm_sha256":"","parsed":{"seed":0,"warm":0,"total":0},"accepted":{"seed":0,"warm":0,"total":0},"rejected":{"seed":0,"warm":0,"total":0},"skipped_warm_duplicates":0,"reject_reasons":[]},"total":{"count":0,"has_date":0,"has_coordinates":0,"has_english_wikipedia":0,"has_all":0,"precision":[]},"types":[],"buckets":[]}`
 	if string(body) != want {
 		t.Fatalf("marshal = %s\nwant   = %s", body, want)
 	}
@@ -278,11 +318,11 @@ func TestBuildCensusReportUsesT0CenturyForRangeCrossingEntity(t *testing.T) {
 		t.Fatalf("BuildCensusReport: %v", err)
 	}
 
-	if len(report.Centuries) != 1 {
-		t.Fatalf("Centuries len = %d, want 1", len(report.Centuries))
+	if len(report.Buckets) != 1 {
+		t.Fatalf("Buckets len = %d, want 1", len(report.Buckets))
 	}
-	if report.Centuries[0].CenturyStartYear != 1800 {
-		t.Fatalf("CenturyStartYear = %v, want 1800", report.Centuries[0].CenturyStartYear)
+	if report.Buckets[0].StartYear != 1800 {
+		t.Fatalf("StartYear = %v, want 1800", report.Buckets[0].StartYear)
 	}
 }
 
@@ -414,11 +454,11 @@ func equalPrecisionCounts(got, want []CensusPrecisionCount) bool {
 }
 
 func centuryTypeCount(report CensusReport, start float64, entityType string) int {
-	for _, century := range report.Centuries {
-		if century.CenturyStartYear != start {
+	for _, bucket := range report.Buckets {
+		if bucket.StartYear != start {
 			continue
 		}
-		for _, row := range century.Types {
+		for _, row := range bucket.Types {
 			if row.Type == entityType {
 				return row.Stats.Count
 			}

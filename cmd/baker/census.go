@@ -194,12 +194,13 @@ func runCensusWithRunner(ctx context.Context, opts censusOptions, runner censusR
 }
 
 func printCensusSummary(out io.Writer, report ingest.CensusReport) {
-	fmt.Fprintf(out, "\n%-14s %7s %7s %7s %7s  %s\n", "CENTURY", "COUNT", "DATE", "COORD", "WIKI", "TYPES")
-	for _, row := range report.Centuries {
+	fmt.Fprintf(out, "\n%-16s %10s %7s %7s %7s %7s  %s\n", "FROM YEAR", "SPAN", "COUNT", "DATE", "COORD", "WIKI", "TYPES")
+	for _, row := range report.Buckets {
 		fmt.Fprintf(
 			out,
-			"%-14s %7d %7d %7d %7d  %s\n",
-			formatCentury(row.CenturyStartYear),
+			"%-16s %10s %7d %7d %7d %7d  %s\n",
+			formatCensusYear(row.StartYear),
+			formatCensusYear(row.SpanYears),
 			row.Total.Count,
 			row.Total.HasDate,
 			row.Total.HasCoordinates,
@@ -207,11 +208,12 @@ func printCensusSummary(out io.Writer, report ingest.CensusReport) {
 			summarizeCensusTypes(row.Types),
 		)
 	}
-	fmt.Fprintf(out, "%-14s %7d %7d %7d %7d\n", "TOTAL", report.Total.Count, report.Total.HasDate, report.Total.HasCoordinates, report.Total.HasEnglishWikipedia)
+	fmt.Fprintf(out, "%-16s %10s %7d %7d %7d %7d\n", "TOTAL", "",
+		report.Total.Count, report.Total.HasDate, report.Total.HasCoordinates, report.Total.HasEnglishWikipedia)
 }
 
-func formatCentury(start float64) string {
-	return fmt.Sprintf("%.0f", start)
+func formatCensusYear(year float64) string {
+	return fmt.Sprintf("%.0f", year)
 }
 
 func summarizeCensusTypes(rows []ingest.CensusTypeRow) string {

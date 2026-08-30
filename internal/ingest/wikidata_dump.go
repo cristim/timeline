@@ -181,11 +181,17 @@ func (r *recordBoundedReader) Read(p []byte) (int, error) {
 }
 
 func scanWikidataDump(r io.Reader, visit func(wikidataDumpItemFacts) error) (wikidataDumpScanStats, error) {
-	return scanWikidataDumpLimited(r, defaultMaxDumpRecordBytes, visit)
+	return scanWikidataDumpLimited(r, defaultMaxDumpRecordBytes, newDumpCounters(), visit)
 }
 
-func scanWikidataDumpLimited(r io.Reader, maxRecordBytes int64, visit func(wikidataDumpItemFacts) error) (wikidataDumpScanStats, error) {
-	counters := newDumpCounters()
+// scanWikidataDumpWithCounters lets a caller share one counter set with the
+// stages that run after the scan, so a time value the scanner accepted but the
+// calendar conversion rejected lands in the same reported tally.
+func scanWikidataDumpWithCounters(r io.Reader, counters *dumpCounters, visit func(wikidataDumpItemFacts) error) (wikidataDumpScanStats, error) {
+	return scanWikidataDumpLimited(r, defaultMaxDumpRecordBytes, counters, visit)
+}
+
+func scanWikidataDumpLimited(r io.Reader, maxRecordBytes int64, counters *dumpCounters, visit func(wikidataDumpItemFacts) error) (wikidataDumpScanStats, error) {
 	stats := wikidataDumpScanStats{Skips: counters.skips}
 	if r == nil {
 		return stats, fmt.Errorf("scan wikidata dump: nil reader")
