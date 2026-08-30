@@ -4,6 +4,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  BASEMAP_FILE: protomaps-20260829-z0-6.pmtiles
+  BASEMAP_SHA256: 9a6cd0b9b26b4bcf13fb3167755431816058659552c0f33f5d1df3793d093082
+  BASEMAP_SOURCE: https://build.protomaps.com/20260829.pmtiles
+  BASEMAP_ATTRIBUTION: >-
+    <a href="https://github.com/protomaps/basemaps">Protomaps</a> · © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> · <a href="https://docs.overturemaps.org/attribution/">© ESA WorldCover project 2020 / Contains modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)
+
 permissions:
   contents: read
   pages: write
@@ -24,8 +31,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # The border and paleo layers are derived from pinned upstreams rather
-      # than committed (~23 MB). The cache key is a hash of those pins, so an
+      # Borders, paleo coastlines, and the local basemap are derived from pinned
+      # upstreams rather than committed. The cache key is a hash of those pins, so an
       # unchanged pin never touches the network and a bumped one refetches
       # without anyone editing a key by hand.
       - name: Geo fingerprint
@@ -38,6 +45,7 @@ jobs:
           path: |
             data/geo/borders
             data/geo/paleo
+            data/geo/basemap
           key: geo-${{ steps.geofp.outputs.key }}
       - name: Fetch map layers
         if: steps.geocache.outputs.cache-hit != 'true'
@@ -60,6 +68,8 @@ jobs:
           npm run build
       - name: Bake artifacts into the site
         run: docker run --rm --user "$(id -u):$(id -g)" --volume "$PWD/data/seed:/seed:ro" --volume "$PWD/data/geo:/geo:ro" --volume "$PWD/data/goldens.json:/goldens.json:ro" --volume "$PWD/web/dist:/out" world-knowledge-baker:pages bake --seed /seed --geo /geo --goldens /goldens.json --out /out
+      - name: Verify published basemap
+        run: test -s "web/dist/v/dev/basemap/$BASEMAP_FILE" && test "$(sha256sum "web/dist/v/dev/basemap/$BASEMAP_FILE" | cut -d ' ' -f 1)" = "$BASEMAP_SHA256" && jq -e --arg key "basemap/$BASEMAP_FILE" --arg source "$BASEMAP_SOURCE" --arg sha "$BASEMAP_SHA256" --arg attribution "$BASEMAP_ATTRIBUTION" '.basemap.key == $key and .basemap.source == $source and .basemap.sha256 == $sha and .basemap.attribution == $attribution' web/dist/v/dev/manifest.json
       - name: SPA fallback
         run: cp web/dist/index.html web/dist/404.html
       - name: Install Playwright

@@ -38,10 +38,10 @@ found-but-deferred items - check it before starting, prune what you resolve.
   fatal, and is how a partial fetch is caught), rings must be closed and wound
   per RFC 7946, and front positions must share a vertex count. Re-bake after
   editing.
-- `data/geo/borders/` and `data/geo/paleo/` are **fetched, not committed**:
+- `data/geo/borders/`, `data/geo/paleo/`, and `data/geo/basemap/` are **fetched, not committed**:
   run `make fetch-geo` once after cloning or the bake fails loudly. CI caches
-  them on `baker geo-fingerprint`. The border data is GPL-3.0 - see
-  `data/geo/borders/NOTICE.md` before moving or relicensing it.
+  them on `baker geo-fingerprint`. Read each directory's committed `NOTICE.md`
+  before moving, rendering, or relicensing its data.
 - The client draws the slice whose coverage window CONTAINS the cursor, not
   the nearest slice. Slice spacing is uneven enough that those differ across
   most of prehistory.

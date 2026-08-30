@@ -23,7 +23,7 @@ checksum-verified compiler in the baker image.
 
 ```sh
 make up        # MinIO (S3 stand-in) + Caddy gateway (CDN stand-in) + web dev server
-make fetch-geo # pull the border + paleo map layers from their pinned upstreams
+make fetch-geo # fetch the pinned borders, paleo coastlines, and local basemap
 make bake      # bake the seed dataset (142 curated entities) and publish it
 open http://localhost:8080
 ```
@@ -34,8 +34,8 @@ so local behavior is production behavior. Useful targets:
 ```sh
 make test            # Go unit + data tests (golden views gate the bake)
 make smoke           # end-to-end: bake, headers, serving, web app
-make fetch-geo       # pull + simplify the border and paleo-coastline layers
-make verify-geo      # prove both fetched layers tile their range with no gaps
+make fetch-geo       # fetch the pinned borders, paleo coastlines, and local basemap
+make verify-geo      # verify layer coverage plus every fetched digest
 make fetch-wikidata  # pull ~10k battles/wars/sieges from Wikidata (CC0)
 make bake-full       # bake seed + the fetched Wikidata events
 make census          # deterministic century/type census over seed + warm events
@@ -51,6 +51,7 @@ Wikidata (SPARQL)   ──┤   baker (Go)                          client (Reac
                       └─► publish = atomic manifest flip      /v/<ds>/entity/…
                                                               /v/<ds>/search/…
                                                               /v/<ds>/layers/…/*.pmtiles
+                                                              /v/<ds>/basemap/…pmtiles
 ```
 
 - **Semantic zoom**: time is divided into buckets T0 (whole universe) through
@@ -87,8 +88,9 @@ Wikidata (SPARQL)   ──┤   baker (Go)                          client (Reac
 Seed entities are hand-curated NDJSON under `data/seed/` with per-claim
 sources. Bulk events come from [Wikidata](https://www.wikidata.org/) (CC0);
 raw fetch responses are archived for provenance and curated seed entries win
-over bulk imports on conflict. The map basemap is © OpenStreetMap
-contributors via MapLibre demotiles.
+over bulk imports on conflict. The baker publishes a pinned local Protomaps
+PMTiles archive with its complete attribution in the manifest. The current
+browser still uses MapLibre demotiles until the M4b-2b style switch.
 
 By default, `make census` requires the normalized
 `BUCKET_WARM/wikidata/events.ndjson` object and fails if it cannot be read. Use
@@ -99,15 +101,17 @@ filters. The current bulk feed contains only battles, wars, and sieges, so it
 is a deterministic precursor to ROAD-2 rather than the complete dump-scale
 census.
 
-Map geometry comes from three pinned upstreams. The first two time-sliced
-layers are fetched by `make fetch-geo` and cached in CI; the small OHM response
-is committed so ingest and licence checks never need its live API:
+Map geometry comes from four pinned upstreams. Borders, paleo coastlines, and
+the Protomaps extract are fetched by `make fetch-geo` and cached in CI; the
+small OHM response is committed so ingest and licence checks never need its
+live API:
 
 | layer | source | licence |
 |---|---|---|
 | Political borders, 123000 BC to AD 2010 | [aourednik/historical-basemaps](https://github.com/aourednik/historical-basemaps) at `62d8f1a` | **GPL-3.0** |
 | Reconstructed coastlines, 540 Ma to 1 Ma | [GPlates Web Service](https://gws.gplates.org), MERDITH2021 plate model | CC-BY 4.0 |
 | London administrative boundaries, 1900 and 1965 | [OpenHistoricalMap](https://www.openhistoricalmap.org/) pinned Overpass response | CC0/public domain unless relation-tagged otherwise |
+| Global basemap, zooms 0-6 | [Protomaps daily build](https://build.protomaps.com/20260829.pmtiles), extracted with go-pmtiles v1.30.0 | ODbL Produced Work; includes ESA WorldCover CC-BY 4.0 landcover |
 
 **The border data is GPL-3.0**, and the simplified copies this project builds
 are a modified version of it, so they carry the same terms — including for
@@ -117,7 +121,9 @@ pin and every modification; `data/geo/borders/LICENSE` is the licence itself.
 The plate model is CC-BY 4.0 and asks to be cited: Merdith et al. (2021),
 *Extending full-plate tectonic models into deep time*, Earth-Science Reviews
 214, [doi:10.1016/j.earscirev.2020.103477](https://doi.org/10.1016/j.earscirev.2020.103477).
-All three rendered sources are named in the map's attribution control.
+All three historical/reconstruction sources are named in the map's attribution
+control. The local basemap descriptor carries the required Protomaps,
+OpenStreetMap, and ESA WorldCover notices for the M4b-2b renderer.
 
 The OHM response is committed as raw Overpass OSM JSON with an exact manifest
 digest and relation-version pins. Ingest resolves it to validated, sorted
@@ -148,6 +154,7 @@ support byte ranges.
 | `known-issues.md` | found-but-deferred items |
 
 Status: working prototype (spec milestones M0-M3, the PMTiles delivery half of
-M4, pinned OpenHistoricalMap ingest and rendering from M4b, plus a bounded M5).
-Next: a local Protomaps basemap, dump-scale ingestion, and the fun-test gate.
+M4, pinned OpenHistoricalMap ingest/rendering, the published local Protomaps
+archive, plus a bounded M5). Next: switch MapLibre to that local basemap,
+dump-scale ingestion, and the fun-test gate.
 See `specs/10-roadmap.html` and `specs/11-local-dev.html`.

@@ -4,6 +4,13 @@ on:
     branches: [main]
   pull_request:
 
+env:
+  BASEMAP_FILE: protomaps-20260829-z0-6.pmtiles
+  BASEMAP_SHA256: 9a6cd0b9b26b4bcf13fb3167755431816058659552c0f33f5d1df3793d093082
+  BASEMAP_SOURCE: https://build.protomaps.com/20260829.pmtiles
+  BASEMAP_ATTRIBUTION: >-
+    <a href="https://github.com/protomaps/basemaps">Protomaps</a> · © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a> · <a href="https://docs.overturemaps.org/attribution/">© ESA WorldCover project 2020 / Contains modified Copernicus Sentinel data (2020) processed by ESA WorldCover consortium</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)
+
 jobs:
   go:
     runs-on: ubuntu-latest
@@ -12,7 +19,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # The ingest tests validate the fetched atlas, so ci needs the same
+      # The ingest tests validate the fetched atlas and basemap, so CI needs the same
       # fetch-or-cache dance as the pages build.
       - name: Geo fingerprint
         id: geofp
@@ -24,6 +31,7 @@ jobs:
           path: |
             data/geo/borders
             data/geo/paleo
+            data/geo/basemap
           key: geo-${{ steps.geofp.outputs.key }}
       - name: Fetch map layers
         if: steps.geocache.outputs.cache-hit != 'true'
@@ -37,7 +45,7 @@ jobs:
       - name: Run baker image
         run: docker run --rm --volume "$PWD/data/seed:/seed:ro" --volume "$PWD/data/geo:/geo:ro" --volume "$PWD/data/goldens.json:/goldens.json:ro" --volume "$RUNNER_TEMP/bake-out:/out" world-knowledge-baker:ci bake --seed /seed --geo /geo --goldens /goldens.json --out /out
       - name: Verify container bake output
-        run: test -f "$RUNNER_TEMP/bake-out/manifest.json" && test "$(find "$RUNNER_TEMP/bake-out/v/dev/layers" -type f -name '*.pmtiles' | wc -l)" -eq "$(jq '[.timesteps[] | length] | add' "$RUNNER_TEMP/bake-out/v/dev/manifest.json")" && test -z "$(find "$RUNNER_TEMP/bake-out/v/dev/layers" -type f -name '*.json' ! -name index.json -print -quit)" && test -s "$RUNNER_TEMP/bake-out/v/dev/layers/borders/index.json" && test -s "$RUNNER_TEMP/bake-out/v/dev/layers/paleocoast/index.json" && grep -q '"source":' "$RUNNER_TEMP/bake-out/v/dev/layers/borders/index.json" && grep -q '"source":' "$RUNNER_TEMP/bake-out/v/dev/layers/paleocoast/index.json"
+        run: test -f "$RUNNER_TEMP/bake-out/manifest.json" && test "$(find "$RUNNER_TEMP/bake-out/v/dev/layers" -type f -name '*.pmtiles' | wc -l)" -eq "$(jq '[.timesteps[] | length] | add' "$RUNNER_TEMP/bake-out/v/dev/manifest.json")" && test -z "$(find "$RUNNER_TEMP/bake-out/v/dev/layers" -type f -name '*.json' ! -name index.json -print -quit)" && test -s "$RUNNER_TEMP/bake-out/v/dev/layers/borders/index.json" && test -s "$RUNNER_TEMP/bake-out/v/dev/layers/paleocoast/index.json" && grep -q '"source":' "$RUNNER_TEMP/bake-out/v/dev/layers/borders/index.json" && grep -q '"source":' "$RUNNER_TEMP/bake-out/v/dev/layers/paleocoast/index.json" && test -s "$RUNNER_TEMP/bake-out/v/dev/basemap/$BASEMAP_FILE" && test "$(sha256sum "$RUNNER_TEMP/bake-out/v/dev/basemap/$BASEMAP_FILE" | cut -d ' ' -f 1)" = "$BASEMAP_SHA256" && jq -e --arg key "basemap/$BASEMAP_FILE" --arg source "$BASEMAP_SOURCE" --arg sha "$BASEMAP_SHA256" --arg attribution "$BASEMAP_ATTRIBUTION" '.basemap.key == $key and .basemap.source == $source and .basemap.sha256 == $sha and .basemap.attribution == $attribution' "$RUNNER_TEMP/bake-out/v/dev/manifest.json"
       - name: Verify baker default user
         run: test "$(docker image inspect --format '{{.Config.User}}' world-knowledge-baker:ci)" = nobody:nogroup && test "$(docker run --rm --entrypoint /usr/bin/id world-knowledge-baker:ci -u)" = 65534 && test "$(docker run --rm --entrypoint /usr/bin/id world-knowledge-baker:ci -g)" = 65534
 
