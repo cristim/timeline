@@ -118,3 +118,19 @@ func fileSHA256(t *testing.T, path string) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
 }
+
+// A corrupt compression trailer after the JSON array closes must fail the run.
+// Draining only the raw bytes would read straight past the decoder and never
+// see it.
+func TestBuildWikidataDumpCoverageReportRejectsACorruptTrailer(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile("testdata/wikidata-dump-mini.json.bz2")
+	if err != nil {
+		t.Fatalf("read bz2 fixture: %v", err)
+	}
+	truncated := body[:len(body)-8]
+	if _, err := BuildWikidataDumpCoverageReport(bytes.NewReader(truncated)); err == nil {
+		t.Fatal("a truncated bzip2 stream produced a report")
+	}
+}

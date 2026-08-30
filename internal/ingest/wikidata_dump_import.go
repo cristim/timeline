@@ -190,6 +190,13 @@ func ImportWikidataDump(r io.Reader, opts WikidataDumpImportOptions) (*WikidataD
 	if err != nil {
 		return nil, fmt.Errorf("import wikidata dump: %w", err)
 	}
+	// Drain the DECODED stream first: a corrupt compression trailer after the
+	// JSON array closes only surfaces as a decoder error, and reading the raw
+	// bytes straight past it would swallow that. Then drain the raw side so the
+	// digest covers every byte the caller handed us.
+	if _, err := io.Copy(io.Discard, stream); err != nil {
+		return nil, fmt.Errorf("import wikidata dump: drain decoded input: %w", err)
+	}
 	if _, err := io.Copy(io.Discard, tee); err != nil {
 		return nil, fmt.Errorf("import wikidata dump: drain input: %w", err)
 	}
