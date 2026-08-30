@@ -10,6 +10,23 @@
   count at dump scale are unknown (see the artifact-count issue below, which
   bites first). Run the census on a full dump before trusting any of them.
 
+- **The warm WDQS parser can push 31 December into the next year.**
+  `parseWikidataTime` encodes an out-of-calendar-range date as a year plus a
+  day-of-year fraction of `(month-1 + (day-1)/30)/12`, which reaches exactly
+  1.0 for 31 December, so that date lands on 1 January of the following year
+  and, at a century boundary, in the following century. Dividing by 31 instead
+  of 30 fixes it. Left alone here because it changes warm-feed times and this
+  work did not otherwise touch that path; the dump importer does not share the
+  code and converts through the calendar instead.
+
+- **A dump-derived model loses its source-calendar year if re-censused.**
+  `normalizedDumpEntity` keeps the converted seconds but not the year the
+  source stated, so running `BuildCensusReport` over a model built by
+  `ingest-wikidata-dump` would fall back to reading a Julian date against the
+  Gregorian calendar. Unreachable today (the dump census reads the resolved
+  time directly and the seed census only ever sees seed entities), and it
+  becomes real the moment the two censuses are unified.
+
 - **The bulk importer holds the accepted set in memory.** The dump itself
   streams and decompression is O(1) in the archive's size, but
   `ImportWikidataDump` accumulates every accepted `*model.Entity` and every

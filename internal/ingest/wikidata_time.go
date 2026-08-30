@@ -380,7 +380,10 @@ func gregorianYearAt(seconds float64) (int64, bool) {
 	for year < maxCalendarYear && gregorianJDN(year+1, 1, 1) <= jdn {
 		year++
 	}
-	if year < minCalendarYear || year > maxCalendarYear {
+	// A clamp that binds means the walk wanted to leave the range the formulas
+	// are valid over. Returning the clamped year would turn a loud refusal into
+	// a quietly wrong answer.
+	if gregorianJDN(year, 1, 1) > jdn || gregorianJDN(year+1, 1, 1) <= jdn {
 		return 0, false
 	}
 	return year, true

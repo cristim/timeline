@@ -467,3 +467,87 @@ func centuryTypeCount(report CensusReport, start float64, entityType string) int
 	}
 	return 0
 }
+
+// The warm WDQS feed encodes out-of-range years as a year plus a mid-year
+// fraction (parseWikidataTime), so a BCE date in the second half of its year
+// arrives with a fractional T0 at year precision. Rounding to the nearest year
+// pushed those into the following year, and at a century boundary into the
+// following century.
+func TestCensusYearKeepsMidYearInstantsInTheirOwnYear(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		value       string
+		wantYear    float64
+		wantCentury float64
+	}{
+		{name: "September 101 BCE", value: "-0101-09-15", wantYear: -101, wantCentury: -200},
+		{name: "September 100 BCE", value: "-0100-09-15", wantYear: -100, wantCentury: -100},
+		{name: "January 101 BCE", value: "-0101-01-01", wantYear: -101, wantCentury: -200},
+		{name: "November 201 BCE", value: "-0201-11-15", wantYear: -201, wantCentury: -300},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t0, precision, ok := parseWikidataTime(tc.value + "T00:00:00Z")
+			if !ok {
+				t.Fatalf("parseWikidataTime(%q) failed", tc.value)
+			}
+			if precision != "year" {
+				t.Fatalf("precision = %q, want year", precision)
+			}
+			entity := testEntity(t, tc.name, "event", precision, t0)
+			if got := censusYearForEntity(entity); got != tc.wantYear {
+				t.Fatalf("censusYearForEntity = %v, want %v", got, tc.wantYear)
+			}
+			if got, _ := censusBucketFor(censusYearForEntity(entity)); got != tc.wantCentury {
+				t.Fatalf("century = %v, want %v", got, tc.wantCentury)
+			}
+		})
+	}
+}
+
+// Both encodings of the same year must land on that year: the {"y": n} form
+// inverts exactly, an ISO 1 January sits up to a day away on the mean-year
+// scale, and neither may fall into the previous year.
+func TestCensusYearAgreesAcrossBothEncodings(t *testing.T) {
+	t.Parallel()
+
+	for _, year := range []float64{-4000, -2000, -1000, -500, -101, -100, -44, 1, 500, 1000, 1500, 1815, 1900, 2000, 2100} {
+		if got := censusYearAt(model.YearToSeconds(year), "century"); got != year {
+			t.Fatalf("mean-year encoding of %v attributed to %v", year, got)
+		}
+	}
+	for _, tc := range []struct {
+		value string
+		want  float64
+	}{
+		{"1900-01-01T00:00:00Z", 1900},
+		{"2000-01-01T00:00:00Z", 2000},
+		{"1000-01-01T00:00:00Z", 1000},
+		{"1500-01-01T00:00:00Z", 1500},
+	} {
+		if got := censusYearAt(mustUnixTime(t, tc.value), "century"); got != tc.want {
+			t.Fatalf("calendar encoding of %s attributed to %v, want %v", tc.value, got, tc.want)
+		}
+	}
+}
+
+// Late in a year is still that year: the census must floor, not round.
+func TestCensusYearFloorsLateYearInstants(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		year float64
+		want float64
+	}{
+		{year: -201.9, want: -202},
+		{year: -100.6, want: -101},
+		{year: 1899.7, want: 1899},
+		{year: 1999.99, want: 1999},
+	} {
+		if got := censusYearAt(model.YearToSeconds(tc.year), "year"); got != tc.want {
+			t.Fatalf("censusYearAt(year %v) = %v, want %v", tc.year, got, tc.want)
+		}
+	}
+}
