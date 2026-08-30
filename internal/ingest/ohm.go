@@ -159,7 +159,7 @@ func loadOHM(dir string, politicalTTo int) ([]model.BorderLayer, *OHMImportSumma
 				continue
 			}
 			layer.Features = append(layer.Features, model.BorderFeature{
-				Name: relation.name, Representation: "estimated", Geometry: relation.geometry,
+				Name: relation.name, Representation: "estimated", RenderRank: 1, Geometry: relation.geometry,
 				Source: ohmSource, SourceID: fmt.Sprintf("relation/%d@%d", relation.id, relation.version),
 				License: relation.license, Attribution: relation.attribution,
 				SourceURL:   fmt.Sprintf("https://www.openhistoricalmap.org/relation/%d", relation.id),

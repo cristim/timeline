@@ -18,9 +18,8 @@ type GeoSet struct {
 	// Paleo holds reconstructed coastlines for deep time, in the same shape
 	// as Borders and covering the span before the political record starts.
 	Paleo []BorderLayer
-	// OHM is the pinned OpenHistoricalMap source slice. It stays separate from
-	// Borders until the following M4 increment composites regional detail into
-	// the world snapshots.
+	// OHM retains the pinned source snapshots for diagnostics; Borders contains
+	// the same regional detail composited into the world snapshots.
 	OHM    []BorderLayer
 	Fronts map[string][]FrontPosition
 }
@@ -44,6 +43,7 @@ type BorderFeature struct {
 	Entity         string // seed id, optional
 	Slug           string // resolved from Entity at bake time
 	Representation string
+	RenderRank     int
 	Source         string
 	SourceID       string
 	License        string

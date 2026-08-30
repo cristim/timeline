@@ -42,7 +42,7 @@ func TestLoadOHMRealFixture(t *testing.T) {
 	}
 	for _, layer := range layers {
 		for _, feature := range layer.Features {
-			if feature.Source != ohmSource || feature.SourceID == "" || feature.License != ohmDefaultLicense ||
+			if feature.RenderRank != 1 || feature.Source != ohmSource || feature.SourceID == "" || feature.License != ohmDefaultLicense ||
 				feature.Attribution == "" || feature.SourceURL == "" || feature.RetrievedAt == "" {
 				t.Errorf("incomplete provenance: %#v", feature)
 			}

@@ -3,6 +3,8 @@ package ingest
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,6 +24,10 @@ func TestLoadRealGeo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load OHM summary: %v", err)
 	}
+	rawBorders, err := loadAreaSlices("../../data/geo/borders", map[string]*model.Entity{})
+	if err != nil {
+		t.Fatalf("load raw borders: %v", err)
+	}
 	set, err := LoadGeo("../../data/geo", res.Entities)
 	if err != nil {
 		t.Fatalf("load geo: %v", err)
@@ -40,6 +46,62 @@ func TestLoadRealGeo(t *testing.T) {
 			t.Errorf("border %d has no source: curated geometry must say where it came from", l.Year)
 		}
 	}
+	byYear := func(year int) model.BorderLayer {
+		t.Helper()
+		for _, layer := range set.Borders {
+			if layer.Year == year {
+				return layer
+			}
+		}
+		t.Fatalf("no composited border layer for %d", year)
+		return model.BorderLayer{}
+	}
+	for _, raw := range rawBorders {
+		if raw.Year >= 1900 {
+			continue
+		}
+		if got := byYear(raw.Year); !reflect.DeepEqual(got, raw) {
+			t.Errorf("pre-1900 border %d changed during OHM composition", raw.Year)
+		}
+	}
+	if names := featureNames(byYear(1900)); !slices.Contains(names, "Metropolitan Borough of Chelsea") ||
+		!slices.Contains(names, "Metropolitan Borough of Holborn") ||
+		!slices.Contains(names, "Metropolitan Borough of Paddington") {
+		t.Errorf("1900 border features omit predecessor boroughs: %v", names)
+	}
+	layer1960 := byYear(1960)
+	if layer1960.TTo != 1964 {
+		t.Errorf("1960 border covers %d..%d, want its original start through 1964", layer1960.TFrom, layer1960.TTo)
+	}
+	if names := featureNames(layer1960); !slices.Contains(names, "Metropolitan Borough of Chelsea") ||
+		!slices.Contains(names, "Metropolitan Borough of Holborn") ||
+		!slices.Contains(names, "Metropolitan Borough of Paddington") ||
+		slices.Contains(names, "London Borough of Westminster") {
+		t.Errorf("1960 border has wrong London detail: %v", names)
+	}
+	layer1965 := byYear(1965)
+	raw1960 := model.BorderLayer{}
+	for _, layer := range rawBorders {
+		if layer.Year == 1960 {
+			raw1960 = layer
+			break
+		}
+	}
+	if raw1960.Year != 1960 {
+		t.Fatal("raw borders have no 1960 layer")
+	}
+	if layer1965.TFrom != 1965 || layer1965.TTo != raw1960.TTo {
+		t.Errorf("1965 border covers %d..%d, want 1965..%d", layer1965.TFrom, layer1965.TTo, raw1960.TTo)
+	}
+	if names := featureNames(layer1965); !slices.Contains(names, "London Borough of Westminster") ||
+		slices.Contains(names, "Metropolitan Borough of Chelsea") ||
+		slices.Contains(names, "Metropolitan Borough of Holborn") ||
+		slices.Contains(names, "Metropolitan Borough of Paddington") {
+		t.Errorf("1965 border has wrong London detail: %v", names)
+	}
+	if err := validateAreaCoverage("real composited borders", set.Borders); err != nil {
+		t.Errorf("composited border coverage: %v", err)
+	}
 	fronts, ok := set.Fronts["eastern-front"]
 	if !ok {
 		t.Fatalf("no front positions for eastern-front; have %v", keys(set.Fronts))
@@ -52,6 +114,105 @@ func TestLoadRealGeo(t *testing.T) {
 			t.Errorf("front vertex counts differ: %d vs %d", len(p.Coordinates), len(fronts[0].Coordinates))
 		}
 	}
+}
+
+func TestCompositeOHMBorders(t *testing.T) {
+	feature := func(name string, rank int) model.BorderFeature {
+		return model.BorderFeature{Name: name, RenderRank: rank}
+	}
+	layer := func(year, tFrom, tTo int, label, source string, features ...model.BorderFeature) model.BorderLayer {
+		return model.BorderLayer{
+			Year: year, TFrom: tFrom, TTo: tTo, Label: label, Source: source,
+			Features: features,
+		}
+	}
+
+	t.Run("no OHM overlap", func(t *testing.T) {
+		borders := []model.BorderLayer{layer(100, 100, 109, "base", "base source", feature("country", 0))}
+		ohm := []model.BorderLayer{layer(200, 200, 209, "detail", "OHM source", feature("borough", 1))}
+		wantBorders := cloneBorderLayers(borders)
+		got, err := compositeOHMBorders(borders, ohm)
+		if err != nil {
+			t.Fatalf("composite: %v", err)
+		}
+		if !reflect.DeepEqual(got, wantBorders) {
+			t.Fatalf("composited = %#v, want unchanged values %#v", got, wantBorders)
+		}
+		got[0].Features[0].Name = "mutated"
+		if !reflect.DeepEqual(borders, wantBorders) {
+			t.Fatal("composite output shares its feature backing array with the border input")
+		}
+	})
+
+	t.Run("OHM boundary equal to base start", func(t *testing.T) {
+		borders := []model.BorderLayer{layer(105, 100, 109, "base", "base source", feature("country", 0))}
+		ohm := []model.BorderLayer{layer(100, 100, 109, "detail", "OHM source", feature("borough", 1))}
+		got, err := compositeOHMBorders(borders, ohm)
+		if err != nil {
+			t.Fatalf("composite: %v", err)
+		}
+		if len(got) != 1 || got[0].Year != 105 || got[0].TFrom != 100 || got[0].TTo != 109 {
+			t.Fatalf("layers = %#v, want one unsplit layer with original year", got)
+		}
+		if names := featureNames(got[0]); !reflect.DeepEqual(names, []string{"country", "borough"}) {
+			t.Fatalf("feature order = %v, want base then OHM", names)
+		}
+	})
+
+	t.Run("interior boundary and consecutive base windows", func(t *testing.T) {
+		borders := []model.BorderLayer{
+			layer(1950, 1950, 1959, "world 1950", "base source", feature("country 1950", 0)),
+			layer(1960, 1960, 1969, "world 1960", "base source", feature("country 1960", 0)),
+			layer(1970, 1970, 1979, "world 1970", "base source", feature("country 1970", 0)),
+		}
+		ohm := []model.BorderLayer{
+			layer(1900, 1900, 1964, "detail 1900", "OHM source", feature("Chelsea", 1), feature("Holborn", 1)),
+			layer(1965, 1965, 1979, "detail 1965", "OHM source", feature("Westminster", 1)),
+		}
+		wantBorders := cloneBorderLayers(borders)
+		wantOHM := cloneBorderLayers(ohm)
+		got, err := compositeOHMBorders(borders, ohm)
+		if err != nil {
+			t.Fatalf("composite: %v", err)
+		}
+		wantWindows := [][3]int{{1950, 1950, 1959}, {1960, 1960, 1964}, {1965, 1965, 1969}, {1970, 1970, 1979}}
+		if len(got) != len(wantWindows) {
+			t.Fatalf("got %d layers, want %d: %#v", len(got), len(wantWindows), got)
+		}
+		for i, want := range wantWindows {
+			if tuple := [3]int{got[i].Year, got[i].TFrom, got[i].TTo}; tuple != want {
+				t.Errorf("layer %d window = %v, want %v", i, tuple, want)
+			}
+		}
+		if names := featureNames(got[1]); !reflect.DeepEqual(names, []string{"country 1960", "Chelsea", "Holborn"}) {
+			t.Errorf("1960 feature order = %v", names)
+		}
+		if names := featureNames(got[2]); !reflect.DeepEqual(names, []string{"country 1960", "Westminster"}) {
+			t.Errorf("1965 feature order = %v", names)
+		}
+		if got[1].Label != "world 1960 · London boundaries · 1900 · OpenHistoricalMap" ||
+			got[2].Label != "world 1960 · London boundaries · 1965 · OpenHistoricalMap" {
+			t.Errorf("split labels = %q and %q", got[1].Label, got[2].Label)
+		}
+		if got[1].Source != "base source + OHM source" || got[2].Source != "base source + OHM source" {
+			t.Errorf("split sources = %q and %q", got[1].Source, got[2].Source)
+		}
+		if err := validateAreaCoverage("test composite", got); err != nil {
+			t.Errorf("coverage: %v", err)
+		}
+
+		got[1].Features[0].Name = "mutated base"
+		got[1].Features[1].Name = "mutated OHM"
+		if got[2].Features[0].Name != "country 1960" {
+			t.Fatal("split segments share their base-feature backing array")
+		}
+		if got[0].Features[1].Name != "Chelsea" {
+			t.Fatal("output segments share their OHM-feature backing array")
+		}
+		if !reflect.DeepEqual(borders, wantBorders) || !reflect.DeepEqual(ohm, wantOHM) {
+			t.Fatal("composition mutated an input layer or feature slice")
+		}
+	})
 }
 
 // Each case writes one bad file into an otherwise valid tree and asserts the
@@ -189,4 +350,12 @@ func keys(m map[string][]model.FrontPosition) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func cloneBorderLayers(layers []model.BorderLayer) []model.BorderLayer {
+	cloned := append([]model.BorderLayer(nil), layers...)
+	for i := range cloned {
+		cloned[i].Features = append([]model.BorderFeature(nil), layers[i].Features...)
+	}
+	return cloned
 }

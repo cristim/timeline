@@ -84,6 +84,9 @@ func LoadGeo(dir string, entities []*model.Entity) (*model.GeoSet, error) {
 		if set.OHM, _, err = loadOHM(ohmDir, lastPoliticalYear); err != nil {
 			return nil, err
 		}
+		if set.Borders, err = compositeOHMBorders(set.Borders, set.OHM); err != nil {
+			return nil, err
+		}
 	} else if !os.IsNotExist(statErr) {
 		return nil, statErr
 	}
@@ -179,6 +182,55 @@ func loadAreaSlices(dir string, bySeedID map[string]*model.Entity) ([]model.Bord
 	}
 
 	sort.Slice(slices, func(i, j int) bool { return slices[i].Year < slices[j].Year })
+	if err := validateAreaCoverage(dir, slices); err != nil {
+		return nil, err
+	}
+	return slices, nil
+}
+
+func compositeOHMBorders(borders, ohm []model.BorderLayer) ([]model.BorderLayer, error) {
+	composited := make([]model.BorderLayer, 0, len(borders)+len(ohm))
+	for _, border := range borders {
+		starts := []int{border.TFrom}
+		for _, detail := range ohm {
+			if detail.TFrom > border.TFrom && detail.TFrom <= border.TTo {
+				starts = append(starts, detail.TFrom)
+			}
+		}
+		sort.Ints(starts)
+
+		for i, start := range starts {
+			end := border.TTo
+			if i+1 < len(starts) {
+				end = starts[i+1] - 1
+			}
+			year := border.Year
+			if start != border.TFrom {
+				year = start
+			}
+			segment := model.BorderLayer{
+				Year: year, TFrom: start, TTo: end, Label: border.Label, Source: border.Source,
+				Features: append([]model.BorderFeature(nil), border.Features...),
+			}
+			for _, detail := range ohm {
+				if start < detail.TFrom || start > detail.TTo {
+					continue
+				}
+				segment.Label += fmt.Sprintf(" · London boundaries · %d · OpenHistoricalMap", detail.Year)
+				segment.Source += " + " + detail.Source
+				segment.Features = append(segment.Features, detail.Features...)
+				break
+			}
+			composited = append(composited, segment)
+		}
+	}
+	if err := validateAreaCoverage("composited political borders", composited); err != nil {
+		return nil, err
+	}
+	return composited, nil
+}
+
+func validateAreaCoverage(source string, slices []model.BorderLayer) error {
 	// Windows must TILE, not merely avoid each other: every year between the
 	// first and last slice belongs to exactly one of them. Scrubbing the cursor
 	// has to walk the whole layer without the map blanking between slices, and
@@ -193,10 +245,10 @@ func loadAreaSlices(dir string, bySeedID map[string]*model.Entity) ([]model.Bord
 		if cur.TFrom <= prev.TTo {
 			verb = "overlap"
 		}
-		return nil, fmt.Errorf("%s: coverage windows %s: %d covers %d..%d, %d covers %d..%d (each slice must run to the year before the next)",
-			dir, verb, prev.Year, prev.TFrom, prev.TTo, cur.Year, cur.TFrom, cur.TTo)
+		return fmt.Errorf("%s: coverage windows %s: %d covers %d..%d, %d covers %d..%d (each slice must run to the year before the next)",
+			source, verb, prev.Year, prev.TFrom, prev.TTo, cur.Year, cur.TFrom, cur.TTo)
 	}
-	return slices, nil
+	return nil
 }
 
 func loadFronts(dir string, bySeedID map[string]*model.Entity, set *model.GeoSet) error {
