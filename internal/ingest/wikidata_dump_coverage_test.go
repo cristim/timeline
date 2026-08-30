@@ -22,6 +22,7 @@ func TestBuildWikidataDumpCoverageReportBuildsExactFixtureReport(t *testing.T) {
 		SchemaVersion: 1,
 		CoverageBasis: "wikidata-item-facts-after-statement-validation-before-type-classification",
 		InputSHA256:   "3d59b3bde012de266b41ffadc982e24eb820f8d3297d63130ae61851e49af6d4",
+		Compression:   DumpCompressionNone,
 		Items: WikidataDumpCoverageStats{
 			Count:               2,
 			HasEnglishLabel:     1,

@@ -39,9 +39,10 @@ type WikidataDumpSkipCount struct {
 }
 
 type WikidataDumpCoverageReport struct {
-	SchemaVersion int                          `json:"schema_version"`
-	CoverageBasis string                       `json:"coverage_basis"`
-	InputSHA256   string                       `json:"input_sha256"`
+	SchemaVersion int             `json:"schema_version"`
+	CoverageBasis string          `json:"coverage_basis"`
+	InputSHA256   string          `json:"input_sha256"`
+	Compression   DumpCompression `json:"compression"`
 	Items         WikidataDumpCoverageStats    `json:"items"`
 	Properties    int                          `json:"properties"`
 	TimeClaims    []WikidataDumpTimeClaimCount `json:"time_claims"`
@@ -67,7 +68,16 @@ func BuildWikidataDumpCoverageReport(r io.Reader) (WikidataDumpCoverageReport, e
 	}
 	timeClaimCounts := map[wikidataDumpTimeClaimKey]int{}
 
-	scan, err := scanWikidataDump(io.TeeReader(r, digest), func(facts wikidataDumpItemFacts) error {
+	// The digest identifies the input artifact as supplied, compressed or not,
+	// so a report can be traced back to the exact dump file it read.
+	tee := io.TeeReader(r, digest)
+	stream, compression, err := OpenWikidataDumpStream(tee)
+	if err != nil {
+		return WikidataDumpCoverageReport{}, fmt.Errorf("build wikidata dump coverage report: %w", err)
+	}
+	report.Compression = compression
+
+	scan, err := scanWikidataDump(stream, func(facts wikidataDumpItemFacts) error {
 		hasDate := len(facts.TimeClaims) != 0
 		report.Items.Count++
 		if facts.HasEnglishLabel {
@@ -100,6 +110,11 @@ func BuildWikidataDumpCoverageReport(r io.Reader) (WikidataDumpCoverageReport, e
 		return WikidataDumpCoverageReport{}, fmt.Errorf("build wikidata dump coverage report: %w", err)
 	}
 
+	// A compressed container can end before its file does; drain so the digest
+	// covers every byte the caller handed us.
+	if _, err := io.Copy(io.Discard, tee); err != nil {
+		return WikidataDumpCoverageReport{}, fmt.Errorf("build wikidata dump coverage report: drain input: %w", err)
+	}
 	report.InputSHA256 = hex.EncodeToString(digest.Sum(nil))
 	report.Properties = scan.Properties
 	report.SkippedClaims = summarizeDumpSkips(scan.Skips)
