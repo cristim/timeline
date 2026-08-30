@@ -20,6 +20,12 @@ const usageText = `usage: baker <command>
                                publish manifest; --warm merges the wk-warm
                                Wikidata event set; --geo <dir> points at the
                                curated geometry (default data/geo)
+  bake --model <dir> [--importance-floor F]
+                               bake the HOT tier from a normalized Parquet
+                               model (baker ingest-wikidata-dump --out) instead
+                               of the seed; entities below the floor stay WARM.
+                               --goldens "" turns off the golden gate for a
+                               dataset that has no pinned expectations yet
   fetch-wikidata               pull the bounded Wikidata event slice into
                                wk-dumps (raw) + wk-warm (normalized)
   fetch-borders [--out <dir>]  pull + simplify the historical-basemaps world
