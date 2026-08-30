@@ -38,7 +38,7 @@ const ERA_STYLE: AreaLayerStyle = {
   lineWidth: 1.2,
   dashed: true,
   attribution:
-    "historical-basemaps (GPL-3.0): https://github.com/aourednik/historical-basemaps",
+    "historical-basemaps (GPL-3.0): https://github.com/aourednik/historical-basemaps · OpenHistoricalMap (CC0/public domain): https://www.openhistoricalmap.org/",
 };
 
 // GPlates carries no feature names, so reconstructed land uses one colour.
@@ -224,6 +224,8 @@ interface Tip {
   x: number;
   y: number;
   name: string;
+  source?: string;
+  sourceId?: string;
 }
 
 export function MapView({
@@ -405,8 +407,8 @@ export function MapView({
         if (map.queryRenderedFeatures(e.point, { layers: ["wk-dots"] }).length) {
           return setTip(null);
         }
-        const name = queryAreaFeature(map, eraSlots.current, e.point)?.name;
-        setTip(name ? { x: e.point.x, y: e.point.y, name } : null);
+        const feature = queryAreaFeature(map, eraSlots.current, e.point);
+        setTip(feature?.name ? { x: e.point.x, y: e.point.y, ...feature, name: feature.name } : null);
       };
       map.on("mousemove", onHover);
       map.on("mouseout", () => setTip(null));
@@ -497,7 +499,12 @@ export function MapView({
       <div ref={containerRef} className="map-container" />
       {tip && (
         <div className="map-tooltip" style={{ left: tip.x + 14, top: tip.y + 16 }}>
-          {tip.name}
+          <span>{tip.name}</span>
+          {tip.source && (
+            <span className="map-tooltip-source">
+              {tip.source}{tip.sourceId ? ` · ${tip.sourceId}` : ""}
+            </span>
+          )}
         </div>
       )}
     </>

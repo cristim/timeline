@@ -95,7 +95,7 @@ export function useViewportItems(
 
 /**
  * How long the cursor must settle before its slice is selected. The layers tile
- * the whole timeline in 89 slices, so a fast drag crosses dozens of windows;
+ * the whole timeline, so a fast drag crosses dozens of windows;
  * without this, each one would start PMTiles range reads the next obsoletes.
  * Well under the crossfade, so a deliberate scrub still lands on every slice.
  */

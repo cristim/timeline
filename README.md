@@ -117,16 +117,17 @@ pin and every modification; `data/geo/borders/LICENSE` is the licence itself.
 The plate model is CC-BY 4.0 and asks to be cited: Merdith et al. (2021),
 *Extending full-plate tectonic models into deep time*, Earth-Science Reviews
 214, [doi:10.1016/j.earscirev.2020.103477](https://doi.org/10.1016/j.earscirev.2020.103477).
-Those two rendered sources are named in the map's attribution control.
+All three rendered sources are named in the map's attribution control.
 
 The OHM response is committed as raw Overpass OSM JSON with an exact manifest
 digest and relation-version pins. Ingest resolves it to validated, sorted
 `BorderLayer` snapshots, preserves per-relation provenance on their features,
 and adds aggregate licence counts plus explicit exceptions to import-report
-schema 2. It is not rendered in this increment. The next M4b child composites
-those snapshots into the political PMTiles. Refresh steps and the
-raw-to-processed format contract are in `data/geo/README.md` and
-`data/geo/ohm/NOTICE.md`.
+schema 2. The baker composites each snapshot above the overlapping political
+border windows, introducing a 1965 PMTiles time step where the London source
+changes. Hover tooltips expose the OHM source and versioned relation ID.
+Refresh steps and the raw-to-processed format contract are in
+`data/geo/README.md` and `data/geo/ohm/NOTICE.md`.
 
 The fetched `.geojson` snapshots are source inputs. The baker compiles each
 time step into a deterministic PMTiles v3 archive with vector source-layer
@@ -147,7 +148,6 @@ support byte ranges.
 | `known-issues.md` | found-but-deferred items |
 
 Status: working prototype (spec milestones M0-M3, the PMTiles delivery half of
-M4, the pinned OpenHistoricalMap ingest part of M4b, plus a bounded M5). Next:
-OpenHistoricalMap compositing and rendering, a local Protomaps basemap,
-dump-scale ingestion, and the fun-test gate. See `specs/10-roadmap.html` and
-`specs/11-local-dev.html`.
+M4, pinned OpenHistoricalMap ingest and rendering from M4b, plus a bounded M5).
+Next: a local Protomaps basemap, dump-scale ingestion, and the fun-test gate.
+See `specs/10-roadmap.html` and `specs/11-local-dev.html`.

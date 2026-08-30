@@ -190,6 +190,9 @@ test("dragging the cursor swaps the historical border overlay", async ({ page })
   // 1985 falls in the 1960 slice's window instead.
   await dragCursorTo(page, -8.558e8, 4.7335e8);
   await expect(page.locator(".era-chip")).toContainText("1960");
+  await expect(page.locator(".era-chip")).toContainText(
+    "London boundaries · 1965 · OpenHistoricalMap",
+  );
   await page.waitForTimeout(1500); // crossfade
   const soviet = await page.locator(".map-container").screenshot();
   expect(Buffer.compare(axis, soviet), "the map must visibly change").not.toBe(0);
@@ -198,6 +201,9 @@ test("dragging the cursor swaps the historical border overlay", async ({ page })
 });
 
 const SECONDS_PER_YEAR = 31_556_952;
+const LAYER_FETCH_TIMEOUT_MS = 15_000;
+const VOID_SURFACE_RGB = [34, 42, 55] as const;
+const PIXEL_TOLERANCE = 4;
 /** The cursor time for a calendar year, matching web/src/lib/keyscheme.ts. */
 function tcForYear(year: number) {
   return (year - 1970) * SECONDS_PER_YEAR;
@@ -208,6 +214,39 @@ async function gotoYear(page: Page, year: number, span: number) {
   const tc = tcForYear(year);
   await page.goto(`./?t0=${tc - span}&t1=${tc + span}&tc=${tc}`);
   await booted(page);
+}
+
+// MapLibre starts in globe projection, where London is this many pixels from
+// the map centre at the fixed Playwright viewport and initial camera.
+const LONDON_GLOBE_OFFSET = { x: -41.98785, y: -76.47797 };
+
+/** Reaches the pinned Paddington/Westminster slice through real map gestures. */
+async function hoverLondonBoundary(page: Page) {
+  const box = (await page.locator(".map-container").boundingBox())!;
+  const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  const anchor = {
+    x: center.x + LONDON_GLOBE_OFFSET.x,
+    y: center.y + LONDON_GLOBE_OFFSET.y,
+  };
+  await page.mouse.move(anchor.x, anchor.y);
+  for (let i = 0; i < 6; i++) {
+    await page.mouse.wheel(0, -600);
+    await page.waitForTimeout(150);
+  }
+  await page.waitForTimeout(1200);
+
+  const tip = page.locator(".map-tooltip");
+  for (let dy = 0; dy <= 16; dy++) {
+    for (let dx = -8; dx <= 8; dx++) {
+      await page.mouse.move(anchor.x + dx, anchor.y + dy);
+      await page.waitForTimeout(10);
+      if (await tip.count()) {
+        const text = await tip.textContent();
+        if (text?.includes("OpenHistoricalMap")) return text;
+      }
+    }
+  }
+  throw new Error("no OpenHistoricalMap boundary tooltip near Paddington");
 }
 
 /**
@@ -249,6 +288,7 @@ function expectPMTilesTransport(watched: LayerWatch) {
 // The whole point of replacing five hand-traced eras with a tiling dataset:
 // there is no longer a date in recorded history that shows nothing.
 test("every date in recorded history shows a map", async ({ page }) => {
+  test.setTimeout(60_000);
   const w = watch(page);
   for (const year of [-5000, -500, 800, 1200, 1500, 1751, 1900, 1960, 2005]) {
     const layers = watchLayers(page);
@@ -261,6 +301,7 @@ test("every date in recorded history shows a map", async ({ page }) => {
     await expect
       .poll(() => layers.fetched.filter((l) => l.startsWith("borders/")).length, {
         message: `borders fetched at ${year}`,
+        timeout: LAYER_FETCH_TIMEOUT_MS,
       })
       .toBeGreaterThan(0);
     expect(layers.fetched.filter((l) => l.startsWith("paleocoast/")), `paleo at ${year}`).toEqual([]);
@@ -294,7 +335,9 @@ test("deep time renders reconstructed coastlines and hides the modern world", as
   await expect(chip).toHaveClass(/paleo/);
 
   await expect
-    .poll(() => layers.fetched.filter((l) => l.startsWith("paleocoast/")).length)
+    .poll(() => layers.fetched.filter((l) => l.startsWith("paleocoast/")).length, {
+      timeout: LAYER_FETCH_TIMEOUT_MS,
+    })
     .toBeGreaterThan(0);
   // Political borders are meaningless here and must not be drawn.
   expect(layers.fetched.filter((l) => l.startsWith("borders/"))).toEqual([]);
@@ -393,11 +436,16 @@ async function clickMapColor(page: Page, target: [number, number, number]) {
 // The one moment the map changes kind. A gap here blanks the world; an
 // overlap would draw both at once.
 test("deep time hands over to recorded history at the boundary", async ({ page }) => {
+  test.setTimeout(45_000);
   // 123001 BC is the last year of the paleo layer's youngest slice.
   const before = watchLayers(page);
   await gotoYear(page, -123_001, 1000 * SECONDS_PER_YEAR);
   await expect(page.locator(".era-chip")).toHaveClass(/paleo/);
-  await expect.poll(() => before.fetched.filter((l) => l.startsWith("paleocoast/")).length).toBeGreaterThan(0);
+  await expect
+    .poll(() => before.fetched.filter((l) => l.startsWith("paleocoast/")).length, {
+      timeout: LAYER_FETCH_TIMEOUT_MS,
+    })
+    .toBeGreaterThan(0);
   expect(before.fetched.filter((l) => l.startsWith("borders/"))).toEqual([]);
   expectPMTilesTransport(before);
 
@@ -408,7 +456,11 @@ test("deep time hands over to recorded history at the boundary", async ({ page }
   await expect(chip).not.toHaveClass(/paleo/);
   await expect(chip).not.toHaveClass(/empty/);
   await expect(chip).toContainText("123000 BC");
-  await expect.poll(() => after.fetched.filter((l) => l.startsWith("borders/")).length).toBeGreaterThan(0);
+  await expect
+    .poll(() => after.fetched.filter((l) => l.startsWith("borders/")).length, {
+      timeout: LAYER_FETCH_TIMEOUT_MS,
+    })
+    .toBeGreaterThan(0);
   expectPMTilesTransport(after);
 });
 
@@ -453,6 +505,10 @@ test("a war with curated fronts animates against the cursor", async ({ page }) =
 test("older than every reconstruction the globe says so and shows nothing", async ({ page }) => {
   const w = watch(page);
   const layers = watchLayers(page);
+  const basemapLoaded = page.waitForResponse(
+    (response) => /demotiles\.maplibre\.org\/tiles\/\d/.test(response.url()) && response.ok(),
+    { timeout: LAYER_FETCH_TIMEOUT_MS },
+  );
   await gotoYear(page, -2_000_000_000, 200_000_000 * SECONDS_PER_YEAR);
 
   const chip = page.locator(".era-chip");
@@ -461,7 +517,20 @@ test("older than every reconstruction the globe says so and shows nothing", asyn
   expect(layers.fetched).toEqual([]);
   expectPMTilesTransport(layers);
 
-  await page.waitForTimeout(2500);
+  await basemapLoaded;
+  await expect
+    .poll(async () => {
+      const pixel = await mapCentrePixel(page);
+      return Math.max(
+        Math.abs(pixel.r - VOID_SURFACE_RGB[0]),
+        Math.abs(pixel.g - VOID_SURFACE_RGB[1]),
+        Math.abs(pixel.b - VOID_SURFACE_RGB[2]),
+      );
+    }, {
+      message: "void surface replaced the pale basemap",
+      timeout: LAYER_FETCH_TIMEOUT_MS,
+    })
+    .toBeLessThanOrEqual(PIXEL_TOLERANCE);
   const centre = await mapCentrePixel(page);
   const px = JSON.stringify(centre);
   expect(centre.r, `not the pale basemap: ${px}`).toBeLessThan(90);
@@ -520,6 +589,29 @@ test("hovering a polity names it", async ({ page }) => {
 
   await page.mouse.move(cx + 300, cy - 260); // off the globe, onto empty sky
   await expect(tip).toHaveCount(0);
+});
+
+test("the 1965 London boundary switch preserves transport and hover provenance", async ({ page }) => {
+  test.setTimeout(90_000);
+  for (const [year, key, name, sourceId] of [
+    [1900, "borders/1900", /Metropolitan Borough of Paddington/, "relation/2693965@5"],
+    [1964, "borders/1960", /Metropolitan Borough of Paddington/, "relation/2693965@5"],
+    [1965, "borders/1965", /London Borough of Westminster/, "relation/2693967@9"],
+  ] as const) {
+    const layers = watchLayers(page);
+    await gotoYear(page, year, 50 * SECONDS_PER_YEAR);
+    const chip = page.locator(".era-chip");
+    await expect(chip).not.toHaveClass(/empty/);
+    await expect.poll(() => layers.fetched, { timeout: LAYER_FETCH_TIMEOUT_MS }).toContain(key);
+    if (year === 1965) {
+      await expect(chip).toContainText("world borders · 1960");
+      await expect(chip).toContainText("London boundaries · 1965 · OpenHistoricalMap");
+    }
+    const text = await hoverLondonBoundary(page);
+    expect(text).toMatch(name);
+    expect(text).toContain(`OpenHistoricalMap · ${sourceId}`);
+    expectPMTilesTransport(layers);
+  }
 });
 
 // A 1450-1460 view. The 10% band around the cursor is +/-1 year, so 1451

@@ -109,10 +109,16 @@ describe("SlotPair", () => {
     expect(map.layers.get("wk-era-a-fill")).toMatchObject({
       source: "wk-era-a",
       "source-layer": "areas",
+      layout: {
+        "fill-sort-key": ["coalesce", ["to-number", ["get", "render_rank"]], 0],
+      },
     });
     expect(map.layers.get("wk-era-a-line")).toMatchObject({
       source: "wk-era-a",
       "source-layer": "areas",
+      layout: {
+        "line-sort-key": ["coalesce", ["to-number", ["get", "render_rank"]], 0],
+      },
     });
     expect(map.paints).toEqual([]);
 
@@ -172,6 +178,26 @@ describe("queryAreaFeature", () => {
     expect(queryAreaFeature(asMap(map), pair, { x: 10, y: 20 } as PointLike)).toEqual({
       name: "Ottoman Empire",
       slug: "ottoman-empire",
+    });
+  });
+
+  it("reads OHM source provenance from the live vector fill", () => {
+    const map = new FakeMap();
+    const pair = new SlotPair("era", style);
+    pair.apply(asMap(map), slice(1965));
+    map.emitLoaded("wk-era-a");
+    map.queryResult = [{
+      properties: {
+        name: "London Borough of Westminster",
+        source: "OpenHistoricalMap",
+        source_id: "relation/2693967@9",
+      },
+    }];
+
+    expect(queryAreaFeature(asMap(map), pair, { x: 10, y: 20 } as PointLike)).toEqual({
+      name: "London Borough of Westminster",
+      source: "OpenHistoricalMap",
+      sourceId: "relation/2693967@9",
     });
   });
 });

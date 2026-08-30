@@ -34,8 +34,11 @@ version drift, missing geometry, malformed dates, and unresolved licence tags.
 The processed in-memory form is a sorted `[]model.BorderLayer` with snapshots
 for 1900 and 1965. Each accepted `BorderFeature` keeps the source, versioned
 source ID, resolved licence, attribution, canonical source URL, and retrieval
-time. This source set is not compiled into PMTiles yet. The next M4b increment
-will composite it into the political boundary snapshots before rendering.
+time. The baker composites the active snapshot above each overlapping political
+boundary window. It preserves existing artifact years and adds a 1965 PMTiles
+time step for the London boundary change. The browser uses the feature render
+rank to keep OHM geometry above the base countries and exposes the source and
+versioned relation ID on hover.
 
 OHM documents untagged data as CC0/public domain. An explicit CC0 or public
 domain tag is accepted and reported. A known unsupported licence is excluded

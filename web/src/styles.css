@@ -98,13 +98,15 @@ body {
 .era-chip.paleo { color: #e8d9a8; border-color: #6d6144; }
 /* No reconstruction at all: not a quiet absence, a stated one. */
 .era-chip.void { color: var(--text-2); border-color: var(--hair-2); font-style: normal; }
-/* Names the polity under the pointer; the slices carry nothing else. */
+/* Names the polity under the pointer and identifies sourced regional detail. */
 .map-tooltip {
   position: absolute; z-index: 4; pointer-events: none; white-space: nowrap;
+  display: flex; flex-direction: column; gap: 2px;
   background: rgba(11, 15, 23, 0.88); border: 1px solid var(--hair-2);
   border-radius: 5px; padding: 3px 7px;
   font: 500 11px var(--ui); color: var(--text-1);
 }
+.map-tooltip-source { color: var(--text-3); font: 500 9px var(--mono); }
 .front-chip {
   background: rgba(11, 15, 23, 0.78); border: 1px solid rgba(201, 107, 74, 0.5);
   border-radius: 6px; padding: 4px 9px;

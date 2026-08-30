@@ -26,6 +26,8 @@ interface PendingLoad {
 export interface AreaFeatureProperties {
   name?: string;
   slug?: string;
+  source?: string;
+  sourceId?: string;
 }
 
 export class SlotPair {
@@ -69,6 +71,9 @@ export class SlotPair {
         type: "fill",
         source,
         "source-layer": SOURCE_LAYER,
+        layout: {
+          "fill-sort-key": ["coalesce", ["to-number", ["get", "render_rank"]], 0],
+        },
         paint: {
           "fill-color": this.style.fill,
           "fill-opacity": 0,
@@ -83,6 +88,9 @@ export class SlotPair {
         type: "line",
         source,
         "source-layer": SOURCE_LAYER,
+        layout: {
+          "line-sort-key": ["coalesce", ["to-number", ["get", "render_rank"]], 0],
+        },
         paint: {
           "line-color": this.style.line,
           "line-width": this.style.lineWidth,
@@ -163,5 +171,14 @@ export function queryAreaFeature(
   const properties = map.queryRenderedFeatures(point, { layers: [layer] })[0]?.properties;
   const name = typeof properties?.name === "string" ? properties.name : undefined;
   const slug = typeof properties?.slug === "string" ? properties.slug : undefined;
-  return name || slug ? { ...(name ? { name } : {}), ...(slug ? { slug } : {}) } : null;
+  const source = typeof properties?.source === "string" ? properties.source : undefined;
+  const sourceId = typeof properties?.source_id === "string" ? properties.source_id : undefined;
+  return name || slug
+    ? {
+        ...(name ? { name } : {}),
+        ...(slug ? { slug } : {}),
+        ...(source ? { source } : {}),
+        ...(sourceId ? { sourceId } : {}),
+      }
+    : null;
 }
