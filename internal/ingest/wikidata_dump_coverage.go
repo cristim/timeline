@@ -357,15 +357,7 @@ func (c *dumpCensusAccumulator) fill(report *WikidataDumpCoverageReport) {
 	for key := range c.byBucket {
 		keys = append(keys, key)
 	}
-	slices.SortFunc(keys, func(a, b censusBucketKey) int {
-		if lessCensusBucketKey(a, b) {
-			return -1
-		}
-		if lessCensusBucketKey(b, a) {
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(keys, compareCensusBucketKey)
 	report.Buckets = make([]WikidataDumpBucketRow, 0, len(keys))
 	for _, key := range keys {
 		bucket := c.byBucket[key]

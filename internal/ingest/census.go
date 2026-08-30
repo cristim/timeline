@@ -189,15 +189,7 @@ func buildCensusBucketRows(byBucket map[censusBucketKey]*censusBucketAccumulator
 	for key := range byBucket {
 		keys = append(keys, key)
 	}
-	slices.SortFunc(keys, func(a, b censusBucketKey) int {
-		if lessCensusBucketKey(a, b) {
-			return -1
-		}
-		if lessCensusBucketKey(b, a) {
-			return 1
-		}
-		return 0
-	})
+	slices.SortFunc(keys, compareCensusBucketKey)
 
 	rows := make([]CensusBucketRow, 0, len(keys))
 	for _, key := range keys {
