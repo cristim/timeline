@@ -21,6 +21,17 @@ export interface Visibility {
   /** The moment the map is showing (state.cursorTime). */
   cursor: number;
   selected: string | null;
+  /** The FE-8 compare subjects, if any. */
+  compare?: string[];
+}
+
+/**
+ * Items the user has aimed attention at: the selection, and the entities being
+ * compared. Declutter never drops one - a compare that hides one of its own
+ * subjects is a broken comparison.
+ */
+export function pinned(item: ChunkItem, v: Visibility): boolean {
+  return item.slug === v.selected || !!v.compare?.includes(item.slug);
 }
 
 export function startsOrEndsWithin(item: ChunkItem, t0: number, t1: number): boolean {
@@ -57,7 +68,7 @@ export function nearCursor(item: ChunkItem, v: Visibility): boolean {
 
 /** Map items cover the cursor, or start/end in view and pass the point gate. */
 export function mapVisible(item: ChunkItem, v: Visibility): boolean {
-  if (item.slug === v.selected) return true;
+  if (pinned(item, v)) return true;
   if (coversCursor(item, v)) return true;
   if (!startsOrEndsWithin(item, v.t0, v.t1)) return false;
   if (pointLike(item, v.t1 - v.t0)) return nearCursor(item, v);
@@ -66,7 +77,7 @@ export function mapVisible(item: ChunkItem, v: Visibility): boolean {
 
 /** Lane items start/end in view; point-like items use the cursor gate. */
 export function laneVisible(item: ChunkItem, v: Visibility): boolean {
-  if (item.slug === v.selected) return true;
+  if (pinned(item, v)) return true;
   if (!startsOrEndsWithin(item, v.t0, v.t1)) return false;
   if (pointLike(item, v.t1 - v.t0)) return nearCursor(item, v);
   return !whollyInPeriphery(item, v.t0, v.t1);
@@ -86,23 +97,19 @@ export function futureGutterItems(
   const out: ChunkItem[] = [];
   for (const item of items) {
     if (item.t0 <= v.t1) continue;
-    if (
-      item.slug !== v.selected &&
-      pointLike(item, v.t1 - v.t0) &&
-      !nearCursor(item, v)
-    ) {
+    if (!pinned(item, v) && pointLike(item, v.t1 - v.t0) && !nearCursor(item, v)) {
       continue;
     }
     out.push(item);
   }
   return out
-    .sort((a, b) => Number(b.slug === v.selected) - Number(a.slug === v.selected))
+    .sort((a, b) => Number(pinned(b, v)) - Number(pinned(a, v)))
     .slice(0, cap);
 }
 
 /**
  * Top `cap` eligible items, importance-ordered (ties by slug for stability).
- * The selection sorts first so the cap can never drop it.
+ * Pinned items sort first so the cap can never drop them.
  */
 export function laneItems(
   items: ChunkItem[],
@@ -113,7 +120,7 @@ export function laneItems(
     .filter((i) => laneVisible(i, v))
     .sort(
       (a, b) =>
-        Number(b.slug === v.selected) - Number(a.slug === v.selected) ||
+        Number(pinned(b, v)) - Number(pinned(a, v)) ||
         b.importance - a.importance ||
         (a.slug < b.slug ? -1 : 1),
     )

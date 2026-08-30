@@ -31,6 +31,24 @@ function view(over: Partial<Visibility> = {}): Visibility {
   return { t0: 0, t1: 1000, cursor: 500, selected: null, ...over };
 }
 
+describe("compare subjects are pinned like the selection (FE-8)", () => {
+  it("keeps a compared item on the map and in the lanes when declutter would drop it", () => {
+    // Far outside the view and point-like: nothing but a pin keeps it.
+    const far = item("stegosaurus", -9000, -9000);
+    const v = view({ compare: ["stegosaurus"] });
+    expect(mapVisible(far, v)).toBe(true);
+    expect(laneItems([far], v).map((i) => i.slug)).toEqual(["stegosaurus"]);
+    expect(mapItems([far], view()).map((i) => i.slug)).toEqual([]);
+  });
+
+  it("sorts both compare subjects ahead of the lane cap", () => {
+    const filler = Array.from({ length: 30 }, (_, i) => item(`f-${i}`, 400, 600, 0.9));
+    const items = [...filler, item("a", 400, 600, 0.01), item("b", 400, 600, 0.01)];
+    const out = laneItems(items, view({ compare: ["a", "b"] }), 2);
+    expect(out.map((i) => i.slug).sort()).toEqual(["a", "b"]);
+  });
+});
+
 describe("startsOrEndsWithin", () => {
   const [v0, v1] = [100, 200];
   it("keeps items starting within the view", () => {

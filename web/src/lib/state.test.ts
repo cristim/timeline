@@ -31,3 +31,27 @@ describe("time cursor state", () => {
     expect(parseView("?tc=yesterday").tc).toBeNull();
   });
 });
+
+describe("compare state (FE-8)", () => {
+  it("stays out of the URL until a comparison starts", () => {
+    expect(serializeView(DEFAULT_VIEW)).not.toContain("cmp=");
+    expect(parseView("?t0=-1e9&t1=1e9").compare).toEqual([]);
+  });
+
+  it("round-trips a pending pick and a full pair", () => {
+    const pending = { ...DEFAULT_VIEW, compare: ["tyrannosaurus-rex"] };
+    expect(parseView(serializeView(pending)).compare).toEqual(["tyrannosaurus-rex"]);
+    const pair = { ...DEFAULT_VIEW, compare: ["tyrannosaurus-rex", "stegosaurus"] };
+    expect(serializeView(pair)).toContain("cmp=tyrannosaurus-rex%2Cstegosaurus");
+    expect(parseView(serializeView(pair)).compare).toEqual([
+      "tyrannosaurus-rex",
+      "stegosaurus",
+    ]);
+  });
+
+  it("truncates a hand-edited URL to two distinct subjects", () => {
+    expect(parseView("?cmp=a,b,c").compare).toEqual(["a", "b"]);
+    expect(parseView("?cmp=a,a").compare).toEqual(["a"]);
+    expect(parseView("?cmp=").compare).toEqual([]);
+  });
+});
