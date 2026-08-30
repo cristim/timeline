@@ -78,6 +78,15 @@ func LoadGeo(dir string, entities []*model.Entity) (*model.GeoSet, error) {
 	if set.Borders, err = loadAreaSlices(filepath.Join(dir, "borders"), bySeedID); err != nil {
 		return nil, err
 	}
+	ohmDir := filepath.Join(dir, "ohm")
+	if _, statErr := os.Stat(ohmDir); statErr == nil {
+		lastPoliticalYear := set.Borders[len(set.Borders)-1].TTo
+		if set.OHM, _, err = loadOHM(ohmDir, lastPoliticalYear); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(statErr) {
+		return nil, statErr
+	}
 	// An absent paleo directory means the deep-time layer is not configured,
 	// which is a legitimate bake; a present but broken one is still fatal.
 	// Insisting both layers EXIST is `baker geo-verify`'s job, and CI runs it

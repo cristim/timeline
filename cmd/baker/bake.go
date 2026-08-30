@@ -123,11 +123,18 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, args 
 		return fmt.Errorf("create import directory: %w", err)
 	}
 	defer os.RemoveAll(importDir)
-	report, rejectFile, err := materializeImportArtifacts(ctx, importDir, res, warmSource, warmSHA256)
+	dataset := datasetVersion()
+	var ohmSummary *ingest.OHMImportSummary
+	if seedRejectCount == 0 || *allowRejects {
+		ohmSummary, err = ingest.LoadOHMSummary(*geoDir)
+		if err != nil {
+			return err
+		}
+	}
+	report, rejectFile, err := materializeImportArtifacts(ctx, importDir, res, warmSource, warmSHA256, ohmSummary)
 	if err != nil {
 		return fmt.Errorf("materialize import artifacts: %w", err)
 	}
-	dataset := datasetVersion()
 	if cli != nil {
 		importSink := blob.BucketSink{Client: cli, Bucket: envOr("BUCKET_WARM", "wk-warm")}
 		if err := publishImportArtifacts(ctx, importSink, dataset, time.Now().UTC(), report, rejectFile); err != nil {
@@ -135,11 +142,8 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, args 
 		}
 	}
 
-	if len(res.Rejects) > 0 {
-		// Only curated-seed rejects block the bake; warm rejects are tolerated.
-		if seedRejectCount > 0 && !*allowRejects {
-			return fmt.Errorf("%d seed lines rejected; fix the seed or pass --allow-rejects", seedRejectCount)
-		}
+	if seedRejectCount > 0 && !*allowRejects {
+		return fmt.Errorf("%d seed lines rejected; fix the seed or pass --allow-rejects", seedRejectCount)
 	}
 
 	modelDir, err := os.MkdirTemp("", "world-knowledge-model-")
@@ -162,14 +166,14 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, args 
 		}
 	}
 
-	// Geometry resolves entity references against the ingested table, so it
-	// loads after the seed (and after any warm merge).
+	// Geometry resolves entity references against the normalized model. OHM is
+	// parsed again here to validate its windows against political coverage.
 	geo, err := ingest.LoadGeo(*geoDir, res.Entities)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("geo: %d border time-steps, %d front sequences\n", len(geo.Borders), len(geo.Fronts))
-
+	fmt.Printf("geo: %d border time-steps, %d OHM snapshots, %d front sequences\n",
+		len(geo.Borders), len(geo.OHM), len(geo.Fronts))
 	if err := rankzoom.Bucketize(res.Entities); err != nil {
 		return err
 	}

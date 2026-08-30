@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "source": "OpenHistoricalMap",
+  "endpoint": "https://overpass-api.openhistoricalmap.org/api/interpreter",
+  "query": "[out:json][timeout:25];rel(id:2691852,2693964,2693965,2693967)->.rels;(.rels;way(r.rels);>;);out meta;",
+  "retrieved_at": "2026-08-30T06:51:56Z",
+  "payload": {
+    "file": "london-boroughs.overpass.json",
+    "sha256": "f9d4ee1b4aa1b93ac3d735a7e99dca10164745ac6e142f553b8b2623137cc62a"
+  },
+  "target_years": [1900, 1965],
+  "relations": [
+    {"id": 2691852, "version": 7},
+    {"id": 2693964, "version": 9},
+    {"id": 2693965, "version": 5},
+    {"id": 2693967, "version": 9}
+  ]
+}

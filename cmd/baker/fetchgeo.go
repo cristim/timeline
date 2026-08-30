@@ -96,6 +96,7 @@ func runGeoVerify(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	var political ingest.AreaCoverage
 	for _, layer := range []string{"borders", "paleo"} {
 		c, err := ingest.VerifyAreaLayer(filepath.Join(*geoDir, layer))
 		if err != nil {
@@ -103,7 +104,17 @@ func runGeoVerify(args []string) error {
 		}
 		fmt.Printf("%-8s %3d slices, contiguous %s .. %s\n",
 			layer, c.Slices, ingest.FormatYear(c.TFrom), ingest.FormatYear(c.TTo))
+		if layer == "borders" {
+			political = c
+		}
 	}
+	ohm, summary, err := ingest.VerifyOHM(filepath.Join(*geoDir, "ohm"), political.TTo)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%-8s %3d snapshots, %s .. %s; %d source relations accepted, %d excluded\n",
+		"ohm", ohm.Slices, ingest.FormatYear(ohm.TFrom), ingest.FormatYear(ohm.TTo),
+		summary.Accepted, summary.Excluded)
 	return nil
 }
 

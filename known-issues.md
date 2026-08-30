@@ -25,6 +25,11 @@
   for visibility before reading `window.__wkhits`.
 - **maplibre demotiles basemap is a remote dev dependency.** Replaced by a
   local pmtiles basemap in M4 (FE-3).
+- **The pinned OpenHistoricalMap slice is ingested but not rendered.** The
+  baker validates the 1900 and 1965 London relations and records their
+  provenance and licence decisions, but keeps them in `GeoSet.OHM` rather than
+  producing a browser layer. M4b-1b will composite those regional boundaries
+  into the political snapshots and add the visual assertions.
 - **Phone/stacked layout (FE-1) not implemented yet.** Desktop/tablet only.
 - **Timeline keyboard navigation (FE-9) is only half done.** Arrow keys move
   the time cursor; FE-9 also asks for arrow-to-pan and +/- to zoom, which have

@@ -7,19 +7,51 @@ validation instead: `internal/ingest/geo.go` rejects the bake outright on a
 malformed file, an unknown entity reference, coverage windows that do not tile,
 or a front sequence whose positions do not share a vertex count.
 
-Two of the three layers are **fetched, not committed**:
+Two of the four source sets are **fetched, not committed**:
 
 | directory | origin | in git? |
 |---|---|---|
 | `borders/` | `baker fetch-borders` from historical-basemaps (GPL-3.0) | no, ~16 MB |
 | `paleo/` | `baker fetch-paleo` from the GPlates Web Service (CC-BY 4.0) | no, ~6.6 MB |
+| `ohm/` | pinned OHM Overpass response (CC0 unless a relation says otherwise) | yes, ~173 KB |
 | `fronts/` | hand-curated | yes |
 
 Run `make fetch-geo` once after cloning; `make verify-geo` proves both fetched
-layers are whole. CI caches them on `baker geo-fingerprint`, a hash of the
-pinned upstream commit, plate model and slice list, so an unchanged pin never
-touches the network. Each fetched directory keeps a committed `NOTICE.md`
-recording its provenance, licence and the modifications the fetch applies.
+layers are whole and validates the committed OHM pins and payload. CI caches
+the fetched layers on `baker geo-fingerprint`, a hash of the pinned upstream
+commit, plate model and slice list, so an unchanged pin never touches the
+network. Each fetched directory keeps a committed `NOTICE.md` recording its
+provenance, licence and the modifications the fetch applies.
+
+## `ohm/` - pinned OpenHistoricalMap input
+
+`ohm/london-boroughs.overpass.json` is raw Overpass OSM JSON. It contains
+versioned boundary relations plus their member ways and nodes. `manifest.json`
+pins the exact query, retrieval timestamp, relation versions, target years,
+payload file, and SHA-256. The baker rejects unknown manifest fields, digest or
+version drift, missing geometry, malformed dates, and unresolved licence tags.
+
+The processed in-memory form is a sorted `[]model.BorderLayer` with snapshots
+for 1900 and 1965. Each accepted `BorderFeature` keeps the source, versioned
+source ID, resolved licence, attribution, canonical source URL, and retrieval
+time. This source set is not compiled into PMTiles yet. The next M4b increment
+will composite it into the political boundary snapshots before rendering.
+
+OHM documents untagged data as CC0/public domain. An explicit CC0 or public
+domain tag is accepted and reported. A known unsupported licence is excluded
+and reported. Empty, conflicting, or unknown `license`/`licence` values fail
+the ingest instead of silently choosing a fallback.
+
+Refreshing is an explicit reviewed source change, never part of tests or CI:
+
+1. Send the exact `query` from `ohm/manifest.json` to its pinned `endpoint` and
+   replace the payload file with the response.
+2. Review every returned relation, version, date, and licence tag.
+3. Run `shasum -a 256 data/geo/ohm/london-boroughs.overpass.json` and update the
+   manifest digest, retrieval time, and relation pins together.
+4. Run `make verify-geo` and the ingest tests before committing both files.
+
+The detailed attribution and relation links are in `ohm/NOTICE.md`.
 
 ## `borders/<year>.geojson` and `paleo/<year>.geojson` — world-state snapshots
 

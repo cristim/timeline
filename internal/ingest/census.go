@@ -64,7 +64,7 @@ type censusCenturyAccumulator struct {
 }
 
 func BuildCensusReport(result *Result, warmSource WarmSource, warmSHA256 string) (CensusReport, error) {
-	importReport, err := BuildImportReport(result, warmSource, warmSHA256)
+	importReport, err := BuildImportReport(result, warmSource, warmSHA256, nil)
 	if err != nil {
 		return CensusReport{}, fmt.Errorf("build census report: %w", err)
 	}

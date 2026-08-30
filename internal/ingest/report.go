@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"time"
 )
 
 type WarmSource string
@@ -15,7 +16,7 @@ const (
 	WarmSourceWikidataEvents WarmSource = "wikidata-events"
 )
 
-const ImportReportSchemaVersion = 1
+const ImportReportSchemaVersion = 2
 
 type ImportCounts struct {
 	Seed  int `json:"seed"`
@@ -29,6 +30,39 @@ type RejectReasonCount struct {
 	Count  int          `json:"count"`
 }
 
+type LicenseAction string
+
+const (
+	LicenseAccepted LicenseAction = "accepted"
+	LicenseExcluded LicenseAction = "excluded"
+)
+
+type LicenseCount struct {
+	License string `json:"license"`
+	Count   int    `json:"count"`
+}
+
+type LicenseException struct {
+	SourceID    string        `json:"source_id"`
+	License     string        `json:"license"`
+	Attribution string        `json:"attribution"`
+	Action      LicenseAction `json:"action"`
+	Reason      string        `json:"reason,omitempty"`
+}
+
+// OHMImportSummary records source-relation counts. A relation appearing in
+// both target snapshots is counted once.
+type OHMImportSummary struct {
+	Source            string             `json:"source"`
+	InputSHA256       string             `json:"input_sha256"`
+	RetrievedAt       string             `json:"retrieved_at"`
+	Parsed            int                `json:"parsed"`
+	Accepted          int                `json:"accepted"`
+	Excluded          int                `json:"excluded"`
+	Licenses          []LicenseCount     `json:"licenses"`
+	LicenseExceptions []LicenseException `json:"license_exceptions"`
+}
+
 type ImportReport struct {
 	SchemaVersion         int                 `json:"schema_version"`
 	SeedVersion           string              `json:"seed_version"`
@@ -40,9 +74,10 @@ type ImportReport struct {
 	Rejected              ImportCounts        `json:"rejected"`
 	SkippedWarmDuplicates int                 `json:"skipped_warm_duplicates"`
 	RejectReasons         []RejectReasonCount `json:"reject_reasons"`
+	OHM                   *OHMImportSummary   `json:"ohm,omitempty"`
 }
 
-func BuildImportReport(result *Result, warmSource WarmSource, warmSHA256 string) (ImportReport, error) {
+func BuildImportReport(result *Result, warmSource WarmSource, warmSHA256 string, ohm *OHMImportSummary) (ImportReport, error) {
 	if result == nil {
 		return ImportReport{}, fmt.Errorf("build import report: nil result")
 	}
@@ -126,6 +161,10 @@ func BuildImportReport(result *Result, warmSource WarmSource, warmSHA256 string)
 		Warm:  warmRejected,
 		Total: seedRejected + warmRejected,
 	}
+	normalizedOHM, err := normalizeOHMSummary(ohm)
+	if err != nil {
+		return ImportReport{}, fmt.Errorf("build import report: %w", err)
+	}
 
 	return ImportReport{
 		SchemaVersion:         ImportReportSchemaVersion,
@@ -138,7 +177,80 @@ func BuildImportReport(result *Result, warmSource WarmSource, warmSHA256 string)
 		Rejected:              rejected,
 		SkippedWarmDuplicates: result.WarmDuplicatesSkipped,
 		RejectReasons:         rejectReasons,
+		OHM:                   normalizedOHM,
 	}, nil
+}
+
+func normalizeOHMSummary(summary *OHMImportSummary) (*OHMImportSummary, error) {
+	if summary == nil {
+		return nil, nil
+	}
+	if summary.Source != "OpenHistoricalMap" {
+		return nil, fmt.Errorf("OHM summary source %q, want OpenHistoricalMap", summary.Source)
+	}
+	if !isSHA256Hex(summary.InputSHA256) {
+		return nil, fmt.Errorf("OHM summary has invalid input sha256 %q", summary.InputSHA256)
+	}
+	if _, err := time.Parse(time.RFC3339, summary.RetrievedAt); err != nil {
+		return nil, fmt.Errorf("OHM summary has invalid retrieved_at %q", summary.RetrievedAt)
+	}
+	if summary.Parsed < 0 || summary.Accepted < 0 || summary.Excluded < 0 || summary.Accepted+summary.Excluded != summary.Parsed {
+		return nil, fmt.Errorf("OHM summary counters are inconsistent")
+	}
+	out := *summary
+	out.Licenses = slices.Clone(summary.Licenses)
+	out.LicenseExceptions = slices.Clone(summary.LicenseExceptions)
+	licenseTotal := 0
+	licenses := make(map[string]struct{}, len(out.Licenses))
+	for _, row := range out.Licenses {
+		if row.License == "" || row.Count <= 0 {
+			return nil, fmt.Errorf("OHM summary has invalid license count %#v", row)
+		}
+		if _, exists := licenses[row.License]; exists {
+			return nil, fmt.Errorf("OHM summary repeats license %q", row.License)
+		}
+		licenses[row.License] = struct{}{}
+		licenseTotal += row.Count
+	}
+	if licenseTotal != out.Parsed {
+		return nil, fmt.Errorf("OHM summary license counts total %d, want %d", licenseTotal, out.Parsed)
+	}
+	sourceIDs := make(map[string]struct{}, len(out.LicenseExceptions))
+	excluded := 0
+	for _, row := range out.LicenseExceptions {
+		if row.SourceID == "" || row.License == "" || row.Attribution == "" {
+			return nil, fmt.Errorf("OHM summary has incomplete license exception %#v", row)
+		}
+		if _, exists := sourceIDs[row.SourceID]; exists {
+			return nil, fmt.Errorf("OHM summary repeats license exception %q", row.SourceID)
+		}
+		sourceIDs[row.SourceID] = struct{}{}
+		if _, exists := licenses[row.License]; !exists {
+			return nil, fmt.Errorf("OHM summary exception %q has uncounted license %q", row.SourceID, row.License)
+		}
+		if row.Action != LicenseAccepted && row.Action != LicenseExcluded {
+			return nil, fmt.Errorf("OHM summary has unknown license action %q", row.Action)
+		}
+		if row.Action == LicenseExcluded && row.Reason == "" {
+			return nil, fmt.Errorf("OHM excluded license exception %q needs a reason", row.SourceID)
+		}
+		if row.Action == LicenseExcluded {
+			excluded++
+		}
+	}
+	if excluded != out.Excluded {
+		return nil, fmt.Errorf("OHM summary has %d excluded license exceptions, want %d", excluded, out.Excluded)
+	}
+	slices.SortFunc(out.Licenses, func(a, b LicenseCount) int {
+		return cmp.Compare(a.License, b.License)
+	})
+	slices.SortFunc(out.LicenseExceptions, func(a, b LicenseException) int {
+		if a.SourceID != b.SourceID {
+			return cmp.Compare(a.SourceID, b.SourceID)
+		}
+		return cmp.Compare(string(a.Action), string(b.Action))
+	})
+	return &out, nil
 }
 
 func validWarmSource(source WarmSource) bool {

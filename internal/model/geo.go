@@ -17,7 +17,11 @@ type GeoSet struct {
 	Borders []BorderLayer // ascending by Year, non-overlapping windows
 	// Paleo holds reconstructed coastlines for deep time, in the same shape
 	// as Borders and covering the span before the political record starts.
-	Paleo  []BorderLayer
+	Paleo []BorderLayer
+	// OHM is the pinned OpenHistoricalMap source slice. It stays separate from
+	// Borders until the following M4 increment composites regional detail into
+	// the world snapshots.
+	OHM    []BorderLayer
 	Fronts map[string][]FrontPosition
 }
 
@@ -40,6 +44,12 @@ type BorderFeature struct {
 	Entity         string // seed id, optional
 	Slug           string // resolved from Entity at bake time
 	Representation string
+	Source         string
+	SourceID       string
+	License        string
+	Attribution    string
+	SourceURL      string
+	RetrievedAt    string
 	// Geometry is passed through verbatim: the client renders it, nothing
 	// server-side ever reads inside a polygon.
 	Geometry json.RawMessage

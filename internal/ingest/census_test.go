@@ -188,7 +188,7 @@ func TestBuildCensusReportKeepsEmptySlicesNonNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal report: %v", err)
 	}
-	want := `{"schema_version":1,"coverage_basis":"accepted-normalized-entities-after-source-filters","import_report":{"schema_version":1,"seed_version":"seed-empty","seed_input_sha256":"` + testSHA256("seed-empty") + `","warm_source":"none","warm_sha256":"","parsed":{"seed":0,"warm":0,"total":0},"accepted":{"seed":0,"warm":0,"total":0},"rejected":{"seed":0,"warm":0,"total":0},"skipped_warm_duplicates":0,"reject_reasons":[]},"total":{"count":0,"has_date":0,"has_coordinates":0,"has_english_wikipedia":0,"has_all":0,"precision":[]},"types":[],"centuries":[]}`
+	want := `{"schema_version":1,"coverage_basis":"accepted-normalized-entities-after-source-filters","import_report":{"schema_version":2,"seed_version":"seed-empty","seed_input_sha256":"` + testSHA256("seed-empty") + `","warm_source":"none","warm_sha256":"","parsed":{"seed":0,"warm":0,"total":0},"accepted":{"seed":0,"warm":0,"total":0},"rejected":{"seed":0,"warm":0,"total":0},"skipped_warm_duplicates":0,"reject_reasons":[]},"total":{"count":0,"has_date":0,"has_coordinates":0,"has_english_wikipedia":0,"has_all":0,"precision":[]},"types":[],"centuries":[]}`
 	if string(body) != want {
 		t.Fatalf("marshal = %s\nwant   = %s", body, want)
 	}

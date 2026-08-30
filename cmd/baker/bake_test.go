@@ -136,7 +136,7 @@ func TestMaterializeImportArtifactsBuildsMatchingReportAndRejects(t *testing.T) 
 
 	dir := t.TempDir()
 	result := testImportResult()
-	report, rejectFile, err := materializeImportArtifacts(context.Background(), dir, result, ingest.WarmSourceWarmFile, testSHA256String("warm"))
+	report, rejectFile, err := materializeImportArtifacts(context.Background(), dir, result, ingest.WarmSourceWarmFile, testSHA256String("warm"), nil)
 	if err != nil {
 		t.Fatalf("materializeImportArtifacts: %v", err)
 	}
@@ -155,6 +155,23 @@ func TestMaterializeImportArtifactsBuildsMatchingReportAndRejects(t *testing.T) 
 	}
 }
 
+func TestMaterializeImportArtifactsIncludesOHMSummary(t *testing.T) {
+	t.Parallel()
+
+	ohm := &ingest.OHMImportSummary{
+		Source: "OpenHistoricalMap", InputSHA256: testSHA256String("ohm"), RetrievedAt: "2026-08-30T06:51:56Z",
+		Parsed: 1, Accepted: 1,
+		Licenses: []ingest.LicenseCount{{License: "CC0-1.0", Count: 1}},
+	}
+	report, _, err := materializeImportArtifacts(context.Background(), t.TempDir(), testImportResult(), ingest.WarmSourceWarmFile, testSHA256String("warm"), ohm)
+	if err != nil {
+		t.Fatalf("materializeImportArtifacts: %v", err)
+	}
+	if !reflect.DeepEqual(report.OHM, ohm) {
+		t.Fatalf("OHM report = %#v, want %#v", report.OHM, ohm)
+	}
+}
+
 func TestMaterializeImportArtifactsFailsOnInvalidWarmSourceOrDigest(t *testing.T) {
 	t.Parallel()
 
@@ -168,7 +185,7 @@ func TestMaterializeImportArtifactsFailsOnInvalidWarmSourceOrDigest(t *testing.T
 	}
 
 	for _, tc := range cases {
-		_, _, err := materializeImportArtifacts(context.Background(), t.TempDir(), testImportResult(), tc.warmSource, tc.warmSHA256)
+		_, _, err := materializeImportArtifacts(context.Background(), t.TempDir(), testImportResult(), tc.warmSource, tc.warmSHA256, nil)
 		if err == nil || !strings.Contains(err.Error(), "build import report") {
 			t.Fatalf("%s: materializeImportArtifacts error = %v", tc.name, err)
 		}
@@ -729,7 +746,7 @@ func geoDirForEntity(t *testing.T, entityID string) string {
 func testImportArtifacts(t *testing.T) (ingest.ImportReport, duck.ModelFile) {
 	t.Helper()
 	dir := t.TempDir()
-	report, file, err := materializeImportArtifacts(context.Background(), dir, testImportResult(), ingest.WarmSourceWarmFile, testSHA256String("warm"))
+	report, file, err := materializeImportArtifacts(context.Background(), dir, testImportResult(), ingest.WarmSourceWarmFile, testSHA256String("warm"), nil)
 	if err != nil {
 		t.Fatalf("materializeImportArtifacts: %v", err)
 	}
@@ -744,7 +761,7 @@ func testEmptyImportArtifacts(t *testing.T) (ingest.ImportReport, duck.ModelFile
 		SeedInputSHA256: testSHA256String("seed"),
 		SeedParsed:      1,
 		SeedAccepted:    1,
-	}, ingest.WarmSourceNone, "")
+	}, ingest.WarmSourceNone, "", nil)
 	if err != nil {
 		t.Fatalf("materializeImportArtifacts: %v", err)
 	}

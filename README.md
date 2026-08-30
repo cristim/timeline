@@ -99,13 +99,15 @@ filters. The current bulk feed contains only battles, wars, and sieges, so it
 is a deterministic precursor to ROAD-2 rather than the complete dump-scale
 census.
 
-The two time-sliced map layers are fetched from pinned upstreams by
-`make fetch-geo` rather than committed, and cached in CI:
+Map geometry comes from three pinned upstreams. The first two time-sliced
+layers are fetched by `make fetch-geo` and cached in CI; the small OHM response
+is committed so ingest and licence checks never need its live API:
 
 | layer | source | licence |
 |---|---|---|
-| Political borders, 123000 BC – AD 2010 | [aourednik/historical-basemaps](https://github.com/aourednik/historical-basemaps) at `62d8f1a` | **GPL-3.0** |
-| Reconstructed coastlines, 540 Ma – 1 Ma | [GPlates Web Service](https://gws.gplates.org), MERDITH2021 plate model | CC-BY 4.0 |
+| Political borders, 123000 BC to AD 2010 | [aourednik/historical-basemaps](https://github.com/aourednik/historical-basemaps) at `62d8f1a` | **GPL-3.0** |
+| Reconstructed coastlines, 540 Ma to 1 Ma | [GPlates Web Service](https://gws.gplates.org), MERDITH2021 plate model | CC-BY 4.0 |
+| London administrative boundaries, 1900 and 1965 | [OpenHistoricalMap](https://www.openhistoricalmap.org/) pinned Overpass response | CC0/public domain unless relation-tagged otherwise |
 
 **The border data is GPL-3.0**, and the simplified copies this project builds
 are a modified version of it, so they carry the same terms — including for
@@ -115,7 +117,16 @@ pin and every modification; `data/geo/borders/LICENSE` is the licence itself.
 The plate model is CC-BY 4.0 and asks to be cited: Merdith et al. (2021),
 *Extending full-plate tectonic models into deep time*, Earth-Science Reviews
 214, [doi:10.1016/j.earscirev.2020.103477](https://doi.org/10.1016/j.earscirev.2020.103477).
-Both sources are named in the map's attribution control.
+Those two rendered sources are named in the map's attribution control.
+
+The OHM response is committed as raw Overpass OSM JSON with an exact manifest
+digest and relation-version pins. Ingest resolves it to validated, sorted
+`BorderLayer` snapshots, preserves per-relation provenance on their features,
+and adds aggregate licence counts plus explicit exceptions to import-report
+schema 2. It is not rendered in this increment. The next M4b child composites
+those snapshots into the political PMTiles. Refresh steps and the
+raw-to-processed format contract are in `data/geo/README.md` and
+`data/geo/ohm/NOTICE.md`.
 
 The fetched `.geojson` snapshots are source inputs. The baker compiles each
 time step into a deterministic PMTiles v3 archive with vector source-layer
@@ -136,6 +147,7 @@ support byte ranges.
 | `known-issues.md` | found-but-deferred items |
 
 Status: working prototype (spec milestones M0-M3, the PMTiles delivery half of
-M4, plus a bounded M5). Next: OpenHistoricalMap ingestion and provenance,
+M4, the pinned OpenHistoricalMap ingest part of M4b, plus a bounded M5). Next:
+OpenHistoricalMap compositing and rendering, a local Protomaps basemap,
 dump-scale ingestion, and the fun-test gate. See `specs/10-roadmap.html` and
 `specs/11-local-dev.html`.

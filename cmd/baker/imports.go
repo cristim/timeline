@@ -35,8 +35,8 @@ type importManifest struct {
 	Rejects       importRejectObject `json:"rejects"`
 }
 
-func materializeImportArtifacts(ctx context.Context, dir string, result *ingest.Result, warmSource ingest.WarmSource, warmSHA256 string) (ingest.ImportReport, duck.ModelFile, error) {
-	report, err := ingest.BuildImportReport(result, warmSource, warmSHA256)
+func materializeImportArtifacts(ctx context.Context, dir string, result *ingest.Result, warmSource ingest.WarmSource, warmSHA256 string, ohm *ingest.OHMImportSummary) (ingest.ImportReport, duck.ModelFile, error) {
+	report, err := ingest.BuildImportReport(result, warmSource, warmSHA256, ohm)
 	if err != nil {
 		return ingest.ImportReport{}, duck.ModelFile{}, fmt.Errorf("build import report: %w", err)
 	}

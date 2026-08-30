@@ -18,12 +18,19 @@ func TestLoadRealGeo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load seed: %v", err)
 	}
+	ohm, err := LoadOHMSummary("../../data/geo")
+	if err != nil {
+		t.Fatalf("load OHM summary: %v", err)
+	}
 	set, err := LoadGeo("../../data/geo", res.Entities)
 	if err != nil {
 		t.Fatalf("load geo: %v", err)
 	}
 	if len(set.Borders) < 2 {
 		t.Fatalf("%d border time-steps, want at least 2", len(set.Borders))
+	}
+	if ohm == nil || len(set.OHM) != 2 {
+		t.Fatalf("OHM load = summary %#v, %d snapshots; want summary and 2 snapshots", ohm, len(set.OHM))
 	}
 	for i, l := range set.Borders {
 		if i > 0 && set.Borders[i-1].Year >= l.Year {
