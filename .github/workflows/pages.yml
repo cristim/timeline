@@ -69,7 +69,7 @@ jobs:
       - name: Bake artifacts into the site
         run: docker run --rm --user "$(id -u):$(id -g)" --volume "$PWD/data/seed:/seed:ro" --volume "$PWD/data/geo:/geo:ro" --volume "$PWD/data/goldens.json:/goldens.json:ro" --volume "$PWD/web/dist:/out" world-knowledge-baker:pages bake --seed /seed --geo /geo --goldens /goldens.json --out /out
       - name: Verify published basemap
-        run: test -s "web/dist/v/dev/basemap/$BASEMAP_FILE" && test "$(sha256sum "web/dist/v/dev/basemap/$BASEMAP_FILE" | cut -d ' ' -f 1)" = "$BASEMAP_SHA256" && jq -e --arg key "basemap/$BASEMAP_FILE" --arg source "$BASEMAP_SOURCE" --arg sha "$BASEMAP_SHA256" --arg attribution "$BASEMAP_ATTRIBUTION" '.basemap.key == $key and .basemap.source == $source and .basemap.sha256 == $sha and .basemap.attribution == $attribution' web/dist/v/dev/manifest.json
+        run: ./scripts/verify-bake-output.sh web/dist --layers
       - name: SPA fallback
         run: cp web/dist/index.html web/dist/404.html
       - name: Install Playwright
