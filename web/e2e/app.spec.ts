@@ -220,6 +220,18 @@ async function gotoYear(page: Page, year: number, span: number) {
   await booted(page);
 }
 
+async function setYearInOpenTab(page: Page, year: number, span: number) {
+  const tc = tcForYear(year);
+  await page.evaluate(
+    ({ t0, t1, cursor }) => {
+      const query = new URLSearchParams({ t0: String(t0), t1: String(t1), tc: String(cursor) });
+      history.replaceState(null, "", `?${query}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    },
+    { t0: tc - span, t1: tc + span, cursor: tc },
+  );
+}
+
 // MapLibre starts in globe projection, where London is this many pixels from
 // the map centre at the fixed Playwright viewport and initial camera.
 const LONDON_GLOBE_OFFSET = { x: -41.98785, y: -76.47797 };
@@ -427,7 +439,7 @@ async function mapPixel(page: Page, fx = 0.5, fy = 0.5) {
 
 const mapCentrePixel = (page: Page) => mapPixel(page);
 
-async function clickMapColor(page: Page, target: [number, number, number]) {
+async function findMapColor(page: Page, target: [number, number, number]) {
   const map = page.locator(".map-container");
   const shot = await map.screenshot();
   const pixel = await page.evaluate(
@@ -464,6 +476,12 @@ async function clickMapColor(page: Page, target: [number, number, number]) {
       }),
     [shot.toString("base64"), target] as const,
   );
+  return pixel;
+}
+
+async function clickMapColor(page: Page, target: [number, number, number]) {
+  const map = page.locator(".map-container");
+  const pixel = await findMapColor(page, target);
   expect(pixel, `map color ${target.join(",")}`).not.toBeNull();
   const box = (await map.boundingBox())!;
   await page.mouse.click(
@@ -627,6 +645,82 @@ test("hovering a polity names it", async ({ page }) => {
   await page.mouse.move(cx + 300, cy - 260); // off the globe, onto empty sky
   await expect(tip).toHaveCount(0);
 });
+
+for (const scenario of [
+  {
+    name: "political borders",
+    layer: "borders",
+    before: 1900,
+    after: 1914,
+    span: 50 * SECONDS_PER_YEAR,
+    chip: "world borders · 1914",
+    assertRendered: async (page: Page) => {
+      await expect(hoverLondonBoundary(page)).resolves.toContain("OpenHistoricalMap");
+    },
+  },
+  {
+    name: "tectonic reconstruction",
+    layer: "paleocoast",
+    before: -250_000_000,
+    after: -240_000_000,
+    span: 20_000_000 * SECONDS_PER_YEAR,
+    chip: "240 Ma",
+    assertRendered: async (page: Page) => {
+      await expect
+        .poll(async () => (await findMapColor(page, [154, 140, 102])) !== null, {
+          timeout: LAYER_FETCH_TIMEOUT_MS,
+        })
+        .toBe(true);
+    },
+  },
+] as const) {
+  test(`an open tab reloads ${scenario.name} after a deployment`, async ({ page }) => {
+    test.setTimeout(60_000);
+    const response = await page.request.get("./manifest.json");
+    expect(response.ok()).toBe(true);
+    const current = await response.json();
+    const staleDataset = `replaced-${scenario.layer}-dataset`;
+    const missingLayer = new RegExp(`/layers/${scenario.layer}/-?\\d+\\.pmtiles$`);
+    let deployed = false;
+    let manifestReadsAfterDeploy = 0;
+    let staleLayerFailures = 0;
+    let documentRequests = 0;
+    page.on("request", (request) => {
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+        documentRequests++;
+      }
+    });
+
+    await page.route("**/manifest.json*", async (route) => {
+      if (deployed) manifestReadsAfterDeploy++;
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(deployed ? current : { ...current, dataset: staleDataset }),
+      });
+    });
+    await page.route(`**/v/${staleDataset}/**`, async (route) => {
+      const url = new URL(route.request().url());
+      if (deployed && missingLayer.test(url.pathname)) {
+        staleLayerFailures++;
+        await route.fulfill({ status: 404, body: "deployment replaced" });
+        return;
+      }
+      url.pathname = url.pathname.replace(`/v/${staleDataset}/`, `/v/${current.dataset}/`);
+      await route.fulfill({ status: 307, headers: { location: url.href } });
+    });
+
+    await gotoYear(page, scenario.before, scenario.span);
+    await scenario.assertRendered(page);
+    deployed = true;
+    await setYearInOpenTab(page, scenario.after, scenario.span);
+
+    await expect.poll(() => staleLayerFailures, { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect.poll(() => documentRequests, { timeout: 20_000 }).toBeGreaterThanOrEqual(2);
+    expect(manifestReadsAfterDeploy).toBeGreaterThan(0);
+    await expect(page.locator(".era-chip")).toContainText(scenario.chip);
+    await scenario.assertRendered(page);
+  });
+}
 
 test("the 1965 London boundary switch preserves transport and hover provenance", async ({ page }) => {
   test.setTimeout(90_000);

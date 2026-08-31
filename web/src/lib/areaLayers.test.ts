@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Map as MapLibreMap, MapSourceDataEvent, PointLike } from "maplibre-gl";
 import type { AreaLayerSlice } from "./data";
 import { queryAreaFeature, SlotPair, type AreaLayerStyle } from "./areaLayers";
@@ -44,6 +44,9 @@ class FakeMap {
   readonly paints: { layer: string; property: string; value: unknown }[] = [];
   queryResult: { properties?: Record<string, unknown> }[] = [];
   private readonly sourceHandlers = new Set<(event: MapSourceDataEvent) => void>();
+  private readonly errorHandlers = new Set<(
+    event: { sourceId: string; error: unknown },
+  ) => void>();
 
   addSource(id: string, source: { type?: string; url?: string; attribution?: string }) {
     this.sourceSpecs.set(id, source);
@@ -69,6 +72,12 @@ class FakeMap {
 
   on(type: string, listener: (event: MapSourceDataEvent) => void) {
     if (type === "sourcedata") this.sourceHandlers.add(listener);
+    if (type === "error") {
+      this.errorHandlers.add(listener as unknown as (event: {
+        sourceId: string;
+        error: unknown;
+      }) => void);
+    }
   }
 
   off(type: string, listener: (event: MapSourceDataEvent) => void) {
@@ -81,12 +90,22 @@ class FakeMap {
     }
   }
 
+  emitError(sourceId: string, error: unknown) {
+    for (const handler of [...this.errorHandlers]) handler({ sourceId, error });
+  }
+
   queryRenderedFeatures() {
     return this.queryResult;
   }
 }
 
 const asMap = (map: FakeMap) => map as unknown as MapLibreMap;
+
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("SlotPair", () => {
   it("creates vector slots lazily, inserts below the front, and reuses them with setUrl", () => {
@@ -163,6 +182,110 @@ describe("SlotPair", () => {
     pair.apply(asMap(map), null);
 
     expect(map.sources).toHaveLength(0);
+    expect(pair.liveFillLayerId()).toBeNull();
+  });
+
+  it("reports one final archive failure after its retry is exhausted", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const map = new FakeMap();
+    const failed = vi.fn();
+    const pair = new SlotPair("era", style, failed);
+
+    pair.apply(asMap(map), slice(1900));
+    map.emitError("wk-era-a", new Error("missing deployment"));
+    expect(failed).not.toHaveBeenCalled();
+
+    vi.runOnlyPendingTimers();
+    map.emitError("wk-era-a", new Error("still missing"));
+    map.emitError("wk-era-a", new Error("duplicate worker error"));
+
+    expect(failed).toHaveBeenCalledOnce();
+  });
+
+  it("cancels an old retry when the cursor requests a newer slice", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const map = new FakeMap();
+    const pair = new SlotPair("era", style);
+
+    pair.apply(asMap(map), slice(1900));
+    map.emitError("wk-era-a", new Error("interrupted"));
+    pair.apply(asMap(map), slice(1914));
+    vi.runOnlyPendingTimers();
+
+    expect(map.sources.get("wk-era-a")?.urls).toEqual([slice(1900).url, slice(1914).url]);
+  });
+
+  it("ignores an outgoing-slot error while a newer slice is pending", () => {
+    const map = new FakeMap();
+    const failed = vi.fn();
+    const pair = new SlotPair("era", style, failed);
+    pair.apply(asMap(map), slice(1900));
+    map.emitLoaded("wk-era-a");
+
+    pair.apply(asMap(map), slice(1914));
+    map.emitError("wk-era-a", new Error("late outgoing error"));
+    map.emitLoaded("wk-era-b");
+
+    expect(pair.liveFillLayerId()).toBe("wk-era-b-fill");
+    expect(failed).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a newer retry with an outgoing slice", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const map = new FakeMap();
+    const pair = new SlotPair("era", style);
+    pair.apply(asMap(map), slice(1900));
+    map.emitLoaded("wk-era-a");
+
+    pair.apply(asMap(map), slice(1914));
+    map.emitError("wk-era-b", new Error("new slice interrupted"));
+    map.emitError("wk-era-a", new Error("outgoing slice failed late"));
+    vi.runOnlyPendingTimers();
+
+    expect(map.sources.get("wk-era-b")?.urls).toEqual([slice(1914).url, slice(1914).url]);
+    expect(map.sources.get("wk-era-a")?.urls).toEqual([slice(1900).url]);
+  });
+
+  it("ignores duplicate source errors until the scheduled retry starts", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const map = new FakeMap();
+    const failed = vi.fn();
+    const pair = new SlotPair("era", style, failed);
+
+    pair.apply(asMap(map), slice(1900));
+    map.emitError("wk-era-a", new Error("first worker error"));
+    map.emitError("wk-era-a", new Error("duplicate worker error"));
+    expect(failed).not.toHaveBeenCalled();
+
+    vi.runOnlyPendingTimers();
+    map.emitLoaded("wk-era-a");
+    expect(map.sources.get("wk-era-a")?.urls).toEqual([slice(1900).url, slice(1900).url]);
+    expect(pair.liveFillLayerId()).toBe("wk-era-a-fill");
+    expect(failed).not.toHaveBeenCalled();
+  });
+
+  it("cancels a retry when the cursor leaves layer coverage", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", { setTimeout, clearTimeout });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const map = new FakeMap();
+    const pair = new SlotPair("era", style);
+
+    pair.apply(asMap(map), slice(1900));
+    map.emitError("wk-era-a", new Error("interrupted"));
+    pair.apply(asMap(map), null);
+    vi.runOnlyPendingTimers();
+
+    expect(map.sources.get("wk-era-a")?.urls).toEqual([slice(1900).url]);
     expect(pair.liveFillLayerId()).toBeNull();
   });
 });

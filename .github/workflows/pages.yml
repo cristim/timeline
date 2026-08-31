@@ -67,7 +67,7 @@ jobs:
           npm ci
           npm run build
       - name: Bake artifacts into the site
-        run: docker run --rm --user "$(id -u):$(id -g)" --volume "$PWD/data/seed:/seed:ro" --volume "$PWD/data/geo:/geo:ro" --volume "$PWD/data/goldens.json:/goldens.json:ro" --volume "$PWD/web/dist:/out" world-knowledge-baker:pages bake --seed /seed --geo /geo --goldens /goldens.json --out /out
+        run: docker run --rm --user "$(id -u):$(id -g)" --env GITHUB_SHA --volume "$PWD/data/seed:/seed:ro" --volume "$PWD/data/geo:/geo:ro" --volume "$PWD/data/goldens.json:/goldens.json:ro" --volume "$PWD/web/dist:/out" world-knowledge-baker:pages bake --seed /seed --geo /geo --goldens /goldens.json --out /out
       - name: Verify published basemap
         run: ./scripts/verify-bake-output.sh web/dist --layers
       - name: SPA fallback

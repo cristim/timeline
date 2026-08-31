@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { basemapArtifactURL, loadManifest, type BasemapDescriptor } from "./manifest";
+import {
+  basemapArtifactURL,
+  loadManifest,
+  reloadIfDatasetChanged,
+  type BasemapDescriptor,
+} from "./manifest";
 
 const basemap: BasemapDescriptor = {
   key: "basemap/protomaps-20260829-z0-6.pmtiles",
@@ -27,8 +32,13 @@ afterEach(() => {
 
 describe("manifest basemap descriptor", () => {
   it("accepts the production descriptor and derives static and gateway URLs", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(manifest))));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(manifest)));
+    vi.stubGlobal("fetch", fetchMock);
     await expect(loadManifest()).resolves.toMatchObject({ dataset: "atlas-v1.2", basemap });
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/manifest\.json\?current=\d+$/),
+      { cache: "no-store" },
+    );
 
     vi.stubEnv("BASE_URL", "/timeline/");
     expect(basemapArtifactURL(manifest.dataset, basemap)).toBe(
@@ -38,6 +48,31 @@ describe("manifest basemap descriptor", () => {
     expect(basemapArtifactURL(manifest.dataset, basemap)).toBe(
       "https://data.example.test/v/atlas-v1.2/basemap/protomaps-20260829-z0-6.pmtiles",
     );
+  });
+
+  it("reloads a stale open app from a cache-bypassing manifest read", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ...manifest, dataset: "atlas-v2" })),
+    );
+    const reload = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", { location: { reload } });
+
+    await expect(reloadIfDatasetChanged("atlas-v1.2")).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^\/manifest\.json\?current=\d+$/),
+      { cache: "no-store" },
+    );
+    expect(reload).toHaveBeenCalledOnce();
+  });
+
+  it("does not reload when a layer failed within the current dataset", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(manifest))));
+    const reload = vi.fn();
+    vi.stubGlobal("window", { location: { reload } });
+
+    await expect(reloadIfDatasetChanged(manifest.dataset)).resolves.toBe(false);
+    expect(reload).not.toHaveBeenCalled();
   });
 
   it.each([

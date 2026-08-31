@@ -94,10 +94,23 @@ function decodeManifest(value: unknown): Manifest {
   };
 }
 
-export async function loadManifest(): Promise<Manifest> {
-  const res = await fetch(artifactURL("/manifest.json"));
+async function fetchManifest(url: string, init?: RequestInit): Promise<Manifest> {
+  const res = await fetch(url, init);
   if (!res.ok) {
     throw new Error(`manifest fetch failed: ${res.status}`);
   }
   return decodeManifest(await res.json());
+}
+
+export function loadManifest(): Promise<Manifest> {
+  const url = `${artifactURL("/manifest.json")}?current=${Date.now()}`;
+  return fetchManifest(url, { cache: "no-store" });
+}
+
+/** Reload an open app only when a fresh manifest points at a newer dataset. */
+export async function reloadIfDatasetChanged(currentDataset: string): Promise<boolean> {
+  const latest = await loadManifest();
+  if (latest.dataset === currentDataset) return false;
+  window.location.reload();
+  return true;
 }

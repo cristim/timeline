@@ -22,7 +22,11 @@ import {
   BASEMAP_SOURCE_ID,
   createBasemapStyle,
 } from "../lib/basemapStyle";
-import { basemapArtifactURL, type BasemapDescriptor } from "../lib/manifest";
+import {
+  basemapArtifactURL,
+  reloadIfDatasetChanged,
+  type BasemapDescriptor,
+} from "../lib/manifest";
 import { registerPMTilesProtocol } from "../lib/pmtilesProtocol";
 
 registerPMTilesProtocol();
@@ -226,8 +230,19 @@ export function MapView({
   const eraRef = useRef<AreaLayerSlice | null>(era);
   const paleoRef = useRef<AreaLayerSlice | null>(paleo);
   const modeRef = useRef<MapMode>(mode);
-  const eraSlots = useRef(new SlotPair("era", ERA_STYLE));
-  const paleoSlots = useRef(new SlotPair("paleo", PALEO_STYLE));
+  const datasetRef = useRef(dataset);
+  datasetRef.current = dataset;
+  const recoveryCheck = useRef<Promise<unknown> | null>(null);
+  const recoverStaleDataset = () => {
+    if (recoveryCheck.current) return;
+    recoveryCheck.current = reloadIfDatasetChanged(datasetRef.current)
+      .catch((e: unknown) => console.error("dataset rollover check failed:", e))
+      .finally(() => {
+        recoveryCheck.current = null;
+      });
+  };
+  const eraSlots = useRef(new SlotPair("era", ERA_STYLE, recoverStaleDataset));
+  const paleoSlots = useRef(new SlotPair("paleo", PALEO_STYLE, recoverStaleDataset));
   const frontRef = useRef<FeatureCollection>(frontFC(front));
   const [tip, setTip] = useState<Tip | null>(null);
   const onSelectRef = useRef(onSelect);

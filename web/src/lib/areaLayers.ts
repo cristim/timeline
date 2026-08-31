@@ -51,6 +51,7 @@ export class SlotPair {
   constructor(
     private readonly kind: string,
     private readonly style: AreaLayerStyle,
+    private readonly onLoadFailure?: () => void,
   ) {}
 
   private sourceId(slot: Slot): string {
@@ -144,7 +145,12 @@ export class SlotPair {
 
   apply(map: maplibregl.Map, next: AreaLayerSlice | null): void {
     const url = next?.url ?? null;
-    if (url === this.requestedUrl) return;
+    const retryScheduled = this.retryTimer !== null;
+    if (this.retryTimer !== null) {
+      window.clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    if (url !== null && url === this.requestedUrl && !retryScheduled) return;
     this.requestedUrl = url;
     this.ownErrors(map);
 
@@ -155,9 +161,14 @@ export class SlotPair {
     if (!next) {
       for (const slot of this.created) this.setOpacity(map, slot, false);
       this.visible = null;
+      this.lastSlice = null;
+      this.retriedUrl = null;
       return;
     }
 
+    if (next.url !== this.lastSlice?.url) {
+      this.retriedUrl = null;
+    }
     this.lastSlice = next;
     const slot = pendingSlot ?? (this.visible === "a" ? "b" : "a");
     const outgoing = this.visible;
@@ -191,33 +202,34 @@ export class SlotPair {
     map.on("error", (event) => {
       const e = event as unknown as { sourceId?: string; error?: unknown };
       if (!this.ownsSource(e.sourceId) || isAbort(e.error)) return;
+      if (this.retryTimer !== null) return;
       const pending = this.pending;
-      // A slot that is neither pending nor visible can still report a late
-      // tile error (its load was superseded mid-flight); the last requested
-      // slice is what the map should be showing, so retry that.
-      const slice =
-        pending && e.sourceId === this.sourceId(pending.slot)
-          ? pending.slice
-          : this.visible !== null && e.sourceId === this.sourceId(this.visible)
-            ? this.visibleSlice
-            : this.lastSlice;
-      if (!slice) {
-        console.error(`area layer ${e.sourceId} error:`, e.error);
-        return;
-      }
+      // Errors from an outgoing or superseded slot must not cancel the newer
+      // pending slice or resurrect an older cursor position.
+      if (pending && e.sourceId !== this.sourceId(pending.slot)) return;
+      const slice = pending
+        ? pending.slice
+        : this.visible !== null && e.sourceId === this.sourceId(this.visible)
+          ? this.visibleSlice
+          : null;
+      if (!slice) return;
       pending?.cancel();
       this.pending = null;
       this.requestedUrl = null;
       if (this.retriedUrl !== slice.url) {
         this.retriedUrl = slice.url;
         console.warn(`area layer ${e.sourceId} load interrupted; retrying:`, e.error);
-        this.retryTimer = window.setTimeout(() => this.apply(map, slice), 1000);
+        this.retryTimer = window.setTimeout(() => {
+          this.retryTimer = null;
+          this.apply(map, slice);
+        }, 1000);
         return;
       }
       console.error(`area layer ${e.sourceId} failed to load:`, e.error);
       for (const s of this.created) this.setOpacity(map, s, false);
       this.visible = null;
       this.visibleSlice = null;
+      this.onLoadFailure?.();
     });
   }
 
