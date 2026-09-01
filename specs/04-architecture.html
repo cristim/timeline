@@ -113,7 +113,7 @@ reproducible from dumps + code per <a href="03-data-sources.html">SRC-3</a>):</p
 <tr><td>ingest + validate</td><td>normalized entity/claim/geometry <strong>Parquet tables</strong> in <code>wk-warm</code> (the working model), reject tables, import report</td><td>SRC-3, DM-*</td></tr>
 <tr><td>rank</td><td>importance vectors joined onto entities</td><td><a href="07-semantic-zoom.html">ZOOM-2</a></td></tr>
 <tr><td>bucketize</td><td><code>bucket_min/bucket_max</code> per entity</td><td>ZOOM-3</td></tr>
-<tr><td>bake chunks</td><td>viewport chunk JSON per (bucket × time-window × tile × category) - the ranking function runs here, at bake time</td><td>ZOOM-4, <a href="05-api.html">API-1</a></td></tr>
+<tr><td>bake chunks</td><td>ranked viewport chunk bodies per logical (bucket × time-window × tile × category), physically stored as run-start anchors when consecutive windows are byte-identical</td><td>ZOOM-4, <a href="05-api.html">API-1</a></td></tr>
 <tr><td>bake entities</td><td>one JSON doc per slug, <code>aliases.json</code> (DM-2a), SSG HTML entity pages for SEO</td><td>API-2, API-6</td></tr>
 <tr><td>bake tiles</td><td>PMTiles per layer/time-step</td><td>ARCH-3</td></tr>
 <tr><td>bake search</td><td>prefix-sharded search index JSON</td><td><a href="08-search-ai.html">SRCH-1</a></td></tr>

@@ -111,8 +111,9 @@ loads the adjacent bucket's data (prefetched, crossfaded - <a href="06-frontend.
 <ul>
 <li>Runs entirely at <strong>bake time</strong> (the "bake chunks" stage,
 <a href="04-architecture.html">ARCH-4</a>): DuckDB SQL over the Parquet model + a Go re-rank per
-chunk, writing the top-N per (bucket × window × tile × category). Nothing scores at view time; the
-client only unions chunks and applies the importance slider locally.</li>
+logical chunk, computing the top-N per (bucket × window × tile × category). API-1 may store
+consecutive byte-identical logical chunks under one run-start artifact. Nothing scores at view time;
+the client only unions chunk artifacts and applies the importance slider locally.</li>
 <li>Deterministic: same inputs &rarr; same chunk contents, stable ordering (ties broken by slug) -
 required for reproducible bakes and content-hash incrementality (ARCH-4).</li>
 <li>Diversity guard: at most K items per category per screen at coarse buckets (config), so 1942 doesn't

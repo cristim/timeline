@@ -26,8 +26,8 @@ func (r WindowRun) End() int64   { return r[1] }
 type Bucket struct {
 	ID      string  `json:"id"`
 	WindowS float64 `json:"window_s"` // 0 = single window spanning all time
-	// Windows lists the baked window runs per category. Only windows covered
-	// by a listed run exist as chunk files (API-1).
+	// Windows lists the baked window runs per category. Only run starts have
+	// physical chunk files; covered windows resolve to their run start (API-1).
 	Windows map[string][]WindowRun `json:"windows,omitempty"`
 }
 

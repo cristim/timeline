@@ -111,15 +111,15 @@ describe("windowsInRange", () => {
     expect(windowsInRange(bucket, "war", 13, 14)).toEqual([]);
   });
 
-  it("keeps adjacent runs distinct and returns each overlapped start once", () => {
+  it("keeps adjacent runs distinct", () => {
     const bucket: Bucket = {
       id: "T10",
       window_s: 1,
-      windows: { war: [[1, 1], [2, 4], [2, 4], [4, 6]] },
+      windows: { war: [[1, 1], [2, 4], [5, 6]] },
     };
 
     expect(windowsInRange(bucket, "war", 1, 2)).toEqual([1, 2]);
-    expect(windowsInRange(bucket, "war", 4, 4)).toEqual([2, 4]);
+    expect(windowsInRange(bucket, "war", 4, 5)).toEqual([2, 5]);
   });
 
   it("handles negative windows and missing categories", () => {

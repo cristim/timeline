@@ -98,7 +98,7 @@ combination of time scale, geographic scale, and topic filter.</p>
 <tr><td>Semantic zoom</td><td>Changing the <em>information hierarchy</em>, not just the scale, as the user zooms time and geography together.</td></tr>
 <tr><td>Time bucket (T0&ndash;T13)</td><td>Precomputed zoom levels for time, from "whole universe" (T0) down to "hour" (T13). Analogue of map tile zoom levels. See <a href="07-semantic-zoom.html">07</a>.</td></tr>
 <tr><td>Importance vector</td><td>Precomputed per-entity scores: global, regional, per-category, per-time-bucket. Drives what renders at each zoom.</td></tr>
-<tr><td>Viewport chunks</td><td>The core read contract: the client computes static chunk keys from time bucket + window + map tile + category and unions the fetched chunks - no query server. See <a href="05-api.html">05</a>.</td></tr>
+<tr><td>Viewport chunks</td><td>The core read contract: the client resolves manifest window runs to static chunk keys from time bucket + run start + map tile + category and unions the fetched chunks - no query server. See <a href="05-api.html">05</a>.</td></tr>
 <tr><td>Knowledge date</td><td>A second, optional time axis: "show this as it was understood in year Y." V2 differentiator. See <a href="01-product-vision.html">01</a>.</td></tr>
 <tr><td>Hot / warm / cold</td><td>Storage tiers: baked serving artifacts (chunks, entity docs, PMTiles) / Parquet model + candidate sets on S3 / original source dumps. See <a href="03-data-sources.html">03</a>.</td></tr>
 </table>
