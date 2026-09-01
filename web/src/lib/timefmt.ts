@@ -84,6 +84,6 @@ function trim(v: number): string {
 }
 
 /** True if the entity is best treated as ongoing ("through present"). */
-export function isOngoing(t1: number): boolean {
-  return secondsToYear(t1) >= new Date().getFullYear() - 1;
+export function isOngoing(t1: number, now: number = NOW_S): boolean {
+  return secondsToYear(t1) >= Math.floor(secondsToYear(now)) - 1;
 }

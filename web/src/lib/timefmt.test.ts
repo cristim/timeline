@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { SECONDS_PER_YEAR } from "./keyscheme";
-import { formatDuration } from "./timefmt";
+import { SECONDS_PER_YEAR, yearToSeconds } from "./keyscheme";
+import { formatDuration, isOngoing } from "./timefmt";
 
 describe("formatDuration", () => {
   it("scales from minutes to deep time", () => {
@@ -25,5 +25,13 @@ describe("formatDuration", () => {
   it("keeps singular units singular", () => {
     expect(formatDuration(SECONDS_PER_YEAR)).toBe("1 year");
     expect(formatDuration(86_400)).toBe("1 day");
+  });
+});
+
+describe("isOngoing", () => {
+  it("classifies relative to a supplied present instant", () => {
+    const now = yearToSeconds(2040.5);
+    expect(isOngoing(yearToSeconds(2039), now)).toBe(true);
+    expect(isOngoing(yearToSeconds(2038), now)).toBe(false);
   });
 });
