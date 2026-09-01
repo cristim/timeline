@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,8 @@ func TestValidateRejects(t *testing.T) {
 		{"prop missing source", map[string]any{"props": []map[string]any{{"property": "mass", "value": 1.0, "value_type": "measured", "published_at": "2020"}}}, "missing source"},
 		{"prop missing published_at", map[string]any{"props": []map[string]any{{"property": "mass", "value": 1.0, "value_type": "measured", "source": "s"}}}, "missing published_at"},
 		{"prop no value", map[string]any{"props": []map[string]any{{"property": "mass", "value_type": "measured", "source": "s", "published_at": "2020"}}}, "needs value or min+max"},
+		{"unknown property", map[string]any{"props": []map[string]any{{"property": "weight", "value": 1.0, "unit": "kg", "value_type": "measured", "source": "s", "published_at": "2020"}}}, "unknown property"},
+		{"unsupported unit", map[string]any{"props": []map[string]any{{"property": "mass", "value": 1.0, "unit": "lb", "value_type": "measured", "source": "s", "published_at": "2020"}}}, "unsupported unit"},
 		{"deep time fine precision", map[string]any{"t0": map[string]any{"y": -50e9}, "precision": "year"}, "requires billion_year"},
 	}
 	for _, c := range cases {
@@ -70,6 +73,30 @@ func TestValidateRejects(t *testing.T) {
 			t.Errorf("%s: reason %q does not contain %q", c.name, reason, c.wantIn)
 		}
 	}
+}
+
+func TestValidateRejectsNonFinitePropertyMeasurements(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		prop model.SeedProp
+	}{
+		{name: "value", prop: model.SeedProp{Property: "mass", Value: float64Pointer(math.NaN()), Unit: "kg", ValueType: "measured", Source: "s", PublishedAt: "2020"}},
+		{name: "minimum", prop: model.SeedProp{Property: "mass", Min: float64Pointer(math.Inf(-1)), Max: float64Pointer(2), Unit: "kg", ValueType: "measured", Source: "s", PublishedAt: "2020"}},
+		{name: "maximum", prop: model.SeedProp{Property: "mass", Min: float64Pointer(1), Max: float64Pointer(math.Inf(1)), Unit: "kg", ValueType: "measured", Source: "s", PublishedAt: "2020"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			se := seedLine(t, nil)
+			se.Props = []model.SeedProp{tc.prop}
+			_, reason := Validate(se)
+			if !strings.Contains(reason, "finite") {
+				t.Fatalf("reason = %q, want finite measurement error", reason)
+			}
+		})
+	}
+}
+
+func float64Pointer(value float64) *float64 {
+	return &value
 }
 
 func TestValidateAccepts(t *testing.T) {

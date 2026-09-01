@@ -135,6 +135,12 @@ func TestWindowRunsServeEveryWindowUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(m.PropertyDef) != len(model.PropertyDefinitions) {
+		t.Fatalf("manifest property definitions = %d, want %d", len(m.PropertyDef), len(model.PropertyDefinitions))
+	}
+	if got := m.PropertyDef["mass"].CanonicalUnit; got != "kg" {
+		t.Fatalf("manifest mass canonical unit = %q, want kg", got)
+	}
 
 	type cellKey struct {
 		bucket int

@@ -17,6 +17,14 @@ const manifest: Manifest = {
   timesteps: { borders: [1500] },
   counts: {},
   search_shards: [],
+  property_def: {
+    mass: {
+      label: "Mass",
+      datatype: "number",
+      canonical_unit: "kg",
+      conversions: { kg: { scale: 1 } },
+    },
+  },
 };
 
 afterEach(() => {

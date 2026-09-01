@@ -160,6 +160,7 @@ func Run(ctx context.Context, sink Sink, compiler LayerCompiler, dataset, seedVe
 		Categories:   categorySet(entities),
 		Layers:       layers,
 		Timesteps:    timesteps,
+		PropertyDef:  model.PropertyDefinitions,
 		SearchShards: shards,
 		GoldenViews:  goldenStatus,
 		Counts: map[string]int{

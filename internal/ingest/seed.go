@@ -229,6 +229,21 @@ func validateEntityFields(entity *model.Entity) string {
 		case p.Value == nil && (p.Min == nil || p.Max == nil):
 			return fmt.Sprintf("property %q needs value or min+max", p.Property)
 		}
+		definition, ok := model.PropertyDefinitions[p.Property]
+		if !ok {
+			return fmt.Sprintf("unknown property %q", p.Property)
+		}
+		if _, ok := definition.Conversions[p.Unit]; !ok {
+			return fmt.Sprintf("property %q has unsupported unit %q", p.Property, p.Unit)
+		}
+		switch {
+		case p.Value != nil && (math.IsNaN(*p.Value) || math.IsInf(*p.Value, 0)):
+			return fmt.Sprintf("property %q value must be finite", p.Property)
+		case p.Min != nil && (math.IsNaN(*p.Min) || math.IsInf(*p.Min, 0)):
+			return fmt.Sprintf("property %q minimum must be finite", p.Property)
+		case p.Max != nil && (math.IsNaN(*p.Max) || math.IsInf(*p.Max, 0)):
+			return fmt.Sprintf("property %q maximum must be finite", p.Property)
+		}
 	}
 	if entity.Point != nil {
 		if len(entity.Point) != 2 || !model.ValidLonLat(entity.Point[0], entity.Point[1]) {

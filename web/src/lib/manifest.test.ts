@@ -13,6 +13,15 @@ const basemap: BasemapDescriptor = {
   sha256: "91578880b31e965f7e1c27c3efe1e2f53bb60e87b758349761a5f32cbb37b675",
 };
 
+const propertyDef = {
+  mass: {
+    label: "Mass",
+    datatype: "number",
+    canonical_unit: "kg",
+    conversions: { kg: { scale: 1 } },
+  },
+};
+
 const manifest = {
   dataset: "atlas-v1.2",
   generated_at: "2026-08-30T00:00:00Z",
@@ -23,6 +32,7 @@ const manifest = {
   timesteps: {},
   counts: {},
   search_shards: [],
+  property_def: propertyDef,
 };
 
 function stubManifest(body: unknown): void {
@@ -154,5 +164,66 @@ describe("manifest window runs", () => {
     stubManifest({ ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [sparse] } }] });
 
     await expect(loadManifest()).rejects.toThrow("manifest.buckets[0].windows.all[0]");
+  });
+});
+
+describe("manifest property definitions", () => {
+  it("accepts finite fractional conversion coefficients", async () => {
+    stubManifest({
+      ...manifest,
+      property_def: {
+        warming: {
+          label: "Warming",
+          datatype: "number",
+          canonical_unit: "Cel",
+          conversions: {
+            Cel: { scale: 1 },
+            mCel: { scale: 0.001, offset: -273.15 },
+          },
+        },
+      },
+    });
+
+    await expect(loadManifest()).resolves.toMatchObject({
+      property_def: {
+        warming: { conversions: { mCel: { scale: 0.001, offset: -273.15 } } },
+      },
+    });
+  });
+
+  it.each([
+    ["missing registry", { ...manifest, property_def: undefined }, "manifest.property_def"],
+    ["non-object registry", { ...manifest, property_def: [] }, "manifest.property_def"],
+    ["invalid property id", { ...manifest, property_def: { "../mass": propertyDef.mass } }, "manifest.property_def.../mass"],
+    ["missing label", { ...manifest, property_def: { mass: { ...propertyDef.mass, label: undefined } } }, "manifest.property_def.mass.label"],
+    ["malformed datatype", { ...manifest, property_def: { mass: { ...propertyDef.mass, datatype: "integer" } } }, "manifest.property_def.mass.datatype"],
+    ["missing canonical unit", { ...manifest, property_def: { mass: { ...propertyDef.mass, canonical_unit: undefined } } }, "manifest.property_def.mass.canonical_unit"],
+    ["missing conversions", { ...manifest, property_def: { mass: { ...propertyDef.mass, conversions: undefined } } }, "manifest.property_def.mass.conversions"],
+    ["missing canonical conversion", { ...manifest, property_def: { mass: { ...propertyDef.mass, conversions: { lb: { scale: 1 } } } } }, "manifest.property_def.mass.conversions.kg"],
+    ["non-number scale", { ...manifest, property_def: { mass: { ...propertyDef.mass, conversions: { kg: { scale: "1" } } } } }, "manifest.property_def.mass.conversions.kg.scale"],
+    ["non-finite scale", { ...manifest, property_def: { mass: { ...propertyDef.mass, conversions: { kg: { scale: Number.POSITIVE_INFINITY } } } } }, "manifest.property_def.mass.conversions.kg.scale"],
+    ["non-number offset", { ...manifest, property_def: { mass: { ...propertyDef.mass, conversions: { kg: { scale: 1, offset: "0" } } } } }, "manifest.property_def.mass.conversions.kg.offset"],
+  ])("rejects %s", async (_name, body, field) => {
+    stubManifest(body);
+    await expect(loadManifest()).rejects.toThrow(field as string);
+  });
+
+  it.each([
+    ["whitespace-only canonical unit", { ...propertyDef.mass, canonical_unit: "   " }, "canonical_unit"],
+    ["padded canonical unit", { ...propertyDef.mass, canonical_unit: " kg " }, "canonical_unit"],
+    ["whitespace-only conversion unit", { ...propertyDef.mass, conversions: { kg: { scale: 1 }, "   ": { scale: 1 } } }, "unit name"],
+    ["padded conversion unit", { ...propertyDef.mass, conversions: { kg: { scale: 1 }, " lb ": { scale: 1 } } }, "unit name"],
+  ])("rejects %s", async (_name, definition, error) => {
+    stubManifest({ ...manifest, property_def: { mass: definition } });
+    await expect(loadManifest()).rejects.toThrow(error as string);
+  });
+
+  it.each([
+    ["bucket window", { ...manifest, buckets: [{ id: "T1", window_s: Number.MAX_SAFE_INTEGER + 1 }] }, "manifest.buckets[0].window_s"],
+    ["timestep", { ...manifest, timesteps: { borders: [Number.MAX_SAFE_INTEGER + 1] } }, "manifest.timesteps.borders[0]"],
+    ["count", { ...manifest, counts: { entities: Number.MAX_SAFE_INTEGER + 1 } }, "manifest.counts.entities"],
+  ])("rejects an unsafe %s integer", async (_name, body, field) => {
+    stubManifest(body);
+    await expect(loadManifest()).rejects.toThrow(field as string);
   });
 });
