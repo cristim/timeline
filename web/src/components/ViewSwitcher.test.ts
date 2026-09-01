@@ -108,6 +108,10 @@ describe("CompareContent", () => {
     expect(html.indexOf("estimated")).toBeLessThan(html.indexOf("reconstructed"));
     expect(html).toContain("cmp-span a");
     expect(html).toContain("cmp-span b");
+    expect(html).toContain('role="img"');
+    expect(html).toContain("Earth: 2000 – 2010, documented");
+    expect(html).toContain("Temporal comparison of Earth and Mars: overlap for 5 years");
+    expect(html).toContain("Mass for Earth: 1 – 3 kg, 2 claims, measured and projected");
   });
 
   it("renders canonical point values without range punctuation", () => {

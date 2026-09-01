@@ -93,6 +93,11 @@ body {
   background: rgba(11, 15, 23, 0.96); border: 1px solid var(--hair-2); border-radius: 10px;
 }
 .compare-shell h2 { margin-bottom: 12px; font: 650 22px var(--disp); color: var(--amber); }
+.cmp-close {
+  float: right; width: 30px; height: 30px; border: 1px solid var(--hair); border-radius: 6px;
+  background: var(--ink-2); color: var(--text-2); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.cmp-close:hover, .cmp-close:focus-visible { border-color: var(--amber); color: var(--amber); }
 .compare-body > p { color: var(--text-2); }
 .cmp-artifact-error, .cmp-missing { color: #e0a68f !important; }
 .cmp-identities { display: flex; align-items: baseline; gap: 10px; font-size: 17px; }

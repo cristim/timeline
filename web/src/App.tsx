@@ -323,7 +323,12 @@ export function App() {
             <SpaceView s={view.space} onZoom={setSpace} onSelect={setSelected} />
           )}
           {view.mode === "compare" && (
-            <CompareView subjects={view.compare} manifest={manifest} states={[compareA, compareB]} />
+            <CompareView
+              subjects={view.compare}
+              manifest={manifest}
+              states={[compareA, compareB]}
+              onClose={() => setMode("map")}
+            />
           )}
         </div>
         <div

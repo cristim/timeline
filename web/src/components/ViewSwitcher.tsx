@@ -17,6 +17,7 @@ export function ViewSwitcher({ active, onSwitch }: Props) {
       {enabled.map(({ label, mode }) => (
         <button
           key={mode}
+          data-view-mode={mode}
           className={active === mode ? "active" : ""}
           aria-pressed={active === mode}
           onClick={() => onSwitch(mode)}

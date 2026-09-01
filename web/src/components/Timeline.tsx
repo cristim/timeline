@@ -17,6 +17,9 @@ import { comparePinColor, comparePinRole } from "../lib/pins";
 const T_MIN = -4.75e17;
 const T_MAX = 2.2e17;
 const MIN_SPAN = 900; // 15 minutes
+const KEYBOARD_PAN_FRACTION = 0.1;
+const KEYBOARD_ZOOM_IN_FACTOR = 0.8;
+const KEYBOARD_ZOOM_OUT_FACTOR = 1.25;
 const AXIS_H = 26;
 const ROW_H = 22;
 
@@ -333,14 +336,37 @@ export function Timeline({ t0, t1, items, selected, compare, tc, onRange, onSele
     onSelect(hit ? hit.slug : null);
   };
 
-  // Arrow keys nudge the cursor (FE-9's accessibility floor asks for keyboard
-  // timeline navigation; the cursor is the part of it this change owns).
+  // Unmodified arrows retain cursor control; Alt+arrows pan the viewport.
   const onKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
     const dir = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
-    if (!dir) return;
+    if (dir) {
+      e.preventDefault();
+      if (e.altKey) {
+        const current = rangeRef.current;
+        const delta = (current.t1 - current.t0) * KEYBOARD_PAN_FRACTION * dir;
+        const [a, b] = clampRange(current.t0 + delta, current.t1 + delta);
+        rangeRef.current = { t0: a, t1: b };
+        onRangeRef.current(a, b);
+        return;
+      }
+      const step = ((t1 - t0) / (e.shiftKey ? 10 : 100)) * dir;
+      onCursor(Math.max(t0, Math.min(t1, cursor + step)));
+      return;
+    }
+
+    const zoomFactor = e.key === "+" || e.key === "="
+      ? KEYBOARD_ZOOM_IN_FACTOR
+      : e.key === "-" || e.key === "_"
+        ? KEYBOARD_ZOOM_OUT_FACTOR
+        : 0;
+    if (!zoomFactor) return;
     e.preventDefault();
-    const step = ((t1 - t0) / (e.shiftKey ? 10 : 100)) * dir;
-    onCursor(Math.max(t0, Math.min(t1, cursor + step)));
+    const current = rangeRef.current;
+    const middle = current.t0 + (current.t1 - current.t0) / 2;
+    const halfSpan = (current.t1 - current.t0) * zoomFactor / 2;
+    const [a, b] = clampRange(middle - halfSpan, middle + halfSpan);
+    rangeRef.current = { t0: a, t1: b };
+    onRangeRef.current(a, b);
   };
 
   return (
@@ -348,7 +374,7 @@ export function Timeline({ t0, t1, items, selected, compare, tc, onRange, onSele
       ref={canvasRef}
       className="timeline-canvas"
       tabIndex={0}
-      aria-label="Timeline. Arrow keys move the time cursor."
+      aria-label="Timeline. Arrow keys move the time cursor; Alt plus Left or Right pans; plus and minus zoom."
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

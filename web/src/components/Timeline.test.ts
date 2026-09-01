@@ -57,6 +57,53 @@ it("restores full opacity after drawing only a past comparison gutter", async ()
   await act(async () => root.unmount());
 });
 
+it("keeps cursor arrows while Alt+arrows pan and plus/minus zoom", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean })
+    .IS_REACT_ACT_ENVIRONMENT = true;
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+    canvasContext() as unknown as CanvasRenderingContext2D,
+  );
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(800);
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(220);
+  vi.stubGlobal("requestAnimationFrame", () => 1);
+  vi.stubGlobal("cancelAnimationFrame", () => undefined);
+  vi.stubGlobal("ResizeObserver", class {
+    observe() {}
+    disconnect() {}
+  });
+  const ranges: [number, number][] = [];
+  const cursors: (number | null)[] = [];
+  const root = createRoot(document.body.appendChild(document.createElement("div")));
+  await act(async () => root.render(createElement(Timeline, {
+    t0: 0,
+    t1: 10_000,
+    items: [],
+    selected: null,
+    compare: [],
+    tc: 5_000,
+    onRange: (a, b) => ranges.push([a, b]),
+    onSelect: () => undefined,
+    onCursor: (value) => cursors.push(value),
+  })));
+  const canvas = document.querySelector("canvas") as HTMLCanvasElement;
+
+  canvas.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  expect(cursors).toEqual([5_100]);
+  expect(ranges).toEqual([]);
+
+  canvas.dispatchEvent(new KeyboardEvent("keydown", {
+    key: "ArrowRight", altKey: true, bubbles: true,
+  }));
+  expect(ranges.at(-1)).toEqual([1_000, 11_000]);
+  expect(cursors).toEqual([5_100]);
+
+  canvas.dispatchEvent(new KeyboardEvent("keydown", { key: "+", bubbles: true }));
+  expect(ranges.at(-1)).toEqual([2_000, 10_000]);
+  canvas.dispatchEvent(new KeyboardEvent("keydown", { key: "-", bubbles: true }));
+  expect(ranges.at(-1)).toEqual([1_000, 11_000]);
+  await act(async () => root.unmount());
+});
+
 function canvasContext() {
   const savedAlpha: number[] = [];
   return {
