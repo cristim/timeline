@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { ChunkItem } from "../lib/data";
 import { colorFor, markerStyle } from "../lib/colors";
-import { formatTime } from "../lib/timefmt";
+import { formatTime, NOW_S } from "../lib/timefmt";
 import { futureGutterItems, laneItems } from "../lib/visible";
 import { SECONDS_PER_YEAR } from "../lib/keyscheme";
 import { cursorTime } from "../lib/state";
@@ -18,7 +18,6 @@ const T_MAX = 2.2e17;
 const MIN_SPAN = 900; // 15 minutes
 const AXIS_H = 26;
 const ROW_H = 22;
-const NOW_S = Date.now() / 1000;
 
 // Time cursor (FE-3/FE-5): a bright neutral instrument line, deliberately not
 // a category colour and not the selection amber - it marks a moment, it is not

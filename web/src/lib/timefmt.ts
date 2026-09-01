@@ -1,6 +1,9 @@
 // Human labels for timeline_time values across 100+ orders of magnitude.
 import { SECONDS_PER_YEAR, secondsToYear } from "./keyscheme";
 
+/** Fixed per page load so every surface agrees on the same present instant. */
+export const NOW_S = Date.now() / 1000;
+
 /** Formats a time (seconds since 1970) at a scale suited to `span` seconds. */
 export function formatTime(t: number, span: number): string {
   const year = secondsToYear(t);
@@ -28,6 +31,24 @@ export function formatTime(t: number, span: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/** Formats a length of time without the directional language used for dates. */
+export function formatDuration(seconds: number): string {
+  const absoluteSeconds = Math.abs(seconds);
+  const years = absoluteSeconds / SECONDS_PER_YEAR;
+  if (years >= 1e9) return `${trim(years / 1e9)} Gyr`;
+  if (years >= 1e6) return `${trim(years / 1e6)} Myr`;
+  if (years >= 1e4) return `${trim(years / 1000)} kyr`;
+  if (years >= 1) return plural(Math.round(years), "year");
+  if (absoluteSeconds >= 86_400) return plural(Math.round(absoluteSeconds / 86_400), "day");
+  if (absoluteSeconds >= 3600) return plural(Math.round(absoluteSeconds / 3600), "hour");
+  if (absoluteSeconds >= 60) return plural(Math.round(absoluteSeconds / 60), "minute");
+  return "under a minute";
+}
+
+function plural(value: number, unit: string): string {
+  return `${value} ${unit}${value === 1 ? "" : "s"}`;
 }
 
 /** Label for an entity's time range, respecting its stated precision. */

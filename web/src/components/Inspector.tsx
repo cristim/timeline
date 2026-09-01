@@ -6,6 +6,7 @@
 import { useState, type ReactNode } from "react";
 import type { EntityDoc, EntityRef } from "../lib/data";
 import { markerStyle } from "../lib/colors";
+import { fmtNum } from "../lib/numfmt";
 import { formatRange, isOngoing } from "../lib/timefmt";
 
 interface Props {
@@ -235,14 +236,4 @@ export function focusEntity(
   const { t0, t1 } = doc.temporal;
   const span = Math.max(t1 - t0, 86_400);
   onFocusTime(t0 - span * 1.5, t1 + span * 1.5);
-}
-
-function fmtNum(v: number): string {
-  if (Math.abs(v) >= 1e9) return `${round2(v / 1e9)}B`;
-  if (Math.abs(v) >= 1e6) return `${round2(v / 1e6)}M`;
-  if (Math.abs(v) >= 1e4) return `${round2(v / 1e3)}k`;
-  return `${round2(v)}`;
-}
-function round2(v: number): number {
-  return Math.round(v * 100) / 100;
 }
