@@ -176,15 +176,18 @@ func TestBakeFromModelProducesValidArtifacts(t *testing.T) {
 		t.Fatalf("buckets = %d, want %d", len(manifest.Buckets), len(model.Buckets))
 	}
 
-	// Every window the manifest advertises must exist as a chunk artifact under
+	// Every run the manifest advertises must exist as a chunk artifact under
 	// the shared key scheme, and each chunk must hold renderable items.
 	chunks := 0
 	items := 0
 	for i, bucket := range manifest.Buckets {
-		for category, windows := range bucket.Windows {
-			for _, window := range windows {
+		for category, runs := range bucket.Windows {
+			for _, run := range runs {
+				if run.End() < run.Start() {
+					t.Fatalf("bucket %s category %s has inverted run %v", model.Buckets[i].ID, category, run)
+				}
 				key := filepath.Join(outDir, "v", manifest.Dataset, "chunks",
-					model.Buckets[i].ID, strconv.FormatInt(window, 10), "world", category+".json")
+					model.Buckets[i].ID, strconv.FormatInt(run.Start(), 10), "world", category+".json")
 				body, err := os.ReadFile(key)
 				if err != nil {
 					t.Fatalf("chunk %s: %v", key, err)

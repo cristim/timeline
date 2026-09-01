@@ -8,24 +8,27 @@ package model
 const (
 	SecondsPerYear = 31_556_952 // average Gregorian year
 
+	MaxSafeInteger = 9_007_199_254_740_991
+
 	// MaxWindowedTime bounds |t| (seconds from 1970) for entities allowed in
 	// windowed buckets T3+: ~31.7 billion years, comfortably past both the Big
 	// Bang (-4.35e17 s) and any solar-system-scale future date.
 	MaxWindowedTime = 1e18
 )
 
+// WindowRun is an inclusive range of consecutive window indexes whose chunk
+// bodies are byte-identical. The artifact lives at Start.
+type WindowRun [2]int64
+
+func (r WindowRun) Start() int64 { return r[0] }
+func (r WindowRun) End() int64   { return r[1] }
+
 type Bucket struct {
 	ID      string  `json:"id"`
 	WindowS float64 `json:"window_s"` // 0 = single window spanning all time
-	// Windows lists the non-empty window indexes in the baked dataset, per
-	// category ("all" plus each real category). Set by bake, shipped in the
-	// manifest. The client only fetches (window, category) pairs listed here
-	// and renders everything else as empty locally - so no empty chunk files
-	// exist and a 404 on a listed key is a bake bug (API-1). Per-category
-	// lists matter: a window can hold war events but no science ones, and a
-	// category-blind list would send the client to keys that were never
-	// baked. Indexes stay < 2^53, safe as JSON numbers.
-	Windows map[string][]int64 `json:"windows,omitempty"`
+	// Windows lists the baked window runs per category. Only windows covered
+	// by a listed run exist as chunk files (API-1).
+	Windows map[string][]WindowRun `json:"windows,omitempty"`
 }
 
 // Buckets is ordered coarse -> fine. Index in this slice is the bucket number.

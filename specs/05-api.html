@@ -61,15 +61,16 @@ attribution travel with the descriptor so clients can verify and credit the exac
 <pre>/v/&lt;dataset&gt;/chunks/&lt;tb&gt;/&lt;window&gt;/&lt;tile&gt;/&lt;category&gt;.json
 
   tb        time bucket in view (T0..T13, ZOOM-3)
-  window    time window index: floor(t / bucket_window_seconds), from the
-            manifest grid - the client snaps its continuous view to it
+  window    run start window index from the manifest grid. If the visible
+            range overlaps [start,end], the client fetches start.
   tile      map tile address z/x/y at the bucket's configured zoom,
             or "world" for global views
   category  ONE category, or "all" (top tier across categories)</pre>
-<p>The client derives every key itself: snap the visible time range to window indexes, snap the bbox
-to tile addresses, fetch the needed <code>(window × tile)</code> chunks for each selected category,
-union, dedupe by slug, apply the importance slider locally, render. That is the entire "query
-engine". Chunk content (ranking baked per <a href="07-semantic-zoom.html">ZOOM-4</a>):</p>
+<p>The client derives every key itself: snap the visible time range to window indexes, resolve each
+overlapping manifest run to its start window, snap the bbox to tile addresses, fetch the needed
+<code>(run start × tile)</code> chunks for each selected category, union, dedupe by slug, apply the
+importance slider locally, render. That is the entire "query engine". Chunk content (ranking baked
+per <a href="07-semantic-zoom.html">ZOOM-4</a>):</p>
 <pre>{
   "items": [
     {
@@ -89,9 +90,11 @@ engine". Chunk content (ranking baked per <a href="07-semantic-zoom.html">ZOOM-4
 <li><strong>Bounded by construction:</strong> each chunk holds at most N items (per-bucket cap from
 ZOOM-4, including the diversity guard); entities spanning windows are duplicated into every window
 they overlap (ARCH-4). A view unions a handful of chunks, never the dataset.</li>
-<li><strong>Empty is a file:</strong> windows/tiles with no qualifying entities bake as an empty
-<code>{"items":[]}</code> chunk. A 404 on a manifest-valid key is a bake bug, not a normal condition;
-the client reports it.</li>
+<li><strong>Runs are inclusive pairs:</strong> <code>manifest.buckets[].windows[category]</code> is
+an ordered list of <code>[start,end]</code> safe-integer window runs. Adjacent runs may exist when
+their chunk bodies differ. Old bare window lists are invalid.</li>
+<li><strong>Manifest keys must exist:</strong> a 404 on a manifest-valid run-start key is a bake bug,
+not a normal condition; the client reports it.</li>
 <li>Size budget: p95 chunk ≤ 64 KB gzipped; fetch p95 &lt; 30 ms through the local gateway
 (<a href="11-local-dev.html">DEV-6 M2</a>).</li>
 </ul>

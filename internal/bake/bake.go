@@ -4,10 +4,11 @@
 package bake
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"sort"
 
 	"wk/internal/model"
@@ -104,6 +105,9 @@ func Run(ctx context.Context, sink Sink, compiler LayerCompiler, dataset, seedVe
 	if err != nil {
 		return nil, stats, err
 	}
+	if err := validateWindowRuns(buckets); err != nil {
+		return nil, stats, err
+	}
 	goldenStatus := ""
 	if goldens != nil {
 		if fails := Evaluate(goldens, seedVersion, captured); len(fails) > 0 {
@@ -165,10 +169,13 @@ func Run(ctx context.Context, sink Sink, compiler LayerCompiler, dataset, seedVe
 	return m, stats, nil
 }
 
-// bakeChunks writes /v/<ds>/chunks/<tb>/<window>/world/<category>.json and
-// returns the bucket table with per-bucket non-empty window lists (shipped in
-// the manifest so the client never fetches, or 404s on, an empty window), plus
-// the chunks named by goldenKeys for evaluation.
+// chunkRelKey is the chunk artifact key relative to /v/<dataset>/ (API-1).
+func chunkRelKey(bucketID string, window int64, cat string) string {
+	return fmt.Sprintf("chunks/%s/%d/world/%s.json", bucketID, window, cat)
+}
+
+// bakeChunks writes chunk artifacts and returns the bucket table with
+// per-category window runs, plus the chunks named by goldenKeys for evaluation.
 func bakeChunks(w *writer, dataset string, entities []*model.Entity, childCount map[string]int, goldenKeys map[string]bool) ([]model.Bucket, map[string]chunkFile, error) {
 	type cell struct {
 		bucket int
@@ -193,57 +200,103 @@ func bakeChunks(w *writer, dataset string, entities []*model.Entity, childCount 
 		}
 	}
 
-	windowSets := make([]map[string]map[int64]bool, len(model.Buckets))
-	for i := range windowSets {
-		windowSets[i] = map[string]map[int64]bool{}
+	type group struct {
+		bucket int
+		cat    string
 	}
-
-	keys := make([]cell, 0, len(cells))
+	windowsOf := map[group][]int64{}
 	for c := range cells {
-		keys = append(keys, c)
+		g := group{c.bucket, c.cat}
+		windowsOf[g] = append(windowsOf[g], c.window)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		a, b := keys[i], keys[j]
-		if a.bucket != b.bucket {
-			return a.bucket < b.bucket
+	groups := make([]group, 0, len(windowsOf))
+	for g := range windowsOf {
+		groups = append(groups, g)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].bucket != groups[j].bucket {
+			return groups[i].bucket < groups[j].bucket
 		}
-		if a.window != b.window {
-			return a.window < b.window
-		}
-		return a.cat < b.cat
+		return groups[i].cat < groups[j].cat
 	})
 
+	runs := make([]map[string][]model.WindowRun, len(model.Buckets))
+	for i := range runs {
+		runs[i] = map[string][]model.WindowRun{}
+	}
 	captured := map[string]chunkFile{}
-	for _, c := range keys {
-		items := rankCell(cells[c], c.cat == "all", childCount)
-		relKey := fmt.Sprintf("chunks/%s/%d/world/%s.json",
-			model.Buckets[c.bucket].ID, c.window, c.cat)
-		if err := w.putJSON(fmt.Sprintf("v/%s/%s", dataset, relKey), chunkFile{Items: items}); err != nil {
-			return nil, nil, err
+
+	for _, g := range groups {
+		ws := windowsOf[g]
+		sort.Slice(ws, func(i, j int) bool { return ws[i] < ws[j] })
+		bucketID := model.Buckets[g.bucket].ID
+
+		var anchorWindow, lastWindow int64
+		var anchorBody []byte
+
+		emit := func() error {
+			runs[g.bucket][g.cat] = append(runs[g.bucket][g.cat], model.WindowRun{anchorWindow, lastWindow})
+			return w.putBytes(fmt.Sprintf("v/%s/%s", dataset, chunkRelKey(bucketID, anchorWindow, g.cat)),
+				anchorBody, "application/json")
 		}
-		if goldenKeys[relKey] {
-			captured[relKey] = chunkFile{Items: items}
+
+		for _, win := range ws {
+			items := rankCell(cells[cell{g.bucket, win, g.cat}], g.cat == "all", childCount)
+			file := chunkFile{Items: items}
+			body, err := json.Marshal(file)
+			if err != nil {
+				return nil, nil, fmt.Errorf("marshal chunk %s: %w", chunkRelKey(bucketID, win, g.cat), err)
+			}
+			if goldenKeys[chunkRelKey(bucketID, win, g.cat)] {
+				captured[chunkRelKey(bucketID, win, g.cat)] = file
+			}
+			if anchorBody != nil && win == lastWindow+1 && bytes.Equal(body, anchorBody) {
+				lastWindow = win
+				continue
+			}
+			if anchorBody != nil {
+				if err := emit(); err != nil {
+					return nil, nil, err
+				}
+			}
+			anchorWindow, lastWindow, anchorBody = win, win, body
 		}
-		if windowSets[c.bucket][c.cat] == nil {
-			windowSets[c.bucket][c.cat] = map[int64]bool{}
+		if anchorBody != nil {
+			if err := emit(); err != nil {
+				return nil, nil, err
+			}
 		}
-		windowSets[c.bucket][c.cat][c.window] = true
 	}
 
 	out := make([]model.Bucket, len(model.Buckets))
 	for i, b := range model.Buckets {
-		b.Windows = map[string][]int64{}
-		for cat, set := range windowSets[i] {
-			ws := make([]int64, 0, len(set))
-			for w := range set {
-				ws = append(ws, w)
-			}
-			slices.Sort(ws)
-			b.Windows[cat] = ws
-		}
+		b.Windows = runs[i]
 		out[i] = b
 	}
 	return out, captured, nil
+}
+
+func validateWindowRuns(buckets []model.Bucket) error {
+	for _, bucket := range buckets {
+		for cat, runs := range bucket.Windows {
+			prevEnd := int64(0)
+			for i, run := range runs {
+				start, end := run.Start(), run.End()
+				if start < -model.MaxSafeInteger || start > model.MaxSafeInteger ||
+					end < -model.MaxSafeInteger || end > model.MaxSafeInteger {
+					return fmt.Errorf("bucket %s category %s run %d is outside JSON safe integer bounds", bucket.ID, cat, i)
+				}
+				if end < start {
+					return fmt.Errorf("bucket %s category %s run %d ends before it starts", bucket.ID, cat, i)
+				}
+				if i > 0 && start <= prevEnd {
+					return fmt.Errorf("bucket %s category %s run %d overlaps or repeats a previous run", bucket.ID, cat, i)
+				}
+				prevEnd = end
+			}
+		}
+	}
+	return nil
 }
 
 // rankCell orders a cell's entities and applies the per-chunk cap and, for

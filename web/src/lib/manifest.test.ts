@@ -25,6 +25,10 @@ const manifest = {
   search_shards: [],
 };
 
+function stubManifest(body: unknown): void {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => body }));
+}
+
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -98,7 +102,57 @@ describe("manifest basemap descriptor", () => {
     ["dot-dot dataset", { ...manifest, dataset: ".." }, "manifest.dataset"],
     ["invalid dataset", { ...manifest, dataset: "../atlas" }, "manifest.dataset"],
   ])("rejects %s", async (_name, body, field) => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body))));
+    stubManifest(body);
     await expect(loadManifest()).rejects.toThrow(field as string);
+  });
+});
+
+describe("manifest window runs", () => {
+  it("accepts sorted inclusive runs and buckets with no windows", async () => {
+    stubManifest({
+      ...manifest,
+      buckets: [
+        { id: "T0", window_s: 0, windows: { all: [[0, 0]], war: [[0, 0]] } },
+        { id: "T10", window_s: 31_556_952, windows: { all: [[-31, -29], [-28, -28], [7, 7]] } },
+        { id: "T11", window_s: 2_629_746 },
+      ],
+    });
+
+    await expect(loadManifest()).resolves.toMatchObject({
+      buckets: [
+        { windows: { all: [[0, 0]], war: [[0, 0]] } },
+        { windows: { all: [[-31, -29], [-28, -28], [7, 7]] } },
+        { windows: undefined },
+      ],
+    });
+  });
+
+  it.each([
+    ["missing buckets", { ...manifest, buckets: undefined }, "manifest.buckets"],
+    ["non-array buckets", { ...manifest, buckets: {} }, "manifest.buckets"],
+    ["non-object bucket", { ...manifest, buckets: [null] }, "manifest.buckets[0]"],
+    ["old bare-window list", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [1, 2] } }] }, "manifest.buckets[0].windows.all[0]"],
+    ["non-object windows", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: [] }] }, "manifest.buckets[0].windows"],
+    ["non-array category", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: {} } }] }, "manifest.buckets[0].windows.all"],
+    ["one-bound run", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [[1]] } }] }, "manifest.buckets[0].windows.all[0]"],
+    ["three-bound run", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [[1, 2, 3]] } }] }, "manifest.buckets[0].windows.all[0]"],
+    ["string bound", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [["1", 1]] } }] }, "manifest.buckets[0].windows.all[0][0]"],
+    ["null bound", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [[null, 1]] } }] }, "manifest.buckets[0].windows.all[0][0]"],
+    ["decimal bound", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [[1.5, 2]] } }] }, "manifest.buckets[0].windows.all[0][0]"],
+    ["unsafe bound", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [[Number.MAX_SAFE_INTEGER + 1, Number.MAX_SAFE_INTEGER + 1]] } }] }, "manifest.buckets[0].windows.all[0][0]"],
+    ["inverted run", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [[2, 1]] } }] }, "manifest.buckets[0].windows.all[0]"],
+    ["overlapping run", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [[1, 3], [3, 4]] } }] }, "manifest.buckets[0].windows.all[1]"],
+    ["unsorted run", { ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [[4, 4], [2, 2]] } }] }, "manifest.buckets[0].windows.all[1]"],
+  ])("rejects %s", async (_name, body, field) => {
+    stubManifest(body);
+    await expect(loadManifest()).rejects.toThrow(field as string);
+  });
+
+  it("rejects sparse run arrays before they become undefined bounds", async () => {
+    const sparse = [1, 2] as unknown[];
+    delete sparse[0];
+    stubManifest({ ...manifest, buckets: [{ id: "T10", window_s: 1, windows: { all: [sparse] } }] });
+
+    await expect(loadManifest()).rejects.toThrow("manifest.buckets[0].windows.all[0]");
   });
 });

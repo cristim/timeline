@@ -8,6 +8,7 @@ import {
   layerKey,
   coveringTimestep,
   SECONDS_PER_YEAR,
+  windowsInRange,
 } from "./keyscheme";
 import type { Bucket } from "./manifest";
 import cases from "./keycases.json";
@@ -94,5 +95,46 @@ describe("bucketForSpan", () => {
     expect(pick(5e7 * SECONDS_PER_YEAR)).toBe("T3");
     expect(pick(5e9 * SECONDS_PER_YEAR)).toBe("T1"); // billion-year scale
     expect(pick(3e10 * SECONDS_PER_YEAR)).toBe("T0"); // whole-universe
+  });
+});
+
+describe("windowsInRange", () => {
+  it("resolves any overlapping run to that run's start key", () => {
+    const bucket: Bucket = {
+      id: "T10",
+      window_s: 1,
+      windows: { war: [[10, 12], [15, 15], [20, 22]] },
+    };
+
+    expect(windowsInRange(bucket, "war", 11, 11)).toEqual([10]);
+    expect(windowsInRange(bucket, "war", 12, 20)).toEqual([10, 15, 20]);
+    expect(windowsInRange(bucket, "war", 13, 14)).toEqual([]);
+  });
+
+  it("keeps adjacent runs distinct and returns each overlapped start once", () => {
+    const bucket: Bucket = {
+      id: "T10",
+      window_s: 1,
+      windows: { war: [[1, 1], [2, 4], [2, 4], [4, 6]] },
+    };
+
+    expect(windowsInRange(bucket, "war", 1, 2)).toEqual([1, 2]);
+    expect(windowsInRange(bucket, "war", 4, 4)).toEqual([2, 4]);
+  });
+
+  it("handles negative windows and missing categories", () => {
+    const bucket: Bucket = {
+      id: "T10",
+      window_s: 1,
+      windows: { all: [[-31, -29], [-10, -10]] },
+    };
+
+    expect(windowsInRange(bucket, "all", -30, -10)).toEqual([-31, -10]);
+    expect(windowsInRange(bucket, "war", -30, -10)).toEqual([]);
+  });
+
+  it("uses run coverage for all-time buckets instead of assuming T0 exists", () => {
+    expect(windowsInRange({ id: "T0", window_s: 0, windows: { all: [[0, 0]] } }, "all", -1e20, 1e20)).toEqual([0]);
+    expect(windowsInRange({ id: "T0", window_s: 0, windows: { all: [[1, 1]] } }, "all", -1e20, 1e20)).toEqual([]);
   });
 });

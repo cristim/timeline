@@ -81,8 +81,8 @@ export function coveringTimestep<T extends CoverageWindow>(steps: T[], year: num
 }
 
 /**
- * The non-empty windows of `bucket` for one category overlapping [t0,t1]
- * (manifest-driven, API-1): only listed (window, category) pairs were baked.
+ * The chunk artifact windows of `bucket` for one category overlapping [t0,t1].
+ * A run resolves to its start window, which is the only baked artifact key.
  */
 export function windowsInRange(
   bucket: Bucket,
@@ -90,11 +90,13 @@ export function windowsInRange(
   t0: number,
   t1: number,
 ): number[] {
-  const windows = bucket.windows?.[category] ?? [];
-  if (bucket.window_s === 0) {
-    return windows.length ? [0] : [];
+  const runs = bucket.windows?.[category] ?? [];
+  const w0 = bucket.window_s === 0 ? 0 : windowIndex(bucket, t0);
+  const w1 = bucket.window_s === 0 ? 0 : windowIndex(bucket, t1);
+  const out: number[] = [];
+  for (const [start, end] of runs) {
+    if (end < w0 || start > w1) continue;
+    if (!out.includes(start)) out.push(start);
   }
-  const w0 = windowIndex(bucket, t0);
-  const w1 = windowIndex(bucket, t1);
-  return windows.filter((w) => w >= w0 && w <= w1);
+  return out;
 }
