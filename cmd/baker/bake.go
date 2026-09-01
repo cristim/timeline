@@ -55,11 +55,20 @@ func runBakeWithCompiler(ctx context.Context, compiler bake.LayerCompiler, basem
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	importanceFloorSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "importance-floor" {
+			importanceFloorSet = true
+		}
+	})
 	if (*seedDir == "") == (*modelDirFlag == "") {
 		return fmt.Errorf("exactly one of --seed <dir> and --model <dir> is required")
 	}
 	if *modelDirFlag != "" && (*withWarm || *warmFile != "") {
 		return fmt.Errorf("--model is mutually exclusive with --warm and --warm-file")
+	}
+	if importanceFloorSet && *modelDirFlag == "" {
+		return fmt.Errorf("--importance-floor only applies to --model")
 	}
 	if *importanceFloor < 0 || *importanceFloor > 1 {
 		return fmt.Errorf("--importance-floor %v is outside [0,1]", *importanceFloor)
@@ -275,7 +284,7 @@ func bakeFromModel(ctx context.Context, compiler bake.LayerCompiler, req bakeMod
 		sink = blob.BucketSink{Client: cli, Bucket: artifactsBucket()}
 	}
 
-	geo, err := ingest.LoadGeo(req.geoDir, promoted)
+	geo, err := ingest.LoadGeoForModel(req.geoDir, promoted)
 	if err != nil {
 		return err
 	}

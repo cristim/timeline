@@ -36,6 +36,14 @@
   proceeds is the fix, and it needs the duplicate-QID check to move to a
   cheaper structure at the same time.
 
+- **Warm-model publication reads each Parquet file into memory.**
+  `cmd/baker/bake.go` publishes the seed bake's normalized warm model by
+  calling `os.ReadFile` for each full Parquet output in `publishWarmModel`.
+  That is acceptable for today's seed-sized model but not for a full dump-scale
+  model if that publication path is reused. Stream object uploads from the
+  files instead of accumulating full file bodies before declaring dump-scale
+  warm-model publication proven.
+
 - **The curated Wikidata class table maps directly and does not walk the
   subclass tree.** An item whose only `P31` is an unlisted descendant of a
   listed class (a "naval battle" that is not `Q178561`) lands in the
@@ -60,11 +68,10 @@
 
 - **Curated geometry is pinned to seed entities, so a bulk bake gets no front
   lines.** `data/geo/fronts/` resolves each file against a seed id, which a
-  dump-derived dataset does not have, so `bake --model` has to point at a geo
-  directory without them (an absent `fronts/` is now a legitimate
-  configuration, matching the paleo layer). Reconciling upstream and curated
-  geometry against bulk entities is the same unsolved problem as the
-  unclickable fetched border shapes below.
+  dump-derived dataset does not have, so only the explicit `bake --model` geo
+  path may omit that layer. Seed bakes still require `fronts/`. Reconciling
+  upstream and curated geometry against bulk entities is the same unsolved
+  problem as the unclickable fetched border shapes below.
 
 - **Artifact count grows ~27x entity count at fine buckets.** The 10.5k-entity
   warm bake produces ~280k chunk objects (window duplication x categories,

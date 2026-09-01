@@ -316,17 +316,19 @@ func TestLoadGeoMissingDirs(t *testing.T) {
 	if _, err := LoadGeo(filepath.Join(t.TempDir(), "nope"), nil); err == nil {
 		t.Error("a missing geo dir must fail the bake")
 	}
-	// Front lines are curated against specific entities, so a dataset without
-	// those entities legitimately has no fronts/ at all. Absent is a
-	// configuration; present but empty or broken is still fatal.
+	// Seed bakes require curated front lines. Dump-derived model bakes may omit
+	// them because the curated files point at seed-only ids.
 	half := t.TempDir()
 	write(t, half, "borders/100.geojson", `{"type":"FeatureCollection",
 	  "properties":{"year":100,"t_from":90,"t_to":110,"label":"L","source":"S"},
 	  "features":[{"type":"Feature","properties":{"name":"N","representation":"estimated"},
 	  "geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}]}`)
-	set, err := LoadGeo(half, testEntities())
+	if _, err := LoadGeo(half, testEntities()); err == nil {
+		t.Fatalf("seed geo without fronts/ must fail")
+	}
+	set, err := LoadGeoForModel(half, testEntities())
 	if err != nil {
-		t.Fatalf("a geo dir with no fronts/ must still bake: %v", err)
+		t.Fatalf("a model geo dir with no fronts/ must still bake: %v", err)
 	}
 	if len(set.Fronts) != 0 {
 		t.Fatalf("fronts = %#v, want none", set.Fronts)
@@ -342,6 +344,9 @@ func TestLoadGeoMissingDirs(t *testing.T) {
 	}
 	if _, err := LoadGeo(empty, testEntities()); err == nil {
 		t.Error("a present but empty fronts/ must fail the bake")
+	}
+	if _, err := LoadGeoForModel(empty, testEntities()); err != nil {
+		t.Fatalf("a model geo dir with empty fronts/ must still bake: %v", err)
 	}
 }
 

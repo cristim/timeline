@@ -152,7 +152,7 @@ func ConvertWikidataTime(fact wikidataDumpTimeFact) (WikidataTimeWindow, error) 
 		return WikidataTimeWindow{}, fmt.Errorf("unknown calendar model %q", fact.CalendarModel)
 	}
 
-	ts, err := parseWikidataTimestamp(fact.Time, fact.Precision)
+	ts, err := parseWikidataTimestamp(fact.Time, fact.Precision, calendar)
 	if err != nil {
 		return WikidataTimeWindow{}, err
 	}
@@ -230,7 +230,7 @@ func precisionWindow(calendar string, ts wikidataTimestamp, precision int) (floa
 // parseWikidataTimestamp reads the "+YYYY-MM-DDThh:mm:ssZ" form. Wikibase pads
 // month and day with zeros for values coarser than a month; a zero component at
 // a precision that needs it is a malformed value.
-func parseWikidataTimestamp(value string, precision int) (wikidataTimestamp, error) {
+func parseWikidataTimestamp(value string, precision int, calendar string) (wikidataTimestamp, error) {
 	if value == "" {
 		return wikidataTimestamp{}, fmt.Errorf("empty time value")
 	}
@@ -301,7 +301,7 @@ func parseWikidataTimestamp(value string, precision int) (wikidataTimestamp, err
 	if ts.month < 1 || ts.month > 12 {
 		return wikidataTimestamp{}, fmt.Errorf("time %q has month %d at precision %d", value, ts.month, precision)
 	}
-	if ts.day < 1 || ts.day > daysInMonth(ts.year, ts.month) {
+	if ts.day < 1 || ts.day > daysInMonth(calendar, ts.year, ts.month) {
 		return wikidataTimestamp{}, fmt.Errorf("time %q has day %d at precision %d", value, ts.day, precision)
 	}
 	if ts.hour > 23 || ts.minute > 59 || ts.second > 59 {
@@ -310,23 +310,26 @@ func parseWikidataTimestamp(value string, precision int) (wikidataTimestamp, err
 	return ts, nil
 }
 
-// daysInMonth uses the Julian leap rule, which is the more permissive of the
-// two, as an upper bound. It only rejects days that exist in neither calendar;
-// a Gregorian 1900-02-29 slips through and resolves to 1 March through the
-// JDN conversion, which is not worth a second calendar-specific branch.
-func daysInMonth(year int64, month int) int {
+func daysInMonth(calendar string, year int64, month int) int {
 	switch month {
 	case 1, 3, 5, 7, 8, 10, 12:
 		return 31
 	case 4, 6, 9, 11:
 		return 30
 	case 2:
-		if year%4 == 0 {
+		if isLeapYear(calendar, year) {
 			return 29
 		}
 		return 28
 	}
 	return 0
+}
+
+func isLeapYear(calendar string, year int64) bool {
+	if calendar == calendarModelJulian {
+		return year%4 == 0
+	}
+	return year%4 == 0 && (year%100 != 0 || year%400 == 0)
 }
 
 func calendarJDN(calendar string, year int64, month, day int) int64 {

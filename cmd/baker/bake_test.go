@@ -798,8 +798,17 @@ func testGeoDir(t *testing.T) string {
 
 func emptyGeoDir(t *testing.T) string {
 	t.Helper()
+	dir := geoDirWithoutFronts(t)
+	if err := os.MkdirAll(filepath.Join(dir, "fronts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func geoDirWithoutFronts(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
-	for _, name := range []string{"borders", "fronts", "basemap"} {
+	for _, name := range []string{"borders", "basemap"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
 			t.Fatal(err)
 		}

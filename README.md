@@ -124,7 +124,8 @@ go run ./cmd/baker ingest-wikidata-dump \
   --dump /path/to/latest-all.json.bz2 --out ./model --publish
 
 # Bake the HOT tier from that model (SRC-5).
-go run ./cmd/baker bake --model ./model --importance-floor 0.38 --out ./site
+go run ./cmd/baker bake \
+  --model ./model --importance-floor 0.38 --out ./site --goldens ""
 ```
 
 ### What the census reports

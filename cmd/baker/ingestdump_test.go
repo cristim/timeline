@@ -213,6 +213,26 @@ func TestBakeFromModelProducesValidArtifacts(t *testing.T) {
 	}
 }
 
+func TestBakeFromModelAllowsMissingFronts(t *testing.T) {
+	modelDir, _, _ := ingestCensusFixture(t)
+	version, err := loadDumpModelVersion(modelDir)
+	if err != nil {
+		t.Fatalf("loadDumpModelVersion: %v", err)
+	}
+	outDir := t.TempDir()
+	if err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
+		"--model", modelDir,
+		"--geo", geoDirWithoutFronts(t),
+		"--out", outDir,
+		"--goldens", writeGoldensFile(t, version),
+	}); err != nil {
+		t.Fatalf("runBakeWithCompiler: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outDir, "manifest.json")); err != nil {
+		t.Fatalf("manifest was not written: %v", err)
+	}
+}
+
 func TestBakeFromModelPromotesOnlyAboveTheImportanceFloor(t *testing.T) {
 	modelDir, _, _ := ingestCensusFixture(t)
 	version, err := loadDumpModelVersion(modelDir)
@@ -312,6 +332,7 @@ func TestBakeRejectsConflictingSourceFlags(t *testing.T) {
 		{name: "neither", args: []string{"--out", t.TempDir()}, want: "exactly one of --seed"},
 		{name: "both", args: []string{"--seed", "s", "--model", "m"}, want: "exactly one of --seed"},
 		{name: "model with warm", args: []string{"--model", "m", "--warm"}, want: "--model is mutually exclusive"},
+		{name: "floor with seed", args: []string{"--seed", "s", "--importance-floor", "0"}, want: "--importance-floor only applies to --model"},
 		{name: "floor out of range", args: []string{"--model", "m", "--importance-floor", "2"}, want: "outside [0,1]"},
 	}
 	for _, tc := range cases {

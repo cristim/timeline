@@ -69,6 +69,16 @@ type geometry struct {
 // LoadGeo reads data/geo and resolves every entity reference against the
 // already-ingested entity table.
 func LoadGeo(dir string, entities []*model.Entity) (*model.GeoSet, error) {
+	return loadGeo(dir, entities, false)
+}
+
+// LoadGeoForModel reads data/geo for a dump-derived model bake. Curated front
+// lines point at seed-only ids, so model bakes may omit the layer.
+func LoadGeoForModel(dir string, entities []*model.Entity) (*model.GeoSet, error) {
+	return loadGeo(dir, entities, true)
+}
+
+func loadGeo(dir string, entities []*model.Entity, allowMissingFronts bool) (*model.GeoSet, error) {
 	bySeedID := map[string]*model.Entity{}
 	for _, e := range entities {
 		bySeedID[e.SeedID] = e
@@ -111,16 +121,27 @@ func LoadGeo(dir string, entities []*model.Entity) (*model.GeoSet, error) {
 				last.TTo, set.Borders[0].TFrom)
 		}
 	}
-	// Front lines are curated against specific entities, so a dataset that does
-	// not contain those entities (a bulk Wikidata bake) legitimately has no
-	// fronts directory. Same rule as paleo above: absent is a configuration,
-	// present but broken is still fatal.
 	frontsDir := filepath.Join(dir, "fronts")
 	if _, statErr := os.Stat(frontsDir); statErr == nil {
+		if allowMissingFronts {
+			paths, err := filepath.Glob(filepath.Join(frontsDir, "*.geojson"))
+			if err != nil {
+				return nil, err
+			}
+			if len(paths) == 0 {
+				return set, nil
+			}
+		}
 		if err := loadFronts(frontsDir, bySeedID, set); err != nil {
 			return nil, err
 		}
-	} else if !os.IsNotExist(statErr) {
+	} else if os.IsNotExist(statErr) {
+		if !allowMissingFronts {
+			if _, err := geojsonPaths(frontsDir); err != nil {
+				return nil, err
+			}
+		}
+	} else {
 		return nil, statErr
 	}
 	return set, nil

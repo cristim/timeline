@@ -91,6 +91,14 @@ func TestConvertWikidataTimeKnownConversions(t *testing.T) {
 			wantYear:      1917, // the Julian date's own year, not the Gregorian one
 		},
 		{
+			name:          "Julian 1900 leap day is valid",
+			fact:          julianFact("+1900-02-29T00:00:00Z", 11),
+			wantPrecision: "day",
+			wantT0:        float64(julianJDN(1900, 2, 29)-unixEpochJDN) * 86400,
+			wantT1:        float64(julianJDN(1900, 3, 1)-unixEpochJDN) * 86400,
+			wantYear:      1900,
+		},
+		{
 			name:          "hour precision floors below the hour",
 			fact:          gregorianFact("+1969-07-20T20:17:40Z", 12),
 			wantPrecision: "hour",
@@ -235,6 +243,7 @@ func TestConvertWikidataTimeFailsLoudly(t *testing.T) {
 		{"truncated", gregorianFact("+1969-07", 11), "malformed time"},
 		{"month 13", gregorianFact("+1969-13-20T00:00:00Z", 11), "has month 13"},
 		{"day 32", gregorianFact("+1969-07-32T00:00:00Z", 11), "has day 32"},
+		{"Gregorian 1900 leap day", gregorianFact("+1900-02-29T00:00:00Z", 11), "has day 29"},
 		{"zero day at day precision", gregorianFact("+1969-07-00T00:00:00Z", 11), "has day 0"},
 		{"zero month at month precision", gregorianFact("+1969-00-00T00:00:00Z", 10), "has month 0"},
 		{"hour 24", gregorianFact("+1969-07-20T24:00:00Z", 12), "out-of-range clock field"},
