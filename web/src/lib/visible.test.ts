@@ -6,8 +6,10 @@ import {
   mapVisible,
   nearCursor,
   pointLike,
+  pastGutterItems,
   futureGutterItems,
   startsOrEndsWithin,
+  shownCountLabel,
   type Visibility,
 } from "./visible";
 import type { ChunkItem } from "./data";
@@ -28,7 +30,7 @@ function item(slug: string, t0: number, t1: number, importance = 0.5): ChunkItem
 
 /** A 0..1000 view. Cursor centred unless overridden; 10% band = ±100. */
 function view(over: Partial<Visibility> = {}): Visibility {
-  return { t0: 0, t1: 1000, cursor: 500, selected: null, ...over };
+  return { t0: 0, t1: 1000, cursor: 500, selected: null, compare: [], ...over };
 }
 
 describe("startsOrEndsWithin", () => {
@@ -153,6 +155,10 @@ describe("mapVisible", () => {
     // even when it is nowhere near the view at all
     expect(mapVisible(item("chosen", 9e9, 9e9), view({ selected: "chosen" }))).toBe(true);
   });
+  it("never hides either comparison subject", () => {
+    const items = [item("a", 9e9, 9e9), item("b", -9e9, -9e9)];
+    expect(mapItems(items, view({ compare: ["a", "b"] })).map((i) => i.slug)).toEqual(["a", "b"]);
+  });
 });
 
 describe("whollyInPeriphery", () => {
@@ -195,6 +201,17 @@ describe("laneItems", () => {
     const out = laneItems(items, view({ selected: "humble" }), 100);
     expect(out).toHaveLength(100);
     expect(out[0].slug).toBe("humble");
+  });
+
+  it("keeps both comparison subjects when the lane cap is full", () => {
+    const items = Array.from({ length: 20 }, (_, i) => item(`e${i}`, 480, 520, 1));
+    items.push(item("a", 400, 600, 0), item("b", 400, 600, 0));
+    expect(laneItems(items, view({ compare: ["a", "b"] }), 2).map((i) => i.slug)).toEqual(["a", "b"]);
+  });
+
+  it("does not consume lanes for comparison subjects wholly outside the range", () => {
+    const items = [item("a", -9e9, -9e9), item("b", 9e9, 9e9)];
+    expect(laneItems(items, view({ compare: ["a", "b"] }))).toEqual([]);
   });
 
   it("drops off-cursor moments but keeps the intervals around them", () => {
@@ -249,6 +266,12 @@ describe("mapItems", () => {
   });
 });
 
+describe("shownCountLabel", () => {
+  it("keeps a viewport chunk error visible even when pinned rows exist", () => {
+    expect(shownCountLabel(false, "chunk failed", 2)).toBe("data failed to load");
+  });
+});
+
 describe("futureGutterItems", () => {
   it("does not leak distant future events into the timeline", () => {
     const items = [item("constantinople", 5000, 5000)];
@@ -285,5 +308,17 @@ describe("futureGutterItems", () => {
     const out = futureGutterItems(items, view({ cursor: 950, selected: "chosen" }), 8);
     expect(out).toHaveLength(8);
     expect(out[0].slug).toBe("chosen");
+  });
+
+  it("shows only the future comparison role in the right gutter", () => {
+    const items = [item("a", -9e9, -9e9), item("b", 9e9, 9e9)];
+    expect(futureGutterItems(items, view({ compare: ["a", "b"] })).map((i) => i.slug)).toEqual(["b"]);
+  });
+});
+
+describe("pastGutterItems", () => {
+  it("shows only the past comparison role in the left gutter", () => {
+    const items = [item("a", -9e9, -9e9), item("b", 9e9, 9e9), item("ordinary", -8e9, -8e9)];
+    expect(pastGutterItems(items, view({ compare: ["a", "b"] })).map((i) => i.slug)).toEqual(["a"]);
   });
 });

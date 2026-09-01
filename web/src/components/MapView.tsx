@@ -14,7 +14,7 @@ import type { FeatureCollection, Point } from "geojson";
 import type { AreaLayerSlice, ChunkItem } from "../lib/data";
 import type { FrontSample } from "../lib/fronts";
 import type { MapMode } from "../lib/mapmode";
-import { categoryColor, FALLBACK_COLOR } from "../lib/colors";
+import { COMPARE_A_COLOR, COMPARE_B_COLOR, clickedEntitySlug, mapPointFeatures } from "../lib/pins";
 import { devHook } from "../lib/devhook";
 import { isAbort, queryAreaFeature, SlotPair, type AreaLayerStyle } from "../lib/areaLayers";
 import {
@@ -111,6 +111,7 @@ interface Props {
   basemap: BasemapDescriptor;
   items: ChunkItem[];
   selected: string | null;
+  compare: readonly string[];
   /** What kind of world to draw at the cursor (lib/mapmode.ts). */
   mode: MapMode;
   /** Political extents for the cursor time, or null outside recorded history. */
@@ -158,24 +159,6 @@ export function captureGlobeSprite(): HTMLCanvasElement | null {
   return out;
 }
 
-function toGeoJSON(items: ChunkItem[], selected: string | null): FeatureCollection {
-  return {
-    type: "FeatureCollection",
-    features: items
-      .filter((i) => i.point)
-      .map((i) => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: i.point! },
-        properties: {
-          slug: i.slug,
-          name: i.name,
-          color: i.categories.map((c) => categoryColor[c]).find(Boolean) ?? FALLBACK_COLOR,
-          selected: i.slug === selected ? 1 : 0,
-        },
-      })),
-  };
-}
-
 /** Paints the globe's surface and the basemap for one mode. */
 function applyMode(map: maplibregl.Map, mode: MapMode) {
   const modern = mode === "modern";
@@ -215,6 +198,7 @@ export function MapView({
   basemap,
   items,
   selected,
+  compare,
   mode,
   era,
   paleo,
@@ -341,6 +325,17 @@ export function MapView({
       }
       map.addSource(SOURCE, { type: "geojson", data: dataRef.current });
       map.addLayer({
+        id: "wk-compare-halo",
+        type: "circle",
+        source: SOURCE,
+        filter: ["!=", ["get", "compare"], ""],
+        paint: {
+          "circle-radius": 12,
+          "circle-color": ["case", ["==", ["get", "compare"], "compare-a"], COMPARE_A_COLOR, COMPARE_B_COLOR],
+          "circle-opacity": 0.35,
+        },
+      });
+      map.addLayer({
         id: "wk-halo",
         type: "circle",
         source: SOURCE,
@@ -356,14 +351,19 @@ export function MapView({
         type: "circle",
         source: SOURCE,
         paint: {
-          "circle-radius": ["case", ["==", ["get", "selected"], 1], 7, 5],
-          "circle-color": ["case", ["==", ["get", "selected"], 1], "#e8b45a", ["get", "color"]],
+          "circle-radius": ["case", ["any", ["==", ["get", "selected"], 1], ["!=", ["get", "compare"], ""]], 7, 5],
+          "circle-color": ["case",
+            ["==", ["get", "compare"], "compare-a"], COMPARE_A_COLOR,
+            ["==", ["get", "compare"], "compare-b"], COMPARE_B_COLOR,
+            ["==", ["get", "selected"], 1], "#e8b45a",
+            ["get", "color"],
+          ],
           "circle-stroke-width": 1.4,
           "circle-stroke-color": "#e8e4d8",
         },
       });
       map.on("click", "wk-dots", (e: maplibregl.MapLayerMouseEvent) => {
-        const slug = e.features?.[0]?.properties?.slug as string | undefined;
+        const slug = clickedEntitySlug(e.features ?? []);
         if (slug) onSelectRef.current(slug);
       });
       map.on("click", (e: maplibregl.MapMouseEvent) => {
@@ -458,12 +458,12 @@ export function MapView({
   }, [paleo]);
 
   useEffect(() => {
-    dataRef.current = toGeoJSON(items, selected);
+    dataRef.current = mapPointFeatures(items, selected, compare);
     const map = mapRef.current;
     if (map && readyRef.current) {
       (map.getSource(SOURCE) as maplibregl.GeoJSONSource | undefined)?.setData(dataRef.current);
     }
-  }, [items, selected]);
+  }, [items, selected, compare]);
 
   useEffect(() => {
     frontRef.current = frontFC(front);

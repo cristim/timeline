@@ -20,13 +20,14 @@ import {
   type ViewMode,
   type ViewState,
 } from "./lib/state";
-import { laneItems, mapItems } from "./lib/visible";
+import { laneItems, mapItems, shownCountLabel } from "./lib/visible";
 import { frontAt, frontBounds } from "./lib/fronts";
 import { formatTime } from "./lib/timefmt";
 import { secondsToYear } from "./lib/keyscheme";
 import { mapMode, voidChipLabel } from "./lib/mapmode";
 import { categoryColor } from "./lib/colors";
 import type { ChunkItem, SearchEntry } from "./lib/data";
+import { withPinnedEntities } from "./lib/pins";
 
 // Timeline shell sizing: draggable between MIN and MAX; dragging below the
 // collapse threshold folds it down to just the status bar.
@@ -149,6 +150,10 @@ export function App() {
   const selectedDoc = useEntity(manifest, view.selected);
   const compareA = useEntityState(manifest, view.mode === "compare" ? (view.compare[0] ?? null) : null);
   const compareB = useEntityState(manifest, view.mode === "compare" ? (view.compare[1] ?? null) : null);
+  const comparePins = useMemo(
+    () => [compareA.doc?.slug ?? "", compareB.doc?.slug ?? ""],
+    [compareA.doc?.slug, compareB.doc?.slug],
+  );
   // The cursor is the moment the map is showing (FE-3/FE-5), and the map
   // follows it wherever curated data exists (DEV-6 M4).
   const tc = cursorTime(view);
@@ -225,29 +230,13 @@ export function App() {
 
   // One visibility judgement, shared by the map, the lanes and the count.
   const visibility = useMemo(
-    () => ({ t0: view.t0, t1: view.t1, cursor: tc, selected: view.selected }),
-    [view.t0, view.t1, tc, view.selected],
+    () => ({ t0: view.t0, t1: view.t1, cursor: tc, selected: view.selected, compare: comparePins }),
+    [view.t0, view.t1, tc, view.selected, comparePins],
   );
-  const displayItems = useMemo<ChunkItem[]>(() => {
-    if (!selectedDoc || items.some((i) => i.slug === selectedDoc.slug)) return items;
-    return [
-      ...items,
-      {
-        slug: selectedDoc.slug,
-        type: selectedDoc.type,
-        name: selectedDoc.name,
-        t0: selectedDoc.temporal.t0,
-        t1: selectedDoc.temporal.t1,
-        precision: selectedDoc.temporal.precision,
-        status: selectedDoc.temporal.status,
-        point: selectedDoc.point,
-        categories: selectedDoc.categories,
-        importance: selectedDoc.importance,
-        media_thumb: selectedDoc.media_thumb,
-        child_count: selectedDoc.children?.length,
-      },
-    ];
-  }, [items, selectedDoc]);
+  const displayItems = useMemo<ChunkItem[]>(
+    () => withPinnedEntities(items, [selectedDoc, compareA.doc, compareB.doc]),
+    [items, selectedDoc, compareA.doc, compareB.doc],
+  );
   const mapVisible = useMemo(() => mapItems(displayItems, visibility), [displayItems, visibility]);
   // The status-bar count matches what the timeline lanes actually show
   // (top-100 after declutter), not the raw chunk union.
@@ -301,6 +290,7 @@ export function App() {
             basemap={manifest.basemap}
             items={mapVisible}
             selected={view.selected}
+            compare={comparePins}
             mode={mode}
             era={era}
             paleo={paleo}
@@ -364,6 +354,7 @@ export function App() {
             t1={view.t1}
             items={displayItems}
             selected={view.selected}
+            compare={comparePins}
             tc={view.tc}
             onRange={setRange}
             onSelect={setSelected}
@@ -395,7 +386,7 @@ export function App() {
             )}
           </span>
           <span className={`count ${chunkError ? "count-error" : ""}`} title={chunkError ?? undefined}>
-            {loading ? "…" : chunkError ? "data failed to load" : `${laneCount} shown`}
+            {shownCountLabel(loading, chunkError, laneCount)}
           </span>
           <label className="imp">
             importance ≥ {view.minImportance.toFixed(2)}

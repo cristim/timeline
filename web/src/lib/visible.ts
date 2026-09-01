@@ -14,6 +14,11 @@ export const CURSOR_NEAR = 0.1;
 /** Intervals shorter than this fraction of the view are treated as moments. */
 export const MIN_INTERVAL_FRACTION = 0.01;
 
+export function shownCountLabel(loading: boolean, error: string | null, count: number): string {
+  if (loading) return "…";
+  return error ? "data failed to load" : `${count} shown`;
+}
+
 /** The view and cursor an item's visibility is judged against. */
 export interface Visibility {
   t0: number;
@@ -21,6 +26,18 @@ export interface Visibility {
   /** The moment the map is showing (state.cursorTime). */
   cursor: number;
   selected: string | null;
+  compare: readonly string[];
+}
+
+function pinned(item: ChunkItem, v: Visibility): boolean {
+  return item.slug === v.selected || v.compare.includes(item.slug);
+}
+
+function pinRank(item: ChunkItem, v: Visibility): number {
+  if (item.slug === v.selected) return 3;
+  if (item.slug === v.compare[0]) return 2;
+  if (item.slug === v.compare[1]) return 1;
+  return 0;
 }
 
 export function startsOrEndsWithin(item: ChunkItem, t0: number, t1: number): boolean {
@@ -57,7 +74,7 @@ export function nearCursor(item: ChunkItem, v: Visibility): boolean {
 
 /** Map items cover the cursor, or start/end in view and pass the point gate. */
 export function mapVisible(item: ChunkItem, v: Visibility): boolean {
-  if (item.slug === v.selected) return true;
+  if (pinned(item, v)) return true;
   if (coversCursor(item, v)) return true;
   if (!startsOrEndsWithin(item, v.t0, v.t1)) return false;
   if (pointLike(item, v.t1 - v.t0)) return nearCursor(item, v);
@@ -66,10 +83,18 @@ export function mapVisible(item: ChunkItem, v: Visibility): boolean {
 
 /** Lane items start/end in view; point-like items use the cursor gate. */
 export function laneVisible(item: ChunkItem, v: Visibility): boolean {
-  if (item.slug === v.selected) return true;
+  if (pinned(item, v)) return item.t1 >= v.t0 && item.t0 <= v.t1;
   if (!startsOrEndsWithin(item, v.t0, v.t1)) return false;
   if (pointLike(item, v.t1 - v.t0)) return nearCursor(item, v);
   return !whollyInPeriphery(item, v.t0, v.t1);
+}
+
+/** Pinned subjects entirely before the range, shown in the left gutter. */
+export function pastGutterItems(items: ChunkItem[], v: Visibility, cap: number = 12): ChunkItem[] {
+  return items
+    .filter((item) => item.t1 < v.t0 && pinned(item, v))
+    .sort((a, b) => pinRank(b, v) - pinRank(a, v))
+    .slice(0, cap);
 }
 
 /** Markers the map may draw. No cap: the map declutters by geography, not rows. */
@@ -87,7 +112,7 @@ export function futureGutterItems(
   for (const item of items) {
     if (item.t0 <= v.t1) continue;
     if (
-      item.slug !== v.selected &&
+      !pinned(item, v) &&
       pointLike(item, v.t1 - v.t0) &&
       !nearCursor(item, v)
     ) {
@@ -96,13 +121,13 @@ export function futureGutterItems(
     out.push(item);
   }
   return out
-    .sort((a, b) => Number(b.slug === v.selected) - Number(a.slug === v.selected))
+    .sort((a, b) => pinRank(b, v) - pinRank(a, v))
     .slice(0, cap);
 }
 
 /**
  * Top `cap` eligible items, importance-ordered (ties by slug for stability).
- * The selection sorts first so the cap can never drop it.
+ * The selection and comparison subjects sort first so the cap cannot drop them.
  */
 export function laneItems(
   items: ChunkItem[],
@@ -113,7 +138,7 @@ export function laneItems(
     .filter((i) => laneVisible(i, v))
     .sort(
       (a, b) =>
-        Number(b.slug === v.selected) - Number(a.slug === v.selected) ||
+        pinRank(b, v) - pinRank(a, v) ||
         b.importance - a.importance ||
         (a.slug < b.slug ? -1 : 1),
     )

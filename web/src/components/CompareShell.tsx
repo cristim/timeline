@@ -2,12 +2,12 @@ import type { EntityDoc } from "../lib/data";
 import {
   alignProperties,
   compareBars,
-  ComparisonArtifactError,
   temporalOverlap,
   verdict,
   type AlignedProperty,
   type PropertySide,
 } from "../lib/compare";
+import { validateEntityDoc } from "../lib/data";
 import { markerStyle } from "../lib/colors";
 import type { EntityState } from "../lib/hooks";
 import type { Manifest } from "../lib/manifest";
@@ -21,15 +21,6 @@ interface ViewProps {
 }
 
 const VALUE_TYPE_ORDER = ["measured", "estimated", "reconstructed", "projected"] as const;
-// Mirrors the closed schemas in internal/model/entity.go and time.go.
-const TEMPORAL_PRECISIONS = new Set([
-  "billion_year", "million_year", "millennium", "century", "decade", "year",
-  "month", "day", "hour", "minute", "second",
-]);
-const TEMPORAL_STATUSES = new Set([
-  "observed", "documented", "estimated", "projected", "model_dependent",
-  "speculative", "legendary", "disputed",
-]);
 
 export function CompareView({ subjects, manifest, states }: ViewProps) {
   return <CompareContent subjects={subjects} propertyDefs={manifest.property_def} states={states} />;
@@ -157,19 +148,7 @@ function pairContent(
 }
 
 function subjectName(doc: EntityDoc, expectedSlug: string, side: string): string {
-  if (doc.slug !== expectedSlug) {
-    throw new ComparisonArtifactError(`${side} entity slug does not match ${JSON.stringify(expectedSlug)}`);
-  }
-  if (typeof doc.name !== "string" || !doc.name.trim()) {
-    throw new ComparisonArtifactError(`${side} entity name must be a non-empty string`);
-  }
-  if (typeof doc.temporal?.precision !== "string" || !TEMPORAL_PRECISIONS.has(doc.temporal.precision)) {
-    throw new ComparisonArtifactError(`${side} entity has invalid temporal precision`);
-  }
-  if (typeof doc.temporal.status !== "string" || !TEMPORAL_STATUSES.has(doc.temporal.status)) {
-    throw new ComparisonArtifactError(`${side} entity has invalid temporal status`);
-  }
-  return doc.name;
+  return validateEntityDoc(doc, expectedSlug, side).name;
 }
 
 function PropertyRow({ row, names }: { row: AlignedProperty; names: [string, string] }) {

@@ -5,10 +5,11 @@ import { useCallback, useEffect, useRef } from "react";
 import type { ChunkItem } from "../lib/data";
 import { colorFor, markerStyle } from "../lib/colors";
 import { formatTime, NOW_S } from "../lib/timefmt";
-import { futureGutterItems, laneItems } from "../lib/visible";
+import { futureGutterItems, laneItems, pastGutterItems } from "../lib/visible";
 import { SECONDS_PER_YEAR } from "../lib/keyscheme";
 import { cursorTime } from "../lib/state";
 import { devHook } from "../lib/devhook";
+import { comparePinColor, comparePinRole } from "../lib/pins";
 
 // Hard clamps: a linear axis cannot reach the 1e100-year tail; far-future
 // items pin to a right-edge gutter instead (the deep-time overview strip in
@@ -41,6 +42,7 @@ interface Props {
   t1: number;
   items: ChunkItem[];
   selected: string | null;
+  compare: readonly string[];
   /** Pinned cursor time; null follows the centre of the view. */
   tc: number | null;
   onRange: (t0: number, t1: number) => void;
@@ -56,7 +58,7 @@ interface HitBox {
   slug: string;
 }
 
-export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCursor }: Props) {
+export function Timeline({ t0, t1, items, selected, compare, tc, onRange, onSelect, onCursor }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const hits = useRef<HitBox[]>([]);
   const drag = useRef<{
@@ -133,7 +135,8 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
     hits.current = [];
     const rows: number[] = []; // per-row rightmost occupied x
     const maxRows = Math.floor((h - AXIS_H - 6) / ROW_H);
-    const visibility = { t0, t1, cursor, selected };
+    const visibility = { t0, t1, cursor, selected, compare };
+    const offLeft = pastGutterItems(items, visibility);
     const offRight = futureGutterItems(items, visibility);
     ctx.font = "11px system-ui, sans-serif";
 
@@ -164,29 +167,32 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
       const color = colorFor(item.categories);
       const style = markerStyle(item.status);
       const isSel = item.slug === selected;
+      const compareRole = comparePinRole(item.slug, compare);
+      const pinColor = comparePinColor(compareRole);
+      const highlight = pinColor ?? (isSel ? "#e8b45a" : null);
       ctx.globalAlpha = 1;
 
       if (isSpan) {
         const bh = 10;
         if (style === "fuzzy") ctx.setLineDash([3, 3]);
         ctx.fillStyle = color;
-        ctx.strokeStyle = isSel ? "#e8b45a" : color;
-        ctx.lineWidth = isSel ? 2 : 1.2;
+        ctx.strokeStyle = highlight ?? color;
+        ctx.lineWidth = highlight ? 2 : 1.2;
         if (style === "solid") {
-          ctx.globalAlpha = isSel ? 1 : 0.85;
+          ctx.globalAlpha = highlight ? 1 : 0.85;
           fillRoundRect(ctx, x0, y - bh / 2, x1 - x0, bh, 3);
         } else {
           strokeRoundRect(ctx, x0, y - bh / 2, x1 - x0, bh, 3);
         }
         ctx.setLineDash([]);
         ctx.globalAlpha = 1;
-        ctx.fillStyle = isSel ? "#e8b45a" : "#c8cdd8";
+        ctx.fillStyle = highlight ?? "#c8cdd8";
         ctx.fillText(label, Math.max(x0, 4) + 6, y + 4);
         hits.current.push({ x0: Math.max(x0, 0), y0: y - 10, x1: Math.min(x1, w) + 8 + labelW, y1: y + 10, slug: item.slug });
       } else {
-        const r = isSel ? 6 : 4.5;
-        ctx.strokeStyle = isSel ? "#e8b45a" : color;
-        ctx.fillStyle = isSel ? "#e8b45a" : color;
+        const r = highlight ? 6 : 4.5;
+        ctx.strokeStyle = highlight ?? color;
+        ctx.fillStyle = highlight ?? color;
         ctx.lineWidth = 1.6;
         ctx.beginPath();
         ctx.arc(x0, y, r, 0, Math.PI * 2);
@@ -197,7 +203,7 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
           ctx.stroke();
           ctx.setLineDash([]);
         }
-        ctx.fillStyle = isSel ? "#e8b45a" : "#c8cdd8";
+        ctx.fillStyle = highlight ?? "#c8cdd8";
         ctx.fillText(label, x0 + 9, y + 4);
         hits.current.push({ x0: x0 - 7, y0: y - 9, x1: x0 + 9 + labelW, y1: y + 9, slug: item.slug });
       }
@@ -209,25 +215,38 @@ export function Timeline({ t0, t1, items, selected, tc, onRange, onSelect, onCur
 
     devHook("__wkhits", hits.current);
 
+    if (offLeft.length) {
+      ctx.font = "10px ui-monospace, monospace";
+      offLeft.slice(0, 8).forEach((item, i) => {
+        const y = AXIS_H + 16 + i * 16;
+        const role = comparePinRole(item.slug, compare);
+        ctx.fillStyle = comparePinColor(role) ?? "#e8b45a";
+        ctx.globalAlpha = 0.8;
+        ctx.fillText(`⇤ ${item.name}`, 8, y);
+        hits.current.push({ x0: 4, y0: y - 10, x1: 198, y1: y + 4, slug: item.slug });
+      });
+    }
+
     // ── beyond-range future gutter ─────────────────────
     if (offRight.length) {
-      ctx.fillStyle = "#6fd4d0";
       ctx.font = "10px ui-monospace, monospace";
       offRight.slice(0, 8).forEach((item, i) => {
         const y = AXIS_H + 16 + i * 16;
+        const role = comparePinRole(item.slug, compare);
+        ctx.fillStyle = comparePinColor(role) ?? "#6fd4d0";
         ctx.globalAlpha = 0.8;
         ctx.fillText(`⇥ ${item.name}`, w - 190, y);
         hits.current.push({ x0: w - 195, y0: y - 10, x1: w - 8, y1: y + 4, slug: item.slug });
       });
-      ctx.globalAlpha = 1;
     }
+    ctx.globalAlpha = 1;
 
     // ── time cursor ─────────────────────────────────────
     // Drawn last so it stays legible over the lanes. A pinned cursor can be
     // panned off-screen; it pins to the edge with an arrow rather than
     // vanishing, because the map is still showing whatever time it holds.
     drawCursor(ctx, x(cursor), handleX(cursor, t0, t1, w), w, h, formatTime(cursor, span), tc !== null);
-  }, [t0, t1, items, selected, cursor, tc]);
+  }, [t0, t1, items, selected, compare, cursor, tc]);
 
   useEffect(() => {
     const raf = requestAnimationFrame(draw);

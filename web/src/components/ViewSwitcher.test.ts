@@ -43,7 +43,7 @@ function entity(slug: string, name: string, claims?: PropertyClaim[]): EntityDoc
       precision: "year",
       status: "documented",
     },
-    categories: [],
+    categories: ["earth"],
     importance: 1,
     properties: claims === undefined ? undefined : [{
       property: "mass",

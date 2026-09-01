@@ -6,6 +6,7 @@ import {
   fetchChunk,
   fetchEntity,
   fetchLayerIndex,
+  validateEntityDoc,
   type AreaLayerSlice,
   type ChunkItem,
   type EntityDoc,
@@ -203,7 +204,15 @@ export interface EntityState {
 }
 
 interface StoredEntityState extends EntityState {
-  dataset: string | null;
+  requestKey: string;
+}
+
+export function entityRequestKey(dataset: string | null, slug: string | null): string {
+  return JSON.stringify([dataset, slug]);
+}
+
+export function entityResultIsCurrent(currentKey: string, resultKey: string): boolean {
+  return currentKey === resultKey;
 }
 
 export function entityFailure(error: unknown): Pick<EntityState, "missing" | "error"> {
@@ -213,8 +222,11 @@ export function entityFailure(error: unknown): Pick<EntityState, "missing" | "er
 }
 
 export function useEntityState(manifest: Manifest | null, slug: string | null): EntityState {
+  const requestKey = entityRequestKey(manifest?.dataset ?? null, slug);
+  const currentRequest = useRef(requestKey);
+  currentRequest.current = requestKey;
   const [state, setState] = useState<StoredEntityState>({
-    dataset: null,
+    requestKey: entityRequestKey(null, null),
     slug: null,
     doc: null,
     loading: false,
@@ -223,34 +235,35 @@ export function useEntityState(manifest: Manifest | null, slug: string | null): 
   });
   useEffect(() => {
     if (!manifest || !slug) {
-      setState({ dataset: manifest?.dataset ?? null, slug, doc: null, loading: false, missing: false, error: null });
+      setState({ requestKey, slug, doc: null, loading: false, missing: false, error: null });
       return;
     }
     let live = true;
-    setState({ dataset: manifest.dataset, slug, doc: null, loading: true, missing: false, error: null });
+    setState({ requestKey, slug, doc: null, loading: true, missing: false, error: null });
     fetchEntity(manifest, slug).then(
       (doc) => {
-        if (!live) return;
-        if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
+        if (!live || !entityResultIsCurrent(currentRequest.current, requestKey)) return;
+        try {
+          const validated = validateEntityDoc(doc, slug, "requested");
+          setState({ requestKey, slug, doc: validated, loading: false, missing: false, error: null });
+        } catch (error) {
           const failure = entityFailure(
-            new Error(`entity ${JSON.stringify(slug)} must be an object`),
+            error,
           );
           setState({
-            dataset: manifest.dataset,
+            requestKey,
             slug,
             doc: null,
             loading: false,
             ...failure,
           });
-          return;
         }
-        setState({ dataset: manifest.dataset, slug, doc, loading: false, missing: false, error: null });
       },
       (e: unknown) => {
-        if (!live) return;
+        if (!live || !entityResultIsCurrent(currentRequest.current, requestKey)) return;
         const failure = entityFailure(e);
         setState({
-          dataset: manifest.dataset,
+          requestKey,
           slug,
           doc: null,
           loading: false,
@@ -261,8 +274,8 @@ export function useEntityState(manifest: Manifest | null, slug: string | null): 
     return () => {
       live = false;
     };
-  }, [manifest, slug]);
-  if (state.slug !== slug || state.dataset !== (manifest?.dataset ?? null)) {
+  }, [manifest, requestKey, slug]);
+  if (state.requestKey !== requestKey) {
     return { slug, doc: null, loading: !!manifest && !!slug, missing: false, error: null };
   }
   return state;

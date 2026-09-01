@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ArtifactHTTPError, areaLayerSlice, fetchEntity, fetchLayerIndex } from "./data";
+import {
+  ArtifactHTTPError,
+  ArtifactSchemaError,
+  areaLayerSlice,
+  fetchEntity,
+  fetchLayerIndex,
+  validateEntityDoc,
+  type EntityDoc,
+} from "./data";
 import type { Manifest } from "./manifest";
 
 const manifest: Manifest = {
@@ -87,4 +95,41 @@ describe("entity artifact boundary", () => {
     expect(error).toBeInstanceOf(ArtifactHTTPError);
     expect(error).toMatchObject({ status: 404, key: "entity/missing-subject.json" });
   });
+
+  it("returns a structurally valid entity with the requested slug", () => {
+    const entity = entityDoc("earth", "Earth");
+    expect(validateEntityDoc(entity, "earth", "requested")).toBe(entity);
+  });
+
+  it.each([
+    ["mismatched slug", (entity: EntityDoc) => { entity.slug = "mars"; }],
+    ["missing temporal", (entity: EntityDoc) => { delete (entity as Partial<EntityDoc>).temporal; }],
+    ["blank name", (entity: EntityDoc) => { entity.name = "  "; }],
+    ["unknown type", (entity: EntityDoc) => { entity.type = "spaceship"; }],
+    ["empty categories", (entity: EntityDoc) => { entity.categories = []; }],
+    ["unknown category", (entity: EntityDoc) => { entity.categories = ["sports"]; }],
+    ["padded category", (entity: EntityDoc) => { entity.categories = [" life"]; }],
+    ["malformed categories", (entity: EntityDoc) => { entity.categories = null as unknown as string[]; }],
+    ["invalid point", (entity: EntityDoc) => { entity.point = [181, 0]; }],
+    ["non-finite importance", (entity: EntityDoc) => { entity.importance = Number.NaN; }],
+    ["zero importance", (entity: EntityDoc) => { entity.importance = 0; }],
+    ["importance above one", (entity: EntityDoc) => { entity.importance = 1.01; }],
+  ])("rejects %s before callers consume it", (_name, mutate) => {
+    const entity = entityDoc("earth", "Earth");
+    mutate(entity);
+    expect(() => validateEntityDoc(entity, "earth", "requested"))
+      .toThrow(ArtifactSchemaError);
+  });
 });
+
+function entityDoc(slug: string, name: string): EntityDoc {
+  return {
+    slug,
+    type: "place",
+    name,
+    temporal: { t0: 0, t1: 1, precision: "year", status: "documented" },
+    categories: ["earth"],
+    importance: 1,
+    links: {},
+  };
+}
