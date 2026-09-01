@@ -1,8 +1,10 @@
 package ingest
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strings"
@@ -16,6 +18,147 @@ type recordingWikidataDumpSink struct {
 	marked   []string
 	entities []*model.Entity
 	rejects  []Reject
+}
+
+func TestValidateWikidataDumpImportReportRejectsLogicalEdits(t *testing.T) {
+	body, err := os.ReadFile("testdata/wikidata-dump-census.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := ImportWikidataDump(strings.NewReader(string(body)), WikidataDumpImportOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateWikidataDumpImportReport(imported.Report); err != nil {
+		t.Fatalf("valid report: %v", err)
+	}
+	cases := []struct {
+		name   string
+		mutate func(*WikidataDumpImportReport)
+	}{
+		{"provenance", func(r *WikidataDumpImportReport) { r.Source = "other" }},
+		{"hash", func(r *WikidataDumpImportReport) { r.InputSHA256 = "ABC" }},
+		{"compression", func(r *WikidataDumpImportReport) { r.Compression = "zip" }},
+		{"counters", func(r *WikidataDumpImportReport) { r.Items++ }},
+		{"rate", func(r *WikidataDumpImportReport) { r.RejectRate = .5 }},
+		{"sub-tolerance rate", func(r *WikidataDumpImportReport) { r.RejectRate = -5e-13 }},
+		{"gate", func(r *WikidataDumpImportReport) { r.MaxRejectRate = math.NaN() }},
+		{"type total", func(r *WikidataDumpImportReport) { r.AcceptedByType[0].Count++ }},
+		{"duplicate filter", func(r *WikidataDumpImportReport) { r.FilterReasons = append(r.FilterReasons, r.FilterReasons[0]) }},
+		{"reordered types", func(r *WikidataDumpImportReport) {
+			r.AcceptedByType[0], r.AcceptedByType[1] = r.AcceptedByType[1], r.AcceptedByType[0]
+		}},
+		{"duplicate rejects", func(r *WikidataDumpImportReport) {
+			r.Rejected = 2
+			r.Accepted -= 2
+			rate := coverageRatio(1, r.Accepted+r.Rejected)
+			r.RejectReasons = []WikidataDumpCountByReason{{Reason: "x", Count: 1, Rate: rate}, {Reason: "x", Count: 1, Rate: rate}}
+			r.RejectRate = coverageRatio(2, r.Accepted+r.Rejected)
+			r.MaxRejectRate = 1
+			r.AcceptedByType[0].Count -= 2
+		}},
+		{"zero reject", func(r *WikidataDumpImportReport) {
+			r.Rejected = 1
+			r.Accepted--
+			r.RejectReasons = []WikidataDumpCountByReason{{Reason: "x", Count: 0, Rate: 0}}
+			r.RejectRate = coverageRatio(1, r.Accepted+r.Rejected)
+			r.MaxRejectRate = 1
+			r.AcceptedByType[0].Count--
+		}},
+		{"duplicate skips", func(r *WikidataDumpImportReport) {
+			r.SkippedClaims = []WikidataDumpSkipCount{{Reason: SkipSnakShape, Count: 1}, {Reason: SkipSnakShape, Count: 1}}
+		}},
+		{"zero skip", func(r *WikidataDumpImportReport) {
+			r.SkippedClaims = []WikidataDumpSkipCount{{Reason: SkipSnakShape, Count: 0}}
+		}},
+		{"zero filter", func(r *WikidataDumpImportReport) { r.FilterReasons[0].Count = 0 }},
+		{"zero type", func(r *WikidataDumpImportReport) { r.AcceptedByType[0].Count = 0 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, _ := json.Marshal(imported.Report)
+			var report WikidataDumpImportReport
+			_ = json.Unmarshal(encoded, &report)
+			tc.mutate(&report)
+			if err := ValidateWikidataDumpImportReport(report); err == nil {
+				t.Fatal("accepted altered report")
+			} else if tc.name == "duplicate rejects" && !strings.Contains(err.Error(), "unordered Wikidata reject") {
+				t.Fatalf("error = %q, want duplicate ordering rejection", err)
+			}
+		})
+	}
+}
+
+func TestValidateWikidataDumpImportReportAcceptsCountDescendingReasonOrder(t *testing.T) {
+	base := WikidataDumpImportReport{
+		SchemaVersion: WikidataDumpImportReportSchemaVersion,
+		Source:        wikidataSourceName,
+		SourceURL:     wikidataSourceURL,
+		License:       wikidataLicense,
+		InputSHA256:   strings.Repeat("0", sha256.Size*2),
+		Compression:   DumpCompressionNone,
+		Items:         6,
+		Properties:    12,
+		Accepted:      3,
+		Filtered:      3,
+		FilterReasons: []WikidataDumpCountByReason{
+			{Reason: string(FilterUnclassified), Count: 2, Rate: coverageRatio(2, 6)},
+			{Reason: string(FilterExcludedClass), Count: 1, Rate: coverageRatio(1, 6)},
+		},
+		AcceptedByType: []WikidataDumpTypeCount{{Type: "event", Count: 3}},
+		MaxRejectRate:  DefaultMaxRejectRate,
+	}
+	if err := ValidateWikidataDumpImportReport(base); err != nil {
+		t.Fatalf("count-descending filter reasons: %v", err)
+	}
+
+	base.Filtered = 0
+	base.FilterReasons = nil
+	base.Rejected = 3
+	base.RejectReasons = []WikidataDumpCountByReason{
+		{Reason: "z reason", Count: 2, Rate: coverageRatio(2, 6)},
+		{Reason: "a reason", Count: 1, Rate: coverageRatio(1, 6)},
+	}
+	base.RejectRate = coverageRatio(3, 6)
+	base.MaxRejectRate = 1
+	if err := ValidateWikidataDumpImportReport(base); err != nil {
+		t.Fatalf("count-descending reject reasons: %v", err)
+	}
+
+	base.RejectReasons[0], base.RejectReasons[1] = base.RejectReasons[1], base.RejectReasons[0]
+	if err := ValidateWikidataDumpImportReport(base); err == nil {
+		t.Fatal("accepted count-ascending reject reasons")
+	}
+	base.RejectReasons = []WikidataDumpCountByReason{
+		{Reason: "same", Count: 2, Rate: coverageRatio(2, 6)},
+		{Reason: "same", Count: 1, Rate: coverageRatio(1, 6)},
+	}
+	if err := ValidateWikidataDumpImportReport(base); err == nil {
+		t.Fatal("accepted duplicate reject reasons with different counts")
+	}
+}
+
+func TestValidateWikidataDumpImportReportRejectsOverflowingReasonTotals(t *testing.T) {
+	maxInt := int(^uint(0) >> 1)
+	report := WikidataDumpImportReport{
+		SchemaVersion: WikidataDumpImportReportSchemaVersion,
+		Source:        wikidataSourceName,
+		SourceURL:     wikidataSourceURL,
+		License:       wikidataLicense,
+		InputSHA256:   strings.Repeat("0", sha256.Size*2),
+		Compression:   DumpCompressionNone,
+		Items:         maxInt,
+		Filtered:      maxInt,
+		FilterReasons: []WikidataDumpCountByReason{
+			{Reason: string(FilterExcludedClass), Count: maxInt, Rate: 1},
+			{Reason: string(FilterNoEnglishLabel), Count: maxInt, Rate: 1},
+			{Reason: string(FilterUnclassified), Count: 1, Rate: coverageRatio(1, maxInt)},
+		},
+		MaxRejectRate: DefaultMaxRejectRate,
+	}
+	if err := ValidateWikidataDumpImportReport(report); err == nil {
+		t.Fatal("accepted overflowing filter reason total")
+	}
 }
 
 func (s *recordingWikidataDumpSink) MarkSeenQID(qid string) error {

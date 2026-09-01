@@ -182,6 +182,11 @@ func TestReadModelRejectsBrokenTables(t *testing.T) {
 			wantError: "duplicate entity slug",
 		},
 		{
+			name: "empty entity slug", file: "entity.parquet",
+			selectSQL: `SELECT * REPLACE ('' AS slug) FROM read_parquet(?)`,
+			wantError: "empty slug",
+		},
+		{
 			name: "inconsistent point columns", file: "entity.parquet",
 			selectSQL: `SELECT * REPLACE (true AS has_point, NULL::DOUBLE AS point_lon, NULL::DOUBLE AS point_lat) FROM read_parquet(?)`,
 			wantError: "inconsistent point columns",
@@ -210,6 +215,11 @@ func TestReadModelRejectsBrokenTables(t *testing.T) {
 			name: "claim with no value", file: "claim.parquet",
 			selectSQL: `SELECT * REPLACE (NULL::DOUBLE AS value, NULL::DOUBLE AS min, NULL::DOUBLE AS max) FROM read_parquet(?)`,
 			wantError: "invalid value shape",
+		},
+		{
+			name: "claim with nonfinite confidence", file: "claim.parquet",
+			selectSQL: `SELECT * REPLACE ('NaN'::DOUBLE AS confidence) FROM read_parquet(?)`,
+			wantError: "confidence",
 		},
 		{
 			name: "missing relationship target", file: "relationship.parquet",

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"wk/internal/bake"
+	"wk/internal/duck"
 	"wk/internal/ingest"
 	"wk/internal/model"
 )
@@ -35,6 +36,31 @@ func ingestCensusFixture(t *testing.T, extraArgs ...string) (string, ingest.Wiki
 		t.Fatalf("parse import report: %v", err)
 	}
 	return out, report, stdout.String()
+}
+
+func committedCensusFixture(t *testing.T) (string, ingest.WikidataDumpImportReport) {
+	t.Helper()
+	body, err := os.ReadFile(censusDumpFixture)
+	if err != nil {
+		t.Fatalf("read census fixture: %v", err)
+	}
+	out := filepath.Join(t.TempDir(), "model")
+	sink, err := duck.NewWikidataDumpStagingSink(context.Background(), out)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	report, err := ingest.ImportWikidataDumpToSink(bytes.NewReader(body), ingest.WikidataDumpImportOptions{}, sink)
+	if err != nil {
+		t.Fatalf("ImportWikidataDumpToSink: %v", err)
+	}
+	reportBody, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("marshal report: %v", err)
+	}
+	if err := sink.Finalize(context.Background(), reportBody); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	return out, report
 }
 
 func TestIngestWikidataDumpWritesModelRejectsAndReport(t *testing.T) {
@@ -134,7 +160,7 @@ func TestParseIngestDumpArgsRequiresDumpAndOut(t *testing.T) {
 // The whole ROAD-3 step-2 path on the fixture: dump -> Parquet model -> bake ->
 // a manifest and chunks the existing key scheme and golden machinery accept.
 func TestBakeFromModelProducesValidArtifacts(t *testing.T) {
-	modelDir, report, _ := ingestCensusFixture(t)
+	modelDir, report := committedCensusFixture(t)
 	version, err := loadDumpModelVersion(modelDir)
 	if err != nil {
 		t.Fatalf("loadDumpModelVersion: %v", err)
@@ -216,8 +242,51 @@ func TestBakeFromModelProducesValidArtifacts(t *testing.T) {
 	}
 }
 
+func TestBakeFromModelWritesNothingAfterSourceChange(t *testing.T) {
+	for _, kind := range []string{"symlink replacement", "in-place mutation"} {
+		t.Run(kind, func(t *testing.T) {
+			modelDir, _ := committedCensusFixture(t)
+			out := t.TempDir()
+			spec := testBasemapSpec()
+			req := bakeModelRequest{
+				modelDir: modelDir, geoDir: geoDirWithoutFronts(t), outDir: out,
+				basemap: bake.BasemapArtifact{Key: spec.Key(), Source: spec.Source, Attribution: spec.Attribution, SHA256: spec.SHA256, Body: []byte(testBasemapBody)},
+			}
+			req.beforeVerify = func() {
+				path := filepath.Join(modelDir, "entity.parquet")
+				if kind == "symlink replacement" {
+					if err := os.Rename(path, path+".old"); err != nil {
+						t.Errorf("rename entity: %v", err)
+						return
+					}
+					if err := os.Symlink("entity.parquet.old", path); err != nil {
+						t.Errorf("symlink entity: %v", err)
+					}
+					return
+				}
+				file, err := os.OpenFile(path, os.O_WRONLY, 0)
+				if err != nil {
+					t.Errorf("open entity: %v", err)
+					return
+				}
+				_, writeErr := file.WriteAt([]byte("changed"), 0)
+				if closeErr := file.Close(); writeErr != nil || closeErr != nil {
+					t.Errorf("mutate entity: write=%v close=%v", writeErr, closeErr)
+				}
+			}
+			if err := bakeFromModel(context.Background(), testLayerCompiler{}, req); err == nil {
+				t.Fatal("bakeFromModel accepted changed source")
+			}
+			entries, err := os.ReadDir(out)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("sink writes = %v, err %v", entries, err)
+			}
+		})
+	}
+}
+
 func TestBakeFromModelSkipsDefaultSeedFronts(t *testing.T) {
-	modelDir, _, _ := ingestCensusFixture(t)
+	modelDir, _ := committedCensusFixture(t)
 	version, err := loadDumpModelVersion(modelDir)
 	if err != nil {
 		t.Fatalf("loadDumpModelVersion: %v", err)
@@ -263,7 +332,7 @@ func TestBakeFromModelSkipsDefaultSeedFronts(t *testing.T) {
 }
 
 func TestBakeFromModelPromotesOnlyAboveTheImportanceFloor(t *testing.T) {
-	modelDir, _, _ := ingestCensusFixture(t)
+	modelDir, _ := committedCensusFixture(t)
 	version, err := loadDumpModelVersion(modelDir)
 	if err != nil {
 		t.Fatalf("loadDumpModelVersion: %v", err)

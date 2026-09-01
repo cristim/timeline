@@ -21,7 +21,7 @@ type fileContentIdentity struct {
 
 type committedFileIdentity struct {
 	fileContentIdentity
-	Rows int `json:"rows"`
+	Rows int64 `json:"rows"`
 }
 
 type modelFilesManifest struct {
@@ -41,10 +41,10 @@ func (s *WikidataDumpStagingSink) Finalize(ctx context.Context, importReport []b
 	}()
 
 	manifest := modelFilesManifest{SchemaVersion: 1, Files: make([]committedFileIdentity, 0, 5)}
-	rows := map[string]int{
-		"entity.parquet": s.entityRows, "entity_category.parquet": s.categoryRows,
-		"relationship.parquet": s.relationshipRows, "claim.parquet": s.claimRows,
-		"reject.parquet": s.rejectRows,
+	rows := map[string]int64{
+		"entity.parquet": int64(s.entityRows), "entity_category.parquet": int64(s.categoryRows),
+		"relationship.parquet": int64(s.relationshipRows), "claim.parquet": int64(s.claimRows),
+		"reject.parquet": int64(s.rejectRows),
 	}
 	for _, name := range []string{"entity.parquet", "entity_category.parquet", "relationship.parquet", "claim.parquet", "reject.parquet"} {
 		identity, copyErr := s.copyScratchToReady(ctx, name, rows[name])
@@ -121,7 +121,7 @@ func contextBoundary(ctx context.Context, operation string) error {
 	return nil
 }
 
-func (s *WikidataDumpStagingSink) copyScratchToReady(ctx context.Context, name string, rows int) (_ committedFileIdentity, err error) {
+func (s *WikidataDumpStagingSink) copyScratchToReady(ctx context.Context, name string, rows int64) (_ committedFileIdentity, err error) {
 	if err := s.workspace.verifyExportsIdentity(); err != nil {
 		return committedFileIdentity{}, err
 	}

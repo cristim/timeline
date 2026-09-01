@@ -1023,7 +1023,7 @@ func assertFinalizedManifest(t *testing.T, dir string, files []ModelFile, report
 		}
 		hash := sha256.Sum256(body)
 		got := manifest.Files[i]
-		if got.Name != file.Name || got.SHA256 != hex.EncodeToString(hash[:]) || got.Size != int64(len(body)) || got.Rows != file.Rows {
+		if got.Name != file.Name || got.SHA256 != hex.EncodeToString(hash[:]) || got.Size != int64(len(body)) || got.Rows != int64(file.Rows) {
 			t.Fatalf("manifest file %d = %#v", i, got)
 		}
 	}

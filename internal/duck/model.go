@@ -189,6 +189,7 @@ func insertModel(ctx context.Context, tx *sql.Tx, entities []*model.Entity) (map
 }
 
 func ReadModel(ctx context.Context, dir string) ([]*model.Entity, error) {
+	paths := make(map[string]string, len(fileDefinitions))
 	for _, definition := range fileDefinitions {
 		path := filepath.Join(dir, definition.name)
 		if info, err := os.Stat(path); err != nil {
@@ -196,26 +197,36 @@ func ReadModel(ctx context.Context, dir string) ([]*model.Entity, error) {
 		} else if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("read model file %s: not a regular file", definition.name)
 		}
+		paths[definition.name] = path
 	}
+	return readModelPaths(ctx, paths)
+}
 
+func readModelPaths(ctx context.Context, paths map[string]string) ([]*model.Entity, error) {
+	if _, err := validateModelPaths(ctx, paths, nil); err != nil {
+		return nil, err
+	}
+	return materializeModelPaths(ctx, paths)
+}
+
+func materializeModelPaths(ctx context.Context, paths map[string]string) (_ []*model.Entity, err error) {
 	db, conn, err := openConnection(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
-	defer conn.Close()
+	defer func() { err = errors.Join(err, conn.Close(), db.Close()) }()
 
-	entities, byID, expected, err := readEntities(ctx, conn, filepath.Join(dir, "entity.parquet"))
+	entities, byID, expected, err := readEntities(ctx, conn, paths["entity.parquet"])
 	if err != nil {
 		return nil, err
 	}
-	if err := readCategories(ctx, conn, filepath.Join(dir, "entity_category.parquet"), byID); err != nil {
+	if err := readCategories(ctx, conn, paths["entity_category.parquet"], byID); err != nil {
 		return nil, err
 	}
-	if err := readRelationships(ctx, conn, filepath.Join(dir, "relationship.parquet"), byID); err != nil {
+	if err := readRelationships(ctx, conn, paths["relationship.parquet"], byID); err != nil {
 		return nil, err
 	}
-	if err := readClaims(ctx, conn, filepath.Join(dir, "claim.parquet"), byID); err != nil {
+	if err := readClaims(ctx, conn, paths["claim.parquet"], byID); err != nil {
 		return nil, err
 	}
 	for _, entity := range entities {
@@ -233,7 +244,7 @@ func ReadModel(ctx context.Context, dir string) ([]*model.Entity, error) {
 	return entities, nil
 }
 
-func readEntities(ctx context.Context, conn *sql.Conn, path string) ([]*model.Entity, map[string]*model.Entity, map[string]childCounts, error) {
+func readEntities(ctx context.Context, conn *sql.Conn, path string) (_ []*model.Entity, _ map[string]*model.Entity, _ map[string]childCounts, err error) {
 	rows, err := conn.QueryContext(ctx, `
 		SELECT input_order, seed_id, slug, type, name, description, t0, t1, precision,
 		       status, importance, has_point, point_lon, point_lat, wikidata, wikipedia, media_thumb,
@@ -242,7 +253,7 @@ func readEntities(ctx context.Context, conn *sql.Conn, path string) ([]*model.En
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("query entities: %w", err)
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 
 	var entities []*model.Entity
 	byID := make(map[string]*model.Entity)
@@ -264,6 +275,9 @@ func readEntities(ctx context.Context, conn *sql.Conn, path string) ([]*model.En
 		}
 		if inputOrder != int64(len(entities)) {
 			return nil, nil, nil, fmt.Errorf("entity input_order %d, want %d", inputOrder, len(entities))
+		}
+		if entity.Slug == "" {
+			return nil, nil, nil, fmt.Errorf("entity %q has empty slug", entity.SeedID)
 		}
 		if _, exists := byID[entity.SeedID]; exists {
 			return nil, nil, nil, fmt.Errorf("duplicate entity %q", entity.SeedID)
@@ -292,12 +306,12 @@ func readEntities(ctx context.Context, conn *sql.Conn, path string) ([]*model.En
 	return entities, byID, expected, nil
 }
 
-func readCategories(ctx context.Context, conn *sql.Conn, path string, byID map[string]*model.Entity) error {
+func readCategories(ctx context.Context, conn *sql.Conn, path string, byID map[string]*model.Entity) (err error) {
 	rows, err := conn.QueryContext(ctx, `SELECT seed_id, category_order, category FROM read_parquet(?) ORDER BY seed_id, category_order`, path)
 	if err != nil {
 		return fmt.Errorf("query categories: %w", err)
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var seedID, category string
 		var order int64
@@ -319,12 +333,12 @@ func readCategories(ctx context.Context, conn *sql.Conn, path string, byID map[s
 	return nil
 }
 
-func readRelationships(ctx context.Context, conn *sql.Conn, path string, byID map[string]*model.Entity) error {
+func readRelationships(ctx context.Context, conn *sql.Conn, path string, byID map[string]*model.Entity) (err error) {
 	rows, err := conn.QueryContext(ctx, `SELECT seed_id, relationship_order, type, target_seed_id FROM read_parquet(?) ORDER BY seed_id, relationship_order`, path)
 	if err != nil {
 		return fmt.Errorf("query relationships: %w", err)
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var seedID, relationshipType, target string
 		var order int64
@@ -349,7 +363,7 @@ func readRelationships(ctx context.Context, conn *sql.Conn, path string, byID ma
 	return nil
 }
 
-func readClaims(ctx context.Context, conn *sql.Conn, path string, byID map[string]*model.Entity) error {
+func readClaims(ctx context.Context, conn *sql.Conn, path string, byID map[string]*model.Entity) (err error) {
 	rows, err := conn.QueryContext(ctx, `
 		SELECT seed_id, claim_order, property, value, min, max, unit, value_type,
 		       method, source, published_at, confidence
@@ -357,7 +371,7 @@ func readClaims(ctx context.Context, conn *sql.Conn, path string, byID map[strin
 	if err != nil {
 		return fmt.Errorf("query claims: %w", err)
 	}
-	defer rows.Close()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var seedID string
 		var order int64

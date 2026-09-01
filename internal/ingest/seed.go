@@ -185,49 +185,92 @@ func ValidateEntity(entity *model.Entity) string {
 	return validateEntityTimes(entity)
 }
 
-func validateEntityFields(entity *model.Entity) string {
+// ValidateEntityScalar applies the entity checks that do not depend on child
+// rows. Relational model readers use it while streaming one table at a time.
+func ValidateEntityScalar(entity *model.Entity) string {
+	if reason := validateEntityScalarFields(entity); reason != "" {
+		return reason
+	}
+	if _, ok := model.FinestBucketFor(entity.Precision); !ok {
+		return fmt.Sprintf("unknown time precision %q", entity.Precision)
+	}
+	if entity.Point != nil {
+		if len(entity.Point) != 2 || !model.ValidLonLat(entity.Point[0], entity.Point[1]) {
+			return fmt.Sprintf("point %v not a valid [lon,lat]", entity.Point)
+		}
+	}
+	return validateEntityTimes(entity)
+}
+
+// ValidateEntityCategory checks one category against the ingest vocabulary.
+func ValidateEntityCategory(category string) string {
+	if !model.Categories[category] {
+		return fmt.Sprintf("unknown category %q", category)
+	}
+	return ""
+}
+
+// ValidateEntityRelationship checks one relationship without resolving its target.
+func ValidateEntityRelationship(relationship model.SeedRel) string {
+	if !model.RelationshipTypes[relationship.Type] {
+		return fmt.Sprintf("unknown relationship type %q", relationship.Type)
+	}
+	if relationship.Target == "" {
+		return fmt.Sprintf("relationship %q with empty target", relationship.Type)
+	}
+	return ""
+}
+
+// ValidateEntityProperty checks one normalized property claim.
+func ValidateEntityProperty(property model.SeedProp) string {
 	switch {
-	case entity.SeedID == "":
-		return "missing id"
-	case entity.Name == "":
-		return "missing name"
-	case !model.EntityTypes[entity.Type]:
-		return fmt.Sprintf("unknown entity type %q", entity.Type)
-	case !model.TemporalStatuses[entity.Status]:
-		return fmt.Sprintf("unknown temporal status %q", entity.Status)
-	case entity.Importance <= 0 || entity.Importance > 1:
-		return fmt.Sprintf("importance %v outside (0,1]", entity.Importance)
-	case len(entity.Categories) == 0:
+	case property.Property == "":
+		return "property claim with empty property name"
+	case property.Source == "":
+		return fmt.Sprintf("property %q missing source (DM-5)", property.Property)
+	case property.PublishedAt == "":
+		return fmt.Sprintf("property %q missing published_at (DM-5)", property.Property)
+	case !model.ValueTypes[property.ValueType]:
+		return fmt.Sprintf("property %q unknown value_type %q", property.Property, property.ValueType)
+	case property.Value == nil && (property.Min == nil || property.Max == nil):
+		return fmt.Sprintf("property %q needs value or min+max", property.Property)
+	case math.IsNaN(property.Confidence) || math.IsInf(property.Confidence, 0) || property.Confidence < 0 || property.Confidence > 1:
+		return fmt.Sprintf("property %q has confidence %v outside [0,1]", property.Property, property.Confidence)
+	}
+	for _, value := range []*float64{property.Value, property.Min, property.Max} {
+		if value != nil && (math.IsNaN(*value) || math.IsInf(*value, 0)) {
+			return fmt.Sprintf("property %q has nonfinite value", property.Property)
+		}
+	}
+	if property.Min != nil && property.Max != nil && *property.Max < *property.Min {
+		return fmt.Sprintf("property %q has reversed range", property.Property)
+	}
+	return ""
+}
+
+func validateEntityFields(entity *model.Entity) string {
+	if reason := validateEntityScalarFields(entity); reason != "" {
+		return reason
+	}
+	if len(entity.Categories) == 0 {
 		return "no categories"
 	}
 	if _, ok := model.FinestBucketFor(entity.Precision); !ok {
 		return fmt.Sprintf("unknown time precision %q", entity.Precision)
 	}
-	for _, c := range entity.Categories {
-		if !model.Categories[c] {
-			return fmt.Sprintf("unknown category %q", c)
+	for _, category := range entity.Categories {
+		if reason := ValidateEntityCategory(category); reason != "" {
+			return reason
 		}
 	}
-	for _, rel := range entity.Rel {
-		if !model.RelationshipTypes[rel.Type] {
-			return fmt.Sprintf("unknown relationship type %q", rel.Type)
-		}
-		if rel.Target == "" {
-			return fmt.Sprintf("relationship %q with empty target", rel.Type)
+	for _, relationship := range entity.Rel {
+		if reason := ValidateEntityRelationship(relationship); reason != "" {
+			return reason
 		}
 	}
-	for _, p := range entity.Props {
-		switch {
-		case p.Property == "":
-			return "property claim with empty property name"
-		case p.Source == "":
-			return fmt.Sprintf("property %q missing source (DM-5)", p.Property)
-		case p.PublishedAt == "":
-			return fmt.Sprintf("property %q missing published_at (DM-5)", p.Property)
-		case !model.ValueTypes[p.ValueType]:
-			return fmt.Sprintf("property %q unknown value_type %q", p.Property, p.ValueType)
-		case p.Value == nil && (p.Min == nil || p.Max == nil):
-			return fmt.Sprintf("property %q needs value or min+max", p.Property)
+	for _, property := range entity.Props {
+		if reason := ValidateEntityProperty(property); reason != "" {
+			return reason
 		}
 	}
 	if entity.Point != nil {
@@ -238,8 +281,24 @@ func validateEntityFields(entity *model.Entity) string {
 	return ""
 }
 
+func validateEntityScalarFields(entity *model.Entity) string {
+	switch {
+	case entity.SeedID == "":
+		return "missing id"
+	case entity.Name == "":
+		return "missing name"
+	case !model.EntityTypes[entity.Type]:
+		return fmt.Sprintf("unknown entity type %q", entity.Type)
+	case !model.TemporalStatuses[entity.Status]:
+		return fmt.Sprintf("unknown temporal status %q", entity.Status)
+	case math.IsNaN(entity.Importance) || math.IsInf(entity.Importance, 0) || entity.Importance <= 0 || entity.Importance > 1:
+		return fmt.Sprintf("importance %v outside (0,1]", entity.Importance)
+	}
+	return ""
+}
+
 func validateEntityTimes(entity *model.Entity) string {
-	if math.IsNaN(entity.T0) || math.IsNaN(entity.T1) || entity.T1 < entity.T0 {
+	if math.IsNaN(entity.T0) || math.IsNaN(entity.T1) || math.IsInf(entity.T0, 0) || math.IsInf(entity.T1, 0) || entity.T1 < entity.T0 {
 		return fmt.Sprintf("invalid time range t0=%v t1=%v", entity.T0, entity.T1)
 	}
 	// Far past/future must carry correspondingly coarse precision, or the

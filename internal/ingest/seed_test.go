@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,6 +88,39 @@ func TestValidateAccepts(t *testing.T) {
 	wantT0 := model.YearToSeconds(-66000000)
 	if e.T0 != wantT0 {
 		t.Errorf("t0 = %v, want %v", e.T0, wantT0)
+	}
+}
+
+func TestValidateEntityRejectsNonfiniteNumbersAndReversedClaimRange(t *testing.T) {
+	base, reason := Validate(seedLine(t, nil))
+	if reason != "" {
+		t.Fatal(reason)
+	}
+	for _, mutate := range []func(*model.Entity){
+		func(e *model.Entity) { e.Importance = math.NaN() },
+		func(e *model.Entity) { e.T0, e.T1 = math.Inf(1), math.Inf(1) },
+		func(e *model.Entity) {
+			value := math.NaN()
+			e.Props = []model.SeedProp{{Property: "x", Value: &value, ValueType: "measured", Source: "s", PublishedAt: "2020"}}
+		},
+		func(e *model.Entity) {
+			min, max := 2.0, 1.0
+			e.Props = []model.SeedProp{{Property: "x", Min: &min, Max: &max, ValueType: "measured", Source: "s", PublishedAt: "2020"}}
+		},
+		func(e *model.Entity) {
+			value := 1.0
+			e.Props = []model.SeedProp{{Property: "x", Value: &value, ValueType: "measured", Source: "s", PublishedAt: "2020", Confidence: math.NaN()}}
+		},
+		func(e *model.Entity) {
+			value := 1.0
+			e.Props = []model.SeedProp{{Property: "x", Value: &value, ValueType: "measured", Source: "s", PublishedAt: "2020", Confidence: 1.1}}
+		},
+	} {
+		copy := *base
+		mutate(&copy)
+		if got := ValidateEntity(&copy); got == "" {
+			t.Fatal("accepted invalid numeric entity")
+		}
 	}
 }
 

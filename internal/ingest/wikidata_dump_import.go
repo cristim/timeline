@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strings"
 
@@ -300,9 +301,77 @@ func validateWikidataDumpRejectRate(report WikidataDumpImportReport) error {
 	if report.RejectRate <= report.MaxRejectRate {
 		return nil
 	}
-	considered := report.Accepted + report.Rejected
+	considered := report.Items - report.Filtered
 	return fmt.Errorf("import wikidata dump: reject rate %.4f exceeds the gate of %.4f (%d of %d normalizable items)",
 		report.RejectRate, report.MaxRejectRate, report.Rejected, considered)
+}
+
+// ValidateWikidataDumpImportReport checks the deterministic report contract.
+func ValidateWikidataDumpImportReport(report WikidataDumpImportReport) error {
+	if report.SchemaVersion != WikidataDumpImportReportSchemaVersion || report.Source != wikidataSourceName || report.SourceURL != wikidataSourceURL || report.License != wikidataLicense {
+		return fmt.Errorf("invalid Wikidata import report provenance or schema")
+	}
+	decoded, err := hex.DecodeString(report.InputSHA256)
+	if err != nil || len(decoded) != sha256.Size || report.InputSHA256 != strings.ToLower(report.InputSHA256) {
+		return fmt.Errorf("invalid Wikidata import report input SHA-256")
+	}
+	if report.Compression != DumpCompressionNone && report.Compression != DumpCompressionGzip && report.Compression != DumpCompressionBzip2 {
+		return fmt.Errorf("invalid Wikidata import report compression %q", report.Compression)
+	}
+	if report.Items < 0 || report.Properties < 0 || report.Filtered < 0 || report.Accepted < 0 || report.Rejected < 0 || report.Filtered > report.Items || report.Accepted > report.Items-report.Filtered || report.Rejected != report.Items-report.Filtered-report.Accepted {
+		return fmt.Errorf("invalid Wikidata import report counters")
+	}
+	filterReasons := map[string]bool{string(FilterExcludedClass): true, string(FilterUnclassified): true, string(FilterNoEnglishLabel): true, string(FilterNoUsableTime): true}
+	filterRemaining := report.Filtered
+	seenReasons := make(map[string]bool, len(report.FilterReasons))
+	for i, row := range report.FilterReasons {
+		if !filterReasons[row.Reason] || seenReasons[row.Reason] || i > 0 && compareCountByReason(report.FilterReasons[i-1], row) >= 0 || row.Count <= 0 || row.Count > filterRemaining || !validReportRate(row.Rate, coverageRatio(row.Count, report.Items)) {
+			return fmt.Errorf("invalid or unordered Wikidata filter reason row")
+		}
+		seenReasons[row.Reason] = true
+		filterRemaining -= row.Count
+	}
+	if filterRemaining != 0 {
+		return fmt.Errorf("Wikidata filter reasons leave %d of %d items unaccounted for", filterRemaining, report.Filtered)
+	}
+	considered := report.Accepted + report.Rejected
+	rejectRemaining := report.Rejected
+	seenReasons = make(map[string]bool, len(report.RejectReasons))
+	for i, row := range report.RejectReasons {
+		if row.Reason == "" || seenReasons[row.Reason] || i > 0 && compareCountByReason(report.RejectReasons[i-1], row) >= 0 || row.Count <= 0 || row.Count > rejectRemaining || !validReportRate(row.Rate, coverageRatio(row.Count, considered)) {
+			return fmt.Errorf("invalid or unordered Wikidata reject reason row")
+		}
+		seenReasons[row.Reason] = true
+		rejectRemaining -= row.Count
+	}
+	if rejectRemaining != 0 || !validReportRate(report.RejectRate, coverageRatio(report.Rejected, considered)) || math.IsNaN(report.MaxRejectRate) || math.IsInf(report.MaxRejectRate, 0) || report.MaxRejectRate < 0 || report.MaxRejectRate > 1 || report.RejectRate > report.MaxRejectRate {
+		return fmt.Errorf("invalid Wikidata reject totals or rates")
+	}
+	typeRemaining := report.Accepted
+	previous := ""
+	for _, row := range report.AcceptedByType {
+		if !model.EntityTypes[row.Type] || row.Type <= previous || row.Count <= 0 || row.Count > typeRemaining {
+			return fmt.Errorf("invalid or unordered Wikidata accepted type row")
+		}
+		previous = row.Type
+		typeRemaining -= row.Count
+	}
+	if typeRemaining != 0 {
+		return fmt.Errorf("Wikidata accepted types leave %d of %d items unaccounted for", typeRemaining, report.Accepted)
+	}
+	skipReasons := map[WikidataDumpSkipReason]bool{SkipClaimGroupNotArray: true, SkipStatementNotObject: true, SkipStatementRank: true, SkipSnakShape: true, SkipEntityValueInvalid: true, SkipTimeValueInvalid: true, SkipCoordinateValue: true, SkipCoordinateNotOnEarth: true, SkipCoordinateOutOfRange: true, SkipLabelMissingForItem: true, SkipUnusableTimeForItem: true, SkipUnconvertibleTimeFact: true}
+	previous = ""
+	for _, row := range report.SkippedClaims {
+		if !skipReasons[row.Reason] || string(row.Reason) <= previous || row.Count <= 0 {
+			return fmt.Errorf("invalid or unordered Wikidata skipped claim row")
+		}
+		previous = string(row.Reason)
+	}
+	return nil
+}
+
+func validReportRate(got, want float64) bool {
+	return !math.IsNaN(got) && !math.IsInf(got, 0) && got >= 0 && got <= 1 && got == want
 }
 
 // normalizedDumpEntity is the DM-2 row for one classified, dated item.
@@ -334,6 +403,11 @@ func wikidataSeedID(qid string) string {
 	return "wd-" + strings.ToLower(qid)
 }
 
+// ValidWikidataEntityIdentity checks the identity pair emitted by dump import.
+func ValidWikidataEntityIdentity(seedID, qid string) bool {
+	return validNumericEntityID(qid, 'Q') && seedID == wikidataSeedID(qid)
+}
+
 func totalCount(counts map[string]int) int {
 	total := 0
 	for _, count := range counts {
@@ -351,13 +425,15 @@ func countsByReason(counts map[string]int, total int) []WikidataDumpCountByReaso
 			Rate:   coverageRatio(count, total),
 		})
 	}
-	slices.SortFunc(rows, func(a, b WikidataDumpCountByReason) int {
-		if a.Count != b.Count {
-			return cmp.Compare(b.Count, a.Count)
-		}
-		return cmp.Compare(a.Reason, b.Reason)
-	})
+	slices.SortFunc(rows, compareCountByReason)
 	return rows
+}
+
+func compareCountByReason(a, b WikidataDumpCountByReason) int {
+	if a.Count != b.Count {
+		return cmp.Compare(b.Count, a.Count)
+	}
+	return cmp.Compare(a.Reason, b.Reason)
 }
 
 func typeCountRows(counts map[string]int) []WikidataDumpTypeCount {

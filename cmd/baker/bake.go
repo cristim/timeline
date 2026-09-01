@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -248,20 +249,23 @@ type bakeModelRequest struct {
 	importanceFloor float64
 	basemap         bake.BasemapArtifact
 	goldens         *bake.GoldenFile
+	beforeVerify    func()
 }
 
 // bakeFromModel is the SRC-5 promotion step: the WARM Parquet model holds every
 // normalized entity, and the entities at or above the importance floor become
 // HOT serving artifacts. It is the same bake the seed takes, reading its
 // entities from Parquet rather than NDJSON.
-func bakeFromModel(ctx context.Context, compiler bake.LayerCompiler, req bakeModelRequest) error {
-	version, err := loadDumpModelVersion(req.modelDir)
+func bakeFromModel(ctx context.Context, compiler bake.LayerCompiler, req bakeModelRequest) (err error) {
+	committed, err := duck.OpenCommittedModel(ctx, req.modelDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("open committed model: %w", err)
 	}
-	entities, err := duck.ReadModel(ctx, req.modelDir)
+	defer func() { err = errors.Join(err, committed.Close()) }()
+	version := committed.ModelVersion()
+	entities, err := committed.MaterializeEntities(ctx)
 	if err != nil {
-		return fmt.Errorf("read model: %w", err)
+		return fmt.Errorf("materialize committed model: %w", err)
 	}
 	promoted, held, droppedRels := applyImportanceFloor(entities, req.importanceFloor)
 	fmt.Printf("model %s: %d entities, %d promoted above importance %.2f, %d held WARM\n",
@@ -293,6 +297,12 @@ func bakeFromModel(ctx context.Context, compiler bake.LayerCompiler, req bakeMod
 	}
 
 	start := time.Now()
+	if req.beforeVerify != nil {
+		req.beforeVerify()
+	}
+	if err := committed.Verify(ctx); err != nil {
+		return fmt.Errorf("verify committed model before bake: %w", err)
+	}
 	manifest, stats, err := bake.Run(ctx, sink, compiler, datasetVersion(version), version, promoted, req.basemap, geo, req.goldens)
 	if err != nil {
 		return err
