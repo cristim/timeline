@@ -101,14 +101,22 @@ export interface SearchEntry {
 
 const cache = new Map<string, Promise<unknown>>();
 
+export class ArtifactHTTPError extends Error {
+  constructor(public readonly key: string, public readonly status: number) {
+    super(`artifact ${key}: HTTP ${status}`);
+    this.name = "ArtifactHTTPError";
+  }
+}
+
 function fetchArtifact<T>(dataset: string, relKey: string): Promise<T> {
   const url = artifactURL(`/v/${dataset}/${relKey}`);
   let p = cache.get(url);
   if (!p) {
     p = fetch(url).then((res) => {
       if (!res.ok) {
-        // A 404 on a manifest-valid key is a bake bug (API-1) - surface it.
-        throw new Error(`artifact ${relKey}: HTTP ${res.status}`);
+        // Preserve status so callers can distinguish a missing optional entity
+        // from a required artifact failure without changing cache behavior.
+        throw new ArtifactHTTPError(relKey, res.status);
       }
       return res.json();
     });

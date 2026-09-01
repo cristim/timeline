@@ -6,9 +6,9 @@ import { SpaceView, SPACE_MAX } from "./components/SpaceView";
 import { Timeline } from "./components/Timeline";
 import { Inspector, focusEntity } from "./components/Inspector";
 import { SearchBox } from "./components/SearchBox";
-import { CompareShell } from "./components/CompareShell";
+import { CompareView } from "./components/CompareShell";
 import { ViewSwitcher } from "./components/ViewSwitcher";
-import { useEntity, useManifest, useTimeLayer, useViewportItems } from "./lib/hooks";
+import { useEntity, useEntityState, useManifest, useTimeLayer, useViewportItems } from "./lib/hooks";
 import {
   applySearchPick,
   cursorTime,
@@ -147,6 +147,8 @@ export function App() {
     view.minImportance,
   );
   const selectedDoc = useEntity(manifest, view.selected);
+  const compareA = useEntityState(manifest, view.mode === "compare" ? (view.compare[0] ?? null) : null);
+  const compareB = useEntityState(manifest, view.mode === "compare" ? (view.compare[1] ?? null) : null);
   // The cursor is the moment the map is showing (FE-3/FE-5), and the map
   // follows it wherever curated data exists (DEV-6 M4).
   const tc = cursorTime(view);
@@ -330,7 +332,9 @@ export function App() {
           {view.space > 0 && (
             <SpaceView s={view.space} onZoom={setSpace} onSelect={setSelected} />
           )}
-          {view.mode === "compare" && <CompareShell subjects={view.compare} />}
+          {view.mode === "compare" && (
+            <CompareView subjects={view.compare} manifest={manifest} states={[compareA, compareB]} />
+          )}
         </div>
         <div
           className="insp-resize-handle"

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { bucketForSpan, chunkKey, coveringTimestep, secondsToYear, windowsInRange } from "./keyscheme";
 import {
   areaLayerSlice,
+  ArtifactHTTPError,
   fetchChunk,
   fetchEntity,
   fetchLayerIndex,
@@ -190,23 +191,79 @@ export function useTimeLayer(
 }
 
 export function useEntity(manifest: Manifest | null, slug: string | null): EntityDoc | null {
-  const [doc, setDoc] = useState<EntityDoc | null>(null);
+  return useEntityState(manifest, slug).doc;
+}
+
+export interface EntityState {
+  slug: string | null;
+  doc: EntityDoc | null;
+  loading: boolean;
+  missing: boolean;
+  error: string | null;
+}
+
+interface StoredEntityState extends EntityState {
+  dataset: string | null;
+}
+
+export function entityFailure(error: unknown): Pick<EntityState, "missing" | "error"> {
+  const missing = error instanceof ArtifactHTTPError && error.status === 404;
+  if (!missing) console.error("entity load failed:", error);
+  return { missing, error: missing ? null : String(error) };
+}
+
+export function useEntityState(manifest: Manifest | null, slug: string | null): EntityState {
+  const [state, setState] = useState<StoredEntityState>({
+    dataset: null,
+    slug: null,
+    doc: null,
+    loading: false,
+    missing: false,
+    error: null,
+  });
   useEffect(() => {
     if (!manifest || !slug) {
-      setDoc(null);
+      setState({ dataset: manifest?.dataset ?? null, slug, doc: null, loading: false, missing: false, error: null });
       return;
     }
     let live = true;
+    setState({ dataset: manifest.dataset, slug, doc: null, loading: true, missing: false, error: null });
     fetchEntity(manifest, slug).then(
-      (d) => live && setDoc(d),
+      (doc) => {
+        if (!live) return;
+        if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
+          const failure = entityFailure(
+            new Error(`entity ${JSON.stringify(slug)} must be an object`),
+          );
+          setState({
+            dataset: manifest.dataset,
+            slug,
+            doc: null,
+            loading: false,
+            ...failure,
+          });
+          return;
+        }
+        setState({ dataset: manifest.dataset, slug, doc, loading: false, missing: false, error: null });
+      },
       (e: unknown) => {
-        console.error("entity load failed:", e);
-        if (live) setDoc(null);
+        if (!live) return;
+        const failure = entityFailure(e);
+        setState({
+          dataset: manifest.dataset,
+          slug,
+          doc: null,
+          loading: false,
+          ...failure,
+        });
       },
     );
     return () => {
       live = false;
     };
   }, [manifest, slug]);
-  return doc;
+  if (state.slug !== slug || state.dataset !== (manifest?.dataset ?? null)) {
+    return { slug, doc: null, loading: !!manifest && !!slug, missing: false, error: null };
+  }
+  return state;
 }

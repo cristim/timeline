@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { areaLayerSlice, fetchEntity, fetchLayerIndex } from "./data";
+import { ArtifactHTTPError, areaLayerSlice, fetchEntity, fetchLayerIndex } from "./data";
 import type { Manifest } from "./manifest";
 
 const manifest: Manifest = {
@@ -80,4 +80,11 @@ describe("entity artifact boundary", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
+
+  it("preserves HTTP status for a valid missing entity", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 404 })));
+    const error = await fetchEntity(manifest, "missing-subject").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ArtifactHTTPError);
+    expect(error).toMatchObject({ status: 404, key: "entity/missing-subject.json" });
+  });
 });
