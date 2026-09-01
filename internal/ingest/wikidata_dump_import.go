@@ -16,11 +16,9 @@ import (
 // calendar) -> validate -> the normalized model, with an import report that is
 // deterministic and reproducible from the same dump.
 //
-// The dump is read as a stream, but the accepted entities and the set of seen
-// QIDs are held in memory until the caller writes them out, so peak memory
-// scales with the ACCEPTED set rather than with the archive. That is fine for
-// a filtered slice and is not fine for all 115M items; writing Parquet
-// incrementally is the open work (see known-issues.md).
+// ImportWikidataDump keeps accepted entities and seen QIDs in memory for
+// compatibility with seed-sized callers. ImportWikidataDumpToSink lets the
+// dump-scale caller keep that state outside the Go heap.
 //
 // Filtering and rejection are kept apart on purpose. An item we deliberately do
 // not want (a Wikimedia housekeeping page, a class the curated table does not
@@ -106,35 +104,98 @@ type WikidataDumpImport struct {
 	Report   WikidataDumpImportReport
 }
 
-// ImportWikidataDump streams a dump into normalized, validated entities.
+// WikidataDumpSink receives normalized rows while the dump is scanned.
+// MarkSeenQID must reject duplicates and is called before filtering.
+// AcceptEntity receives entities before global slug assignment.
+type WikidataDumpSink interface {
+	MarkSeenQID(qid string) error
+	AcceptEntity(entity *model.Entity) error
+	Reject(reject Reject) error
+}
+
+type memoryWikidataDumpSink struct {
+	seen     map[string]bool
+	entities []*model.Entity
+	rejects  []Reject
+}
+
+func (s *memoryWikidataDumpSink) MarkSeenQID(qid string) error {
+	if s.seen[qid] {
+		return fmt.Errorf("duplicate wikidata id %s", qid)
+	}
+	s.seen[qid] = true
+	return nil
+}
+
+func (s *memoryWikidataDumpSink) AcceptEntity(entity *model.Entity) error {
+	s.entities = append(s.entities, entity)
+	return nil
+}
+
+func (s *memoryWikidataDumpSink) Reject(reject Reject) error {
+	s.rejects = append(s.rejects, reject)
+	return nil
+}
+
+// ImportWikidataDump preserves the in-memory compatibility API for tests and
+// seed-sized callers. Dump-scale callers use ImportWikidataDumpToSink.
 func ImportWikidataDump(r io.Reader, opts WikidataDumpImportOptions) (*WikidataDumpImport, error) {
+	sink := &memoryWikidataDumpSink{seen: make(map[string]bool)}
+	report, err := importWikidataDumpToSink(r, opts, sink)
+	if err != nil {
+		return nil, err
+	}
+	if err := model.AssignSlugs(sink.entities); err != nil {
+		return nil, fmt.Errorf("import wikidata dump: %w", err)
+	}
+	if err := validateWikidataDumpRejectRate(report); err != nil {
+		return nil, err
+	}
+	return &WikidataDumpImport{Entities: sink.entities, Rejects: sink.rejects, Report: report}, nil
+}
+
+// ImportWikidataDumpToSink streams normalized, validated rows to sink.
+func ImportWikidataDumpToSink(r io.Reader, opts WikidataDumpImportOptions, sink WikidataDumpSink) (WikidataDumpImportReport, error) {
+	report, err := importWikidataDumpToSink(r, opts, sink)
+	if err != nil {
+		return WikidataDumpImportReport{}, err
+	}
+	if err := validateWikidataDumpRejectRate(report); err != nil {
+		return WikidataDumpImportReport{}, err
+	}
+	return report, nil
+}
+
+func importWikidataDumpToSink(r io.Reader, opts WikidataDumpImportOptions, sink WikidataDumpSink) (WikidataDumpImportReport, error) {
 	if r == nil {
-		return nil, fmt.Errorf("import wikidata dump: nil reader")
+		return WikidataDumpImportReport{}, fmt.Errorf("import wikidata dump: nil reader")
+	}
+	if sink == nil {
+		return WikidataDumpImportReport{}, fmt.Errorf("import wikidata dump: nil sink")
 	}
 	maxRejectRate := DefaultMaxRejectRate
 	if opts.MaxRejectRate != nil {
 		maxRejectRate = *opts.MaxRejectRate
 	}
 	if maxRejectRate < 0 || maxRejectRate > 1 {
-		return nil, fmt.Errorf("import wikidata dump: max reject rate %v outside [0,1]", maxRejectRate)
+		return WikidataDumpImportReport{}, fmt.Errorf("import wikidata dump: max reject rate %v outside [0,1]", maxRejectRate)
 	}
 	taxonomy, err := NewWikidataTaxonomy()
 	if err != nil {
-		return nil, fmt.Errorf("import wikidata dump: %w", err)
+		return WikidataDumpImportReport{}, fmt.Errorf("import wikidata dump: %w", err)
 	}
 
-	result := &WikidataDumpImport{}
 	filterCounts := map[string]int{}
 	rejectCounts := map[string]int{}
 	typeCounts := map[string]int{}
-	seen := map[string]bool{}
+	accepted := 0
 	index := 0
 
 	digest := sha256.New()
 	tee := io.TeeReader(r, digest)
 	stream, compression, err := OpenWikidataDumpStream(tee)
 	if err != nil {
-		return nil, fmt.Errorf("import wikidata dump: %w", err)
+		return WikidataDumpImportReport{}, fmt.Errorf("import wikidata dump: %w", err)
 	}
 
 	counters := newDumpCounters()
@@ -144,10 +205,9 @@ func ImportWikidataDump(r io.Reader, opts WikidataDumpImportOptions) (*WikidataD
 
 		// SRC-3 entity resolution: wikidata_id is the join key, so a repeated
 		// one is a corrupt dump rather than a row to reconcile.
-		if seen[facts.QID] {
-			return fmt.Errorf("duplicate wikidata id %s", facts.QID)
+		if err := sink.MarkSeenQID(facts.QID); err != nil {
+			return err
 		}
-		seen[facts.QID] = true
 
 		classification := taxonomy.Classify(facts.InstanceOfQIDs, facts.SubclassOfQIDs)
 		switch classification.Outcome {
@@ -174,40 +234,43 @@ func ImportWikidataDump(r io.Reader, opts WikidataDumpImportOptions) (*WikidataD
 
 		entity := normalizedDumpEntity(facts, classification, resolved)
 		if reason := ValidateEntity(entity); reason != "" {
-			rejectCounts[reason]++
-			result.Rejects = append(result.Rejects, Reject{
+			reject := Reject{
 				Source: RejectSourceWikidataDump,
 				File:   wikidataSourceName,
 				Line:   position,
 				Reason: reason,
-			})
+			}
+			if err := sink.Reject(reject); err != nil {
+				return err
+			}
+			rejectCounts[reason]++
 			return nil
 		}
+		if err := sink.AcceptEntity(entity); err != nil {
+			return err
+		}
 		typeCounts[entity.Type]++
-		result.Entities = append(result.Entities, entity)
+		accepted++
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("import wikidata dump: %w", err)
+		return WikidataDumpImportReport{}, fmt.Errorf("import wikidata dump: %w", err)
 	}
 	// Drain the DECODED stream first: a corrupt compression trailer after the
 	// JSON array closes only surfaces as a decoder error, and reading the raw
 	// bytes straight past it would swallow that. Then drain the raw side so the
 	// digest covers every byte the caller handed us.
 	if _, err := io.Copy(io.Discard, stream); err != nil {
-		return nil, fmt.Errorf("import wikidata dump: drain decoded input: %w", err)
+		return WikidataDumpImportReport{}, fmt.Errorf("import wikidata dump: drain decoded input: %w", err)
 	}
 	if _, err := io.Copy(io.Discard, tee); err != nil {
-		return nil, fmt.Errorf("import wikidata dump: drain input: %w", err)
-	}
-	if err := model.AssignSlugs(result.Entities); err != nil {
-		return nil, fmt.Errorf("import wikidata dump: %w", err)
+		return WikidataDumpImportReport{}, fmt.Errorf("import wikidata dump: drain input: %w", err)
 	}
 
 	filtered := totalCount(filterCounts)
 	rejected := totalCount(rejectCounts)
 	considered := scan.Items - filtered
-	result.Report = WikidataDumpImportReport{
+	report := WikidataDumpImportReport{
 		SchemaVersion:  WikidataDumpImportReportSchemaVersion,
 		Source:         wikidataSourceName,
 		SourceURL:      wikidataSourceURL,
@@ -217,7 +280,7 @@ func ImportWikidataDump(r io.Reader, opts WikidataDumpImportOptions) (*WikidataD
 		Items:          scan.Items,
 		Properties:     scan.Properties,
 		Filtered:       filtered,
-		Accepted:       len(result.Entities),
+		Accepted:       accepted,
 		Rejected:       rejected,
 		FilterReasons:  countsByReason(filterCounts, scan.Items),
 		RejectReasons:  countsByReason(rejectCounts, considered),
@@ -226,15 +289,20 @@ func ImportWikidataDump(r io.Reader, opts WikidataDumpImportOptions) (*WikidataD
 		AcceptedByType: typeCountRows(typeCounts),
 		SkippedClaims:  summarizeDumpSkips(counters.skips),
 	}
-	if result.Report.Accepted+result.Report.Rejected+result.Report.Filtered != scan.Items {
-		return nil, fmt.Errorf("import wikidata dump: %d accepted + %d rejected + %d filtered != %d items",
-			result.Report.Accepted, result.Report.Rejected, result.Report.Filtered, scan.Items)
+	if report.Accepted+report.Rejected+report.Filtered != scan.Items {
+		return WikidataDumpImportReport{}, fmt.Errorf("import wikidata dump: %d accepted + %d rejected + %d filtered != %d items",
+			report.Accepted, report.Rejected, report.Filtered, scan.Items)
 	}
-	if result.Report.RejectRate > maxRejectRate {
-		return nil, fmt.Errorf("import wikidata dump: reject rate %.4f exceeds the gate of %.4f (%d of %d normalizable items)",
-			result.Report.RejectRate, maxRejectRate, rejected, considered)
+	return report, nil
+}
+
+func validateWikidataDumpRejectRate(report WikidataDumpImportReport) error {
+	if report.RejectRate <= report.MaxRejectRate {
+		return nil
 	}
-	return result, nil
+	considered := report.Accepted + report.Rejected
+	return fmt.Errorf("import wikidata dump: reject rate %.4f exceeds the gate of %.4f (%d of %d normalizable items)",
+		report.RejectRate, report.MaxRejectRate, report.Rejected, considered)
 }
 
 // normalizedDumpEntity is the DM-2 row for one classified, dated item.

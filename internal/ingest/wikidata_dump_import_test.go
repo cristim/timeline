@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -9,6 +10,35 @@ import (
 
 	"wk/internal/model"
 )
+
+type recordingWikidataDumpSink struct {
+	seen     map[string]bool
+	marked   []string
+	entities []*model.Entity
+	rejects  []Reject
+}
+
+func (s *recordingWikidataDumpSink) MarkSeenQID(qid string) error {
+	s.marked = append(s.marked, qid)
+	if s.seen == nil {
+		s.seen = make(map[string]bool)
+	}
+	if s.seen[qid] {
+		return fmt.Errorf("duplicate wikidata id %s", qid)
+	}
+	s.seen[qid] = true
+	return nil
+}
+
+func (s *recordingWikidataDumpSink) AcceptEntity(entity *model.Entity) error {
+	s.entities = append(s.entities, entity)
+	return nil
+}
+
+func (s *recordingWikidataDumpSink) Reject(reject Reject) error {
+	s.rejects = append(s.rejects, reject)
+	return nil
+}
 
 func importCensusFixture(t *testing.T, opts WikidataDumpImportOptions) *WikidataDumpImport {
 	t.Helper()
@@ -151,6 +181,89 @@ func TestImportWikidataDumpIsDeterministic(t *testing.T) {
 	}
 }
 
+func TestImportWikidataDumpToSinkPreservesCompatibility(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile("testdata/wikidata-dump-census.json")
+	if err != nil {
+		t.Fatalf("read census fixture: %v", err)
+	}
+	compatibility, err := ImportWikidataDump(strings.NewReader(string(body)), WikidataDumpImportOptions{})
+	if err != nil {
+		t.Fatalf("ImportWikidataDump: %v", err)
+	}
+	sink := new(recordingWikidataDumpSink)
+	report, err := ImportWikidataDumpToSink(strings.NewReader(string(body)), WikidataDumpImportOptions{}, sink)
+	if err != nil {
+		t.Fatalf("ImportWikidataDumpToSink: %v", err)
+	}
+	if !reflect.DeepEqual(report, compatibility.Report) {
+		t.Fatalf("streamed report differs\n got: %#v\nwant: %#v", report, compatibility.Report)
+	}
+	if len(sink.marked) != report.Items {
+		t.Fatalf("marked %d QIDs for %d items", len(sink.marked), report.Items)
+	}
+	if len(sink.entities) != report.Accepted || len(sink.rejects) != report.Rejected {
+		t.Fatalf("sink received %d entities and %d rejects, report has %d and %d",
+			len(sink.entities), len(sink.rejects), report.Accepted, report.Rejected)
+	}
+	for _, entity := range sink.entities {
+		if entity.Slug != "" {
+			t.Fatalf("sink entity %q already has slug %q", entity.SeedID, entity.Slug)
+		}
+	}
+	if err := model.AssignSlugs(sink.entities); err != nil {
+		t.Fatalf("AssignSlugs: %v", err)
+	}
+	if !reflect.DeepEqual(sink.entities, compatibility.Entities) {
+		t.Fatal("streamed entities differ from the compatibility import")
+	}
+}
+
+func TestImportWikidataDumpToSinkMarksDuplicatesBeforeFiltering(t *testing.T) {
+	t.Parallel()
+
+	input := `[
+{"id":"Q9001","type":"item","labels":{"en":{"value":"First"}},"claims":{}},
+{"id":"Q9001","type":"item","labels":{"en":{"value":"Second"}},"claims":{}}
+]`
+	sink := new(recordingWikidataDumpSink)
+	_, err := ImportWikidataDumpToSink(strings.NewReader(input), WikidataDumpImportOptions{}, sink)
+	if err == nil || !strings.Contains(err.Error(), "duplicate wikidata id Q9001") {
+		t.Fatalf("duplicate id error = %v", err)
+	}
+	if !reflect.DeepEqual(sink.marked, []string{"Q9001", "Q9001"}) {
+		t.Fatalf("marked QIDs = %v", sink.marked)
+	}
+	if len(sink.entities) != 0 || len(sink.rejects) != 0 {
+		t.Fatalf("duplicate filtered input delivered %d entities and %d rejects",
+			len(sink.entities), len(sink.rejects))
+	}
+}
+
+func TestImportWikidataDumpToSinkStreamsRejects(t *testing.T) {
+	t.Parallel()
+
+	input := `[
+{"id":"Q9301","type":"item","labels":{"en":{"value":"Impossible"}},"claims":{
+"P31":[{"mainsnak":{"snaktype":"value","property":"P31","datatype":"wikibase-item","datavalue":{"value":{"entity-type":"item","id":"Q178561"},"type":"wikibase-entityid"}},"rank":"normal"}],
+"P585":[{"mainsnak":{"snaktype":"value","property":"P585","datatype":"time","datavalue":{"value":{"time":"-100000000000-00-00T00:00:00Z","timezone":0,"before":0,"after":0,"precision":6,"calendarmodel":"http://www.wikidata.org/entity/Q1985727"},"type":"time"}},"rank":"normal"}]
+}}
+]`
+	allowAll := 1.0
+	sink := new(recordingWikidataDumpSink)
+	report, err := ImportWikidataDumpToSink(strings.NewReader(input), WikidataDumpImportOptions{MaxRejectRate: &allowAll}, sink)
+	if err != nil {
+		t.Fatalf("ImportWikidataDumpToSink: %v", err)
+	}
+	if report.Rejected != 1 || len(sink.rejects) != 1 {
+		t.Fatalf("report rejected %d and sink received %d", report.Rejected, len(sink.rejects))
+	}
+	if sink.rejects[0].Source != RejectSourceWikidataDump || sink.rejects[0].Line != 0 {
+		t.Fatalf("reject = %#v", sink.rejects[0])
+	}
+}
+
 // The compressed fixtures must import identically to the plain one.
 func TestImportWikidataDumpReadsCompressedInput(t *testing.T) {
 	t.Parallel()
@@ -189,6 +302,10 @@ func TestImportWikidataDumpFailsLoudly(t *testing.T) {
 	if _, err := ImportWikidataDump(nil, WikidataDumpImportOptions{}); err == nil ||
 		!strings.Contains(err.Error(), "nil reader") {
 		t.Fatalf("nil reader error = %v", err)
+	}
+	if _, err := ImportWikidataDumpToSink(strings.NewReader("[]"), WikidataDumpImportOptions{}, nil); err == nil ||
+		!strings.Contains(err.Error(), "nil sink") {
+		t.Fatalf("nil sink error = %v", err)
 	}
 
 	for _, rate := range []float64{1.5, -1} {
