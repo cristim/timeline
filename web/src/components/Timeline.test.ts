@@ -57,18 +57,18 @@ it("restores full opacity after drawing only a past comparison gutter", async ()
   await act(async () => root.unmount());
 });
 
-it("keeps cursor arrows while Alt+arrows pan and plus/minus zoom", async () => {
+it("pans with arrows, moves the cursor with Shift+arrows, and zooms with plus/minus", async () => {
   const { canvas, cursors, ranges, unmount } = await renderKeyboardTimeline(0, 10_000, 5_000);
 
   canvas.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
-  expect(cursors).toEqual([5_100]);
-  expect(ranges).toEqual([]);
+  expect(ranges.at(-1)).toEqual([1_000, 11_000]);
+  expect(cursors).toEqual([]);
 
   canvas.dispatchEvent(new KeyboardEvent("keydown", {
-    key: "ArrowRight", altKey: true, bubbles: true,
+    key: "ArrowRight", shiftKey: true, bubbles: true,
   }));
   expect(ranges.at(-1)).toEqual([1_000, 11_000]);
-  expect(cursors).toEqual([5_100]);
+  expect(cursors).toEqual([6_000]);
 
   canvas.dispatchEvent(new KeyboardEvent("keydown", { key: "+", bubbles: true }));
   expect(ranges.at(-1)).toEqual([2_000, 10_000]);
@@ -89,7 +89,7 @@ it.each([
   const { canvas, ranges, unmount } = await renderKeyboardTimeline(t0, t1);
 
   for (let i = 0; i < 3; i++) {
-    canvas.dispatchEvent(new KeyboardEvent("keydown", { key, altKey: true, bubbles: true }));
+    canvas.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
   }
   expect(ranges).toHaveLength(3);
   for (const [a, b] of ranges) {

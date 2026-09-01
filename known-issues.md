@@ -94,10 +94,6 @@
   visible again. Fine for real users; e2e tests must trigger a resize or wait
   for visibility before reading `window.__wkhits`.
 - **Phone/stacked layout (FE-1) not implemented yet.** Desktop/tablet only.
-- **Timeline keyboard navigation (FE-9) is only half done.** Arrow keys move
-  the time cursor; FE-9 also asks for arrow-to-pan and +/- to zoom, which have
-  no binding. Whatever lands for those has to share the arrow keys with the
-  cursor, probably by making pan the modified chord.
 - **The paleo layer is pinned by model name, not by version.** `fetch-borders`
   pins a git commit, and a re-fetch is byte-identical (verified). `fetch-paleo`
   can only ask the GPlates Web Service for `MERDITH2021`, so if EarthByte

@@ -284,7 +284,7 @@ export function App() {
       </header>
 
       <div className="mid">
-        <div className="stage">
+        <div className={`stage ${view.mode === "compare" ? "compare-active" : ""}`}>
           <MapView
             dataset={manifest.dataset}
             basemap={manifest.basemap}

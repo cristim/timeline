@@ -88,10 +88,12 @@ body {
 /* ── middle: map + inspector ─────────────────── */
 .mid { flex: 1; display: flex; min-height: 0; }
 .stage { flex: 1; min-width: 0; position: relative; }
+.stage.compare-active .map-container { right: 60%; }
 .compare-shell {
   position: absolute; inset: 12px; z-index: 4; overflow: auto; padding: 18px;
   background: rgba(11, 15, 23, 0.96); border: 1px solid var(--hair-2); border-radius: 10px;
 }
+.stage.compare-active .compare-shell { left: calc(40% + 12px); }
 .compare-shell h2 { margin-bottom: 12px; font: 650 22px var(--disp); color: var(--amber); }
 .cmp-close {
   float: right; width: 30px; height: 30px; border: 1px solid var(--hair); border-radius: 6px;
@@ -104,7 +106,7 @@ body {
 .cmp-identities span { color: var(--text-3); font-size: 11px; }
 .cmp-verdict { margin: 6px 0 14px; color: var(--text-2); }
 .cmp-axis {
-  display: grid; grid-template-columns: minmax(90px, auto) minmax(100px, 1fr) minmax(130px, auto);
+  display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(80px, 1fr) minmax(0, 1fr);
   align-items: center; gap: 7px 10px; margin-bottom: 18px;
 }
 .cmp-lane { display: contents; }
@@ -336,6 +338,29 @@ body {
   .cat-chip { flex: none; }
 }
 
+@media (max-width: 1100px) {
+  .mid { position: relative; }
+  .stage.compare-active .map-container { right: 0; bottom: 60%; }
+  .stage.compare-active .compare-shell {
+    inset: calc(40% + 6px) 6px 6px; z-index: 7; padding: 12px;
+  }
+  .stage.compare-active .map-chips { max-width: calc(100% - 24px); }
+  .stage.compare-active ~ .insp-resize-handle,
+  .stage.compare-active ~ .inspector.empty { display: none; }
+  .stage.compare-active ~ .inspector:not(.empty) {
+    position: absolute; inset: 0 0 60% auto; z-index: 6;
+    width: min(180px, 45vw) !important;
+    box-shadow: -14px 0 40px rgba(0, 0, 0, 0.5);
+  }
+  .stage.compare-active .cmp-identities { flex-wrap: wrap; gap: 4px 7px; }
+  .stage.compare-active .cmp-axis { gap: 6px; }
+  .stage.compare-active .cmp-legend,
+  .stage.compare-active .cmp-when { overflow-wrap: anywhere; white-space: normal; }
+  .stage.compare-active .cmp-table { table-layout: fixed; }
+  .stage.compare-active .cmp-table th,
+  .stage.compare-active .cmp-table td { padding-inline: 4px; overflow-wrap: anywhere; }
+}
+
 @media (max-width: 600px) {
   .topbar { padding: 6px 8px; gap: 6px 8px; }
   .brand { order: 0; }
@@ -349,13 +374,4 @@ body {
     width: min(330px, calc(100vw - 24px)) !important;
     box-shadow: -14px 0 40px rgba(0, 0, 0, 0.5);
   }
-  .compare-shell { inset: 6px; z-index: 7; padding: 12px; }
-  .cmp-identities { flex-wrap: wrap; gap: 4px 7px; }
-  .cmp-axis {
-    grid-template-columns: minmax(0, 0.8fr) minmax(80px, 1fr) minmax(0, 1fr);
-    gap: 6px;
-  }
-  .cmp-legend, .cmp-when { overflow-wrap: anywhere; white-space: normal; }
-  .cmp-table { table-layout: fixed; }
-  .cmp-table th, .cmp-table td { padding-inline: 4px; overflow-wrap: anywhere; }
 }

@@ -336,21 +336,20 @@ export function Timeline({ t0, t1, items, selected, compare, tc, onRange, onSele
     onSelect(hit ? hit.slug : null);
   };
 
-  // Unmodified arrows retain cursor control; Alt+arrows pan the viewport.
   const onKeyDown = (e: React.KeyboardEvent<HTMLCanvasElement>) => {
     const dir = e.key === "ArrowLeft" ? -1 : e.key === "ArrowRight" ? 1 : 0;
     if (dir) {
       e.preventDefault();
-      if (e.altKey) {
-        const current = rangeRef.current;
-        const delta = (current.t1 - current.t0) * KEYBOARD_PAN_FRACTION * dir;
-        const [a, b] = clampRange(current.t0 + delta, current.t1 + delta);
-        rangeRef.current = { t0: a, t1: b };
-        onRangeRef.current(a, b);
+      if (e.shiftKey) {
+        const step = ((t1 - t0) / 10) * dir;
+        onCursor(Math.max(t0, Math.min(t1, cursor + step)));
         return;
       }
-      const step = ((t1 - t0) / (e.shiftKey ? 10 : 100)) * dir;
-      onCursor(Math.max(t0, Math.min(t1, cursor + step)));
+      const current = rangeRef.current;
+      const delta = (current.t1 - current.t0) * KEYBOARD_PAN_FRACTION * dir;
+      const [a, b] = clampRange(current.t0 + delta, current.t1 + delta);
+      rangeRef.current = { t0: a, t1: b };
+      onRangeRef.current(a, b);
       return;
     }
 
@@ -374,7 +373,7 @@ export function Timeline({ t0, t1, items, selected, compare, tc, onRange, onSele
       ref={canvasRef}
       className="timeline-canvas"
       tabIndex={0}
-      aria-label="Timeline. Arrow keys move the time cursor; Alt plus Left or Right pans; plus and minus zoom."
+      aria-label="Timeline. Left and Right pan; Shift plus Left or Right moves the time cursor; plus and minus zoom."
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

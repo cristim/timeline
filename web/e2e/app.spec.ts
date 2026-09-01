@@ -115,19 +115,59 @@ test("a Compare URL cold-loads, closes, and restores through history", async ({ 
   expectStaticFallbacks(w.fallbackDocuments, 1);
 });
 
+test("Compare keeps its map clickable and preserves the pair after pin selection", async ({ page }) => {
+  const w = watch(page);
+  await page.goto("./entity/great-pyramid-of-giza?compare=gutenberg-printing-press");
+  await booted(page);
+
+  const compare = page.locator(".compare-shell");
+  await expect(compare).toContainText("Great Pyramid of Giza");
+  await expect(compare).toContainText("Gutenberg printing press");
+  await page.waitForTimeout(2500);
+  await clickMapColor(page, [111, 212, 208]);
+
+  await expect(page.locator(".inspector h2")).toHaveText("Gutenberg printing press");
+  await expect(compare).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("compare")).toBe("gutenberg-printing-press");
+  expect(w.errors).toEqual([]);
+  expect(w.notFound, "same-origin 404s").toEqual([]);
+  expectStaticFallbacks(w.fallbackDocuments, 1);
+});
+
+test("Map mode keeps the resized tablet Inspector beside the map", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("wk-insp-width", "560"));
+  await page.setViewportSize({ width: 900, height: 800 });
+  await page.goto("./entity/stegosaurus");
+  await booted(page);
+
+  const mapBounds = (await page.locator(".map-container").boundingBox())!;
+  const inspector = page.locator(".inspector");
+  const inspectorBounds = (await inspector.boundingBox())!;
+  await expect(page.locator(".insp-resize-handle")).toBeVisible();
+  await expect(inspector).toHaveCSS("position", "static");
+  expect(mapBounds.width).toBeGreaterThanOrEqual(120);
+  expect(mapBounds.x + mapBounds.width).toBeLessThanOrEqual(inspectorBounds.x + 1);
+});
+
 for (const viewport of [
   { name: "desktop", width: 1440, height: 900 },
+  { name: "resized-boundary", width: 1101, height: 800, inspectorWidth: "560" },
   { name: "tablet", width: 900, height: 800 },
   { name: "phone", width: 390, height: 844 },
 ] as const) {
   test(`Compare fits the ${viewport.name} viewport without horizontal clipping`, async ({ page }) => {
     const w = watch(page);
+    if ("inspectorWidth" in viewport) {
+      await page.addInitScript((width) => localStorage.setItem("wk-insp-width", width), viewport.inspectorWidth);
+    }
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     await page.goto("./entity/tyrannosaurus-rex?compare=african-bush-elephant&sel=stegosaurus");
     await booted(page);
 
     const compare = page.locator(".compare-shell");
+    const map = page.locator(".map-container");
     await expect(compare).toBeVisible();
+    await expect(map).toBeVisible();
     await expect(compare).toBeFocused();
     await expect(compare.locator(".cmp-table")).toContainText("Maximum speed");
     await expect(page.locator(".inspector h2")).toHaveText("Stegosaurus");
@@ -137,6 +177,21 @@ for (const viewport of [
         ".compare-shell",
       ) === shell;
     }), "Compare must stay above a selected mobile Inspector").toBe(true);
+    const compareBounds = (await compare.boundingBox())!;
+    const mapBounds = (await map.boundingBox())!;
+    expect(mapBounds.width).toBeGreaterThanOrEqual(120);
+    expect(mapBounds.height).toBeGreaterThanOrEqual(120);
+    expect(
+      mapBounds.x + mapBounds.width <= compareBounds.x + 1 ||
+      mapBounds.y + mapBounds.height <= compareBounds.y + 1,
+      `map and Compare must not overlap: ${JSON.stringify({ mapBounds, compareBounds })}`,
+    ).toBe(true);
+    expect(await map.evaluate((container) => {
+      const bounds = container.getBoundingClientRect();
+      const target = document.elementFromPoint(bounds.left + Math.min(60, bounds.width / 4), bounds.top + bounds.height / 2);
+      return target?.closest(".map-container") === container;
+    }), "the visible map region must receive pointer input").toBe(true);
+    expect(new URL(page.url()).searchParams.get("compare")).toBe("african-bush-elephant");
     const switcher = (await page.locator(".view-switcher").boundingBox())!;
     expect(switcher.x).toBeGreaterThanOrEqual(0);
     expect(switcher.x + switcher.width).toBeLessThanOrEqual(viewport.width);
