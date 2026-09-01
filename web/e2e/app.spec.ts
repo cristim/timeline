@@ -7,15 +7,28 @@ import { expect, test, type Page } from "@playwright/test";
 function watch(page: Page) {
   const errors: string[] = [];
   const notFound: string[] = [];
+  const fallbackDocuments: string[] = [];
   page.on("console", (msg) => {
     if (msg.type() === "error") errors.push(msg.text());
   });
   page.on("pageerror", (err) => errors.push(String(err)));
   page.on("response", (res) => {
-    const sameOrigin = new URL(res.url()).origin === new URL(page.url()).origin;
-    if (res.status() === 404 && sameOrigin) notFound.push(res.url());
+    if (res.status() !== 404) return;
+    if (res.request().resourceType() === "document") fallbackDocuments.push(res.url());
+    else if (new URL(res.url()).origin === new URL(page.url()).origin) notFound.push(res.url());
   });
-  return { errors, notFound };
+  return { errors, notFound, fallbackDocuments };
+}
+
+function expectStaticFallbacks(urls: string[], count: number) {
+  expect(urls, "static deep-route fallbacks").toHaveLength(process.env.E2E_STATIC ? count : 0);
+}
+
+function expectConsole(errors: string[], staticFallbacks = 0, artifact404s = 0) {
+  const expected404s = artifact404s + (process.env.E2E_STATIC ? staticFallbacks : 0);
+  const network404s = errors.filter((message) => message.includes("status of 404"));
+  expect(errors.filter((message) => !message.includes("status of 404")), "unexpected console errors").toEqual([]);
+  expect(network404s, "browser-reported expected 404s").toHaveLength(expected404s);
 }
 
 async function booted(page: Page) {
@@ -39,8 +52,9 @@ test("boots the whole-universe view with zero console errors", async ({ page }) 
   await expect(attribution.locator('a[href="https://creativecommons.org/licenses/by/4.0/"]')).toHaveCount(1);
   await expect(attribution).toContainText("ESA WorldCover project 2020");
   await expect(attribution).toContainText("Wikidata CC0");
-  expect(w.errors, "console errors").toEqual([]);
+  expectConsole(w.errors);
   expect(w.notFound, "same-origin 404s").toEqual([]);
+  expectStaticFallbacks(w.fallbackDocuments, 0);
 });
 
 test("search selects an entity, shows claims, and focuses the timeline", async ({ page }) => {
@@ -68,6 +82,136 @@ test("a shared URL cold-loads and restores the exact view", async ({ page }) => 
   await expect(page.locator(".cat-chip.on")).toHaveCount(1);
   expect(w.errors).toEqual([]);
   expect(w.notFound).toEqual([]);
+});
+
+test("a Compare URL cold-loads, closes, and restores through history", async ({ page }) => {
+  const w = watch(page);
+  await page.goto("./entity/tyrannosaurus-rex?compare=african-bush-elephant");
+  await booted(page);
+
+  const compare = page.locator(".compare-shell");
+  await expect(compare).toBeVisible();
+  await expect(compare).toBeFocused();
+  await expect(compare.locator(".cmp-identities")).toContainText("Tyrannosaurus rex");
+  await expect(compare.locator(".cmp-identities")).toContainText("African bush elephant");
+  await expect(compare.locator(".cmp-axis")).toHaveAttribute(
+    "aria-label",
+    /Temporal comparison of Tyrannosaurus rex and African bush elephant:/,
+  );
+  await expect(compare.locator(".cmp-table")).toContainText("Mass");
+  await expect(compare.locator("[aria-label*='Mass for Tyrannosaurus rex']")).toHaveCount(1);
+
+  await page.keyboard.press("Escape");
+  await expect(compare).toHaveCount(0);
+  await expect(page.locator('[data-view-mode="map"]')).toBeFocused();
+  await expect.poll(() => page.url()).not.toContain("compare=african-bush-elephant");
+
+  await page.goBack();
+  await expect(page.locator(".compare-shell")).toBeVisible();
+  await expect(page.locator(".compare-shell")).toBeFocused();
+  await expect(page.locator(".compare-shell .cmp-table")).toContainText("Maximum speed");
+  expectConsole(w.errors, 1);
+  expect(w.notFound, "same-origin 404s").toEqual([]);
+  expectStaticFallbacks(w.fallbackDocuments, 1);
+});
+
+for (const viewport of [
+  { name: "desktop", width: 1440, height: 900 },
+  { name: "tablet", width: 900, height: 800 },
+  { name: "phone", width: 390, height: 844 },
+] as const) {
+  test(`Compare fits the ${viewport.name} viewport without horizontal clipping`, async ({ page }) => {
+    const w = watch(page);
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.goto("./entity/tyrannosaurus-rex?compare=african-bush-elephant&sel=stegosaurus");
+    await booted(page);
+
+    const compare = page.locator(".compare-shell");
+    await expect(compare).toBeVisible();
+    await expect(compare).toBeFocused();
+    await expect(compare.locator(".cmp-table")).toContainText("Maximum speed");
+    await expect(page.locator(".inspector h2")).toHaveText("Stegosaurus");
+    expect(await compare.evaluate((shell) => {
+      const bounds = shell.getBoundingClientRect();
+      return document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2)?.closest(
+        ".compare-shell",
+      ) === shell;
+    }), "Compare must stay above a selected mobile Inspector").toBe(true);
+    const switcher = (await page.locator(".view-switcher").boundingBox())!;
+    expect(switcher.x).toBeGreaterThanOrEqual(0);
+    expect(switcher.x + switcher.width).toBeLessThanOrEqual(viewport.width);
+    const overflow = await page.evaluate(() => {
+      const shell = document.querySelector<HTMLElement>(".compare-shell")!;
+      return {
+        page: document.documentElement.scrollWidth - window.innerWidth,
+        compare: shell.scrollWidth - shell.clientWidth,
+        offenders: [...document.querySelectorAll<HTMLElement>("body *")]
+          .map((element) => ({
+            element: `${element.tagName.toLowerCase()}.${element.className}`,
+            right: Math.round(element.getBoundingClientRect().right),
+            scrollWidth: element.scrollWidth,
+            clientWidth: element.clientWidth,
+          }))
+          .filter((element) => element.right > window.innerWidth || element.scrollWidth > element.clientWidth)
+          .slice(0, 12),
+      };
+    });
+    expect(overflow.page, `page horizontal overflow: ${JSON.stringify(overflow.offenders)}`).toBeLessThanOrEqual(0);
+    expect(overflow.compare, `Compare horizontal overflow: ${JSON.stringify(overflow.offenders)}`).toBeLessThanOrEqual(0);
+    expectConsole(w.errors, 1);
+    expect(w.notFound, "same-origin 404s").toEqual([]);
+    expectStaticFallbacks(w.fallbackDocuments, 1);
+  });
+}
+
+test("canonical zero, pending, pair, and legacy Compare routes restore directly", async ({ page }) => {
+  const w = watch(page);
+
+  await page.goto("./?view=compare");
+  await booted(page);
+  await expect(page.locator(".compare-shell")).toContainText("Choose a subject");
+  expect(new URL(page.url()).searchParams.get("view")).toBe("compare");
+
+  await page.waitForLoadState("networkidle");
+  await page.goto("./entity/tyrannosaurus-rex?view=compare");
+  await booted(page);
+  await expect(page.locator(".compare-shell")).toContainText("Comparing Tyrannosaurus rex");
+  await expect(page.locator(".compare-shell")).toContainText("Search for a second subject");
+  expect(new URL(page.url()).pathname).toMatch(/\/entity\/tyrannosaurus-rex$/);
+  expect(new URL(page.url()).searchParams.get("view")).toBe("compare");
+
+  await page.waitForLoadState("networkidle");
+  await page.goto("./entity/tyrannosaurus-rex?compare=african-bush-elephant");
+  await booted(page);
+  await expect(page.locator(".compare-shell .cmp-identities")).toContainText("African bush elephant");
+  expect(new URL(page.url()).searchParams.get("compare")).toBe("african-bush-elephant");
+
+  await page.waitForLoadState("networkidle");
+  await page.goto("./?cmp=tyrannosaurus-rex,african-bush-elephant");
+  await booted(page);
+  await expect(page.locator(".compare-shell .cmp-identities")).toContainText("African bush elephant");
+  await expect.poll(() => new URL(page.url()).pathname).toMatch(/\/entity\/tyrannosaurus-rex$/);
+  await expect.poll(() => new URL(page.url()).searchParams.get("compare")).toBe("african-bush-elephant");
+  expect(new URL(page.url()).searchParams.has("cmp")).toBe(false);
+
+  expectConsole(w.errors, 2);
+  expect(w.notFound, "same-origin 404s").toEqual([]);
+  expectStaticFallbacks(w.fallbackDocuments, 2);
+});
+
+test("a syntactically valid missing Compare subject is reported without hiding the first", async ({ page }) => {
+  const w = watch(page);
+  await page.goto("./entity/tyrannosaurus-rex?compare=missing-subject");
+  await booted(page);
+
+  const compare = page.locator(".compare-shell");
+  await expect(compare).toBeFocused();
+  await expect(compare.locator(".cmp-missing")).toHaveText("Second subject missing-subject was not found.");
+  await expect(page.locator(".timeline-shell")).toBeVisible();
+  expectConsole(w.errors, 1, 1);
+  expect(w.notFound, "expected missing entity artifact").toHaveLength(1);
+  expect(w.notFound[0]).toMatch(/\/entity\/missing-subject\.json$/);
+  expectStaticFallbacks(w.fallbackDocuments, 1);
 });
 
 test("back/forward walks selection history", async ({ page }) => {
@@ -721,6 +865,66 @@ for (const scenario of [
     await scenario.assertRendered(page);
   });
 }
+
+test("an active Compare route survives an open-tab dataset rollover", async ({ page }) => {
+  test.setTimeout(60_000);
+  const response = await page.request.get("./manifest.json");
+  expect(response.ok()).toBe(true);
+  const current = await response.json();
+  const staleDataset = "replaced-compare-dataset";
+  let deployed = false;
+  let staleLayerFailures = 0;
+  let documentRequests = 0;
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) documentRequests++;
+  });
+  await page.route("**/manifest.json*", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify(deployed ? current : { ...current, dataset: staleDataset }),
+    });
+  });
+  await page.route(`**/v/${staleDataset}/**`, async (route) => {
+    const url = new URL(route.request().url());
+    if (deployed && /\/layers\/borders\/-?\d+\.pmtiles$/.test(url.pathname)) {
+      staleLayerFailures++;
+      await route.fulfill({ status: 404, body: "deployment replaced" });
+      return;
+    }
+    url.pathname = url.pathname.replace(`/v/${staleDataset}/`, `/v/${current.dataset}/`);
+    await route.fulfill({ status: 307, headers: { location: url.href } });
+  });
+
+  const before = tcForYear(1900);
+  const span = 50 * SECONDS_PER_YEAR;
+  await page.goto(
+    `./entity/tyrannosaurus-rex?compare=african-bush-elephant&t0=${before - span}&t1=${before + span}&tc=${before}`,
+  );
+  await booted(page);
+  await expect(page.locator(".compare-shell .cmp-identities")).toContainText("African bush elephant");
+
+  deployed = true;
+  const after = tcForYear(1914);
+  await page.evaluate(
+    ({ t0, t1, cursor }) => {
+      const query = new URLSearchParams(location.search);
+      query.set("t0", String(t0));
+      query.set("t1", String(t1));
+      query.set("tc", String(cursor));
+      history.replaceState(null, "", `${location.pathname}?${query}`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    },
+    { t0: after - span, t1: after + span, cursor: after },
+  );
+
+  await expect.poll(() => staleLayerFailures, { timeout: 20_000 }).toBeGreaterThan(0);
+  await expect.poll(() => documentRequests, { timeout: 20_000 }).toBeGreaterThanOrEqual(2);
+  await expect(page.locator(".compare-shell")).toBeVisible();
+  await expect(page.locator(".compare-shell")).toBeFocused();
+  await expect(page.locator(".compare-shell .cmp-identities")).toContainText("Tyrannosaurus rex");
+  await expect(page.locator(".compare-shell .cmp-identities")).toContainText("African bush elephant");
+  expect(new URL(page.url()).searchParams.get("compare")).toBe("african-bush-elephant");
+});
 
 test("the 1965 London boundary switch preserves transport and hover provenance", async ({ page }) => {
   test.setTimeout(90_000);
