@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { areaLayerSlice, fetchLayerIndex } from "./data";
+import { areaLayerSlice, fetchEntity, fetchLayerIndex } from "./data";
 import type { Manifest } from "./manifest";
 
 const manifest: Manifest = {
@@ -59,4 +59,17 @@ describe("area-layer data", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith("/v/atlas-v1/layers/borders/index.json");
   });
+});
+
+describe("entity artifact boundary", () => {
+  it.each(["../manifest", "a/b", "a%2Fb", "", "Uppercase"])(
+    "rejects invalid slug %j without fetching a path",
+    async (slug) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(fetchEntity(manifest, slug)).rejects.toThrow("invalid entity slug");
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 });

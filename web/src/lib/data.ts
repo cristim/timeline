@@ -2,6 +2,7 @@
 // Everything under /v/<dataset>/ is immutable, so caching is unconditional.
 import { layerIndexKey, layerKey } from "./keyscheme";
 import { artifactURL, type Manifest } from "./manifest";
+import { isValidEntitySlug } from "./slug";
 
 export interface ChunkItem {
   slug: string;
@@ -122,6 +123,7 @@ export function fetchChunk(m: Manifest, relKey: string): Promise<{ items: ChunkI
 }
 
 export function fetchEntity(m: Manifest, slug: string): Promise<EntityDoc> {
+  if (!isValidEntitySlug(slug)) return Promise.reject(new Error(`invalid entity slug: ${slug}`));
   return fetchArtifact(m.dataset, `entity/${slug}.json`);
 }
 

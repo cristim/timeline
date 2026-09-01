@@ -30,9 +30,15 @@ const tlMax = () => Math.round(window.innerHeight * 0.6);
 const BORDERS_LAYER = "borders";
 const PALEO_LAYER = "paleocoast";
 
+function historyKey(view: ViewState): string {
+  return `${view.mode}|${view.compare.join(",")}|${view.selected ?? ""}`;
+}
+
 export function App() {
   const { manifest, error } = useManifest();
-  const [view, setView] = useState<ViewState>(() => parseView(window.location.search));
+  const [view, setView] = useState<ViewState>(() =>
+    parseView(window.location, import.meta.env.BASE_URL),
+  );
   const [tlHeight, setTlHeight] = useState<number>(() => {
     const saved = Number(localStorage.getItem("wk-tl-height"));
     return Number.isFinite(saved) && saved >= TL_COLLAPSED ? saved : TL_DEFAULT;
@@ -88,31 +94,33 @@ export function App() {
     window.addEventListener("pointerup", onUp);
   };
 
-  // URL sync (API-6): selection changes push a history entry (back/forward
-  // walks selections, FE-9); pan/zoom/filter changes replace in place.
+  // URL sync (API-6): route, view, pair, and selection changes push a history
+  // entry; pan, zoom, cursor, and filter changes replace in place.
   const urlTimer = useRef<number | undefined>(undefined);
-  const lastPushedSel = useRef(view.selected);
+  const lastPushedState = useRef(historyKey(view));
   useEffect(() => {
     window.clearTimeout(urlTimer.current);
+    const delay = new URLSearchParams(window.location.search).has("cmp") ? 0 : 250;
     urlTimer.current = window.setTimeout(() => {
-      const url = serializeView(view);
-      if (url === window.location.search) return;
-      if (view.selected !== lastPushedSel.current) {
+      const url = serializeView(view, import.meta.env.BASE_URL);
+      if (url === `${window.location.pathname}${window.location.search}`) return;
+      const nextHistoryKey = historyKey(view);
+      if (nextHistoryKey !== lastPushedState.current) {
         history.pushState(null, "", url);
       } else {
         history.replaceState(null, "", url);
       }
-      lastPushedSel.current = view.selected;
-    }, 250);
+      lastPushedState.current = nextHistoryKey;
+    }, delay);
     return () => window.clearTimeout(urlTimer.current);
   }, [view]);
   useEffect(() => {
     const onPop = () => {
-      const v = parseView(window.location.search);
+      const v = parseView(window.location, import.meta.env.BASE_URL);
       // History navigation is not a new selection: sync the ref so the URL
       // normalization write below stays a replaceState - a pushState here
       // would destroy the forward history stack.
-      lastPushedSel.current = v.selected;
+      lastPushedState.current = historyKey(v);
       setView(v);
     };
     window.addEventListener("popstate", onPop);
