@@ -450,12 +450,19 @@ function drawCursor(
 }
 
 function clampRange(a: number, b: number): [number, number] {
-  let na = Math.max(T_MIN, a);
-  let nb = Math.min(T_MAX, b);
-  if (nb - na < MIN_SPAN) {
-    const mid = (na + nb) / 2;
-    na = mid - MIN_SPAN / 2;
-    nb = mid + MIN_SPAN / 2;
+  const maximumSpan = T_MAX - T_MIN;
+  const span = Math.min(maximumSpan, Math.max(MIN_SPAN, b - a));
+  if (span === maximumSpan) return [T_MIN, T_MAX];
+
+  const middle = a + (b - a) / 2;
+  let na = middle - span / 2;
+  let nb = na + span;
+  if (na < T_MIN) {
+    na = T_MIN;
+    nb = T_MIN + span;
+  } else if (nb > T_MAX) {
+    nb = T_MAX;
+    na = T_MAX - span;
   }
   return [na, nb];
 }
