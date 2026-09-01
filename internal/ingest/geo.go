@@ -73,12 +73,12 @@ func LoadGeo(dir string, entities []*model.Entity) (*model.GeoSet, error) {
 }
 
 // LoadGeoForModel reads data/geo for a dump-derived model bake. Curated front
-// lines point at seed-only ids, so model bakes may omit the layer.
+// lines point at seed-only ids, so model bakes skip the layer.
 func LoadGeoForModel(dir string, entities []*model.Entity) (*model.GeoSet, error) {
 	return loadGeo(dir, entities, true)
 }
 
-func loadGeo(dir string, entities []*model.Entity, allowMissingFronts bool) (*model.GeoSet, error) {
+func loadGeo(dir string, entities []*model.Entity, skipFronts bool) (*model.GeoSet, error) {
 	bySeedID := map[string]*model.Entity{}
 	for _, e := range entities {
 		bySeedID[e.SeedID] = e
@@ -121,25 +121,17 @@ func loadGeo(dir string, entities []*model.Entity, allowMissingFronts bool) (*mo
 				last.TTo, set.Borders[0].TFrom)
 		}
 	}
+	if skipFronts {
+		return set, nil
+	}
 	frontsDir := filepath.Join(dir, "fronts")
 	if _, statErr := os.Stat(frontsDir); statErr == nil {
-		if allowMissingFronts {
-			paths, err := filepath.Glob(filepath.Join(frontsDir, "*.geojson"))
-			if err != nil {
-				return nil, err
-			}
-			if len(paths) == 0 {
-				return set, nil
-			}
-		}
 		if err := loadFronts(frontsDir, bySeedID, set); err != nil {
 			return nil, err
 		}
 	} else if os.IsNotExist(statErr) {
-		if !allowMissingFronts {
-			if _, err := geojsonPaths(frontsDir); err != nil {
-				return nil, err
-			}
+		if _, err := geojsonPaths(frontsDir); err != nil {
+			return nil, err
 		}
 	} else {
 		return nil, statErr

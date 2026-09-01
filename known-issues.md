@@ -68,8 +68,8 @@
 
 - **Curated geometry is pinned to seed entities, so a bulk bake gets no front
   lines.** `data/geo/fronts/` resolves each file against a seed id, which a
-  dump-derived dataset does not have, so only the explicit `bake --model` geo
-  path may omit that layer. Seed bakes still require `fronts/`. Reconciling
+  dump-derived dataset does not have, so the explicit `bake --model` geo path
+  skips that layer. Seed bakes still require `fronts/`. Reconciling
   upstream and curated geometry against bulk entities is the same unsolved
   problem as the unclickable fetched border shapes below.
 

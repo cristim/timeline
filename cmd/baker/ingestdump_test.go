@@ -213,7 +213,7 @@ func TestBakeFromModelProducesValidArtifacts(t *testing.T) {
 	}
 }
 
-func TestBakeFromModelAllowsMissingFronts(t *testing.T) {
+func TestBakeFromModelSkipsDefaultSeedFronts(t *testing.T) {
 	modelDir, _, _ := ingestCensusFixture(t)
 	version, err := loadDumpModelVersion(modelDir)
 	if err != nil {
@@ -222,14 +222,40 @@ func TestBakeFromModelAllowsMissingFronts(t *testing.T) {
 	outDir := t.TempDir()
 	if err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--model", modelDir,
-		"--geo", geoDirWithoutFronts(t),
+		"--geo", testGeoDir(t),
 		"--out", outDir,
 		"--goldens", writeGoldensFile(t, version),
 	}); err != nil {
 		t.Fatalf("runBakeWithCompiler: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(outDir, "manifest.json")); err != nil {
-		t.Fatalf("manifest was not written: %v", err)
+
+	manifestBody, err := os.ReadFile(filepath.Join(outDir, "manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest model.Manifest
+	if err := json.Unmarshal(manifestBody, &manifest); err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	entityPaths, err := filepath.Glob(filepath.Join(outDir, "v", manifest.Dataset, "entity", "*.json"))
+	if err != nil {
+		t.Fatalf("glob entity docs: %v", err)
+	}
+	if len(entityPaths) == 0 {
+		t.Fatal("bake wrote no entity docs")
+	}
+	for _, path := range entityPaths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read entity doc %s: %v", path, err)
+		}
+		var doc bake.EntityDoc
+		if err := json.Unmarshal(body, &doc); err != nil {
+			t.Fatalf("parse entity doc %s: %v", path, err)
+		}
+		if len(doc.Geometry) != 0 {
+			t.Fatalf("entity doc %s has %d front sequences, want zero", path, len(doc.Geometry))
+		}
 	}
 }
 
