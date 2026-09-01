@@ -73,11 +73,15 @@
   upstream and curated geometry against bulk entities is the same unsolved
   problem as the unclickable fetched border shapes below.
 
-- **Artifact count grows ~27x entity count at fine buckets.** The 10.5k-entity
-  warm bake produces ~280k chunk objects (window duplication x categories,
-  API-1), taking ~10 min against local MinIO even with a 48-way upload pool.
-  Fine for incremental re-bakes (unchanged objects skip), but revisit
-  per-bucket caps / coarse-bucket rollups before dump-scale (M5 full).
+- **Artifact count at warm scale is still unmeasured after chunk runs.**
+  API-1 still duplicates entities across windows and categories before
+  identical consecutive windows are collapsed into run anchors. The previous
+  10.5k-entity warm-bake numbers were not reproducible from a retained input
+  artifact, so they are not evidence. A fresh bounded Wikidata fetch on
+  2026-09-01 reached 30 pages, 11,974 rows and 10,409 distinct entities, but
+  local MinIO rejected raw-page publication with `XMinioStorageFull` before
+  `wk-warm/wikidata/events.ndjson` could be frozen and hashed. Re-measure from
+  a retained warm NDJSON once local object storage has enough free space.
 
 - **Deep-time zoom can feel empty (T3-T5).** Zooming into e.g. 2.8 Gyr ago
   shows "0 shown": billion-year-precision entities (Sun, Earth, eras) are
