@@ -2,7 +2,15 @@
 // trip through the URL - including the ones that are legitimately absent.
 import { describe, expect, it } from "vitest";
 import { isValidEntitySlug } from "./slug";
-import { cursorTime, DEFAULT_VIEW, parseView, serializeView } from "./state";
+import {
+  applySearchPick,
+  cursorTime,
+  DEFAULT_VIEW,
+  enterCompare,
+  parseView,
+  serializeView,
+  switchView,
+} from "./state";
 
 function parseURL(url: string, basePath = "/") {
   const parsed = new URL(url, "https://timeline.test");
@@ -117,6 +125,66 @@ describe("canonical Compare routes (API-6)", () => {
     );
     expect(view.compare).toEqual(["earth", "mars"]);
     expect(serializeView(view, "/timeline/")).toMatch(/^\/timeline\/entity\/earth\?/);
+  });
+});
+
+describe("view and selection intent", () => {
+  const result = { slug: "mars", t0: 10, t1: 20 };
+
+  it("starts Compare pending with the Inspector subject", () => {
+    expect(enterCompare({ ...DEFAULT_VIEW, selected: "earth" }, "earth")).toMatchObject({
+      mode: "compare",
+      compare: ["earth"],
+      selected: "earth",
+    });
+  });
+
+  it("lets Search fill only a pending Compare pair", () => {
+    const pending = { ...DEFAULT_VIEW, mode: "compare" as const, compare: ["earth"] };
+    expect(applySearchPick(pending, result)).toMatchObject({
+      mode: "compare",
+      compare: ["earth", "mars"],
+      selected: null,
+    });
+
+    const complete = { ...pending, compare: ["earth", "venus"] };
+    expect(applySearchPick(complete, result)).toMatchObject({
+      compare: ["earth", "venus"],
+      selected: "mars",
+      t0: -129_590,
+      t1: 129_620,
+    });
+    expect(applySearchPick({ ...DEFAULT_VIEW, mode: "compare" }, result)).toMatchObject({
+      compare: [],
+      selected: "mars",
+    });
+  });
+
+  it("treats picking the pending subject again as ordinary Search selection", () => {
+    const pending = { ...DEFAULT_VIEW, mode: "compare" as const, compare: ["mars"] };
+    expect(applySearchPick(pending, result)).toMatchObject({ compare: ["mars"], selected: "mars" });
+  });
+
+  it("switches Map and Compare into canonical back-forward states", () => {
+    const compare = switchView(DEFAULT_VIEW, "compare");
+    const pending = { ...compare, compare: ["earth"] };
+    const map = switchView(compare, "map");
+    expect(switchView(pending, "compare")).toBe(pending);
+    expect(parseURL(serializeView(compare))).toMatchObject({ mode: "compare", compare: [] });
+    expect(parseURL(serializeView(map))).toMatchObject({ mode: "map", compare: [] });
+  });
+
+  it("restores each view snapshot when history moves backward and forward", () => {
+    const snapshots = [
+      { ...DEFAULT_VIEW },
+      { ...DEFAULT_VIEW, mode: "compare" as const },
+      { ...DEFAULT_VIEW, mode: "compare" as const, compare: ["earth"] },
+      { ...DEFAULT_VIEW, mode: "compare" as const, compare: ["earth", "mars"] },
+    ];
+    const restored = snapshots.map((snapshot) => parseURL(serializeView(snapshot)));
+    expect(restored.map(({ mode, compare }) => ({ mode, compare }))).toEqual(
+      snapshots.map(({ mode, compare }) => ({ mode, compare })),
+    );
   });
 });
 

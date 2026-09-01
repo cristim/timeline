@@ -41,6 +41,32 @@ export function cursorTime(v: Pick<ViewState, "t0" | "t1" | "tc">): number {
   return v.tc ?? (v.t0 + v.t1) / 2;
 }
 
+export function switchView(view: ViewState, mode: ViewMode): ViewState {
+  if (view.mode === mode) return view;
+  return { ...view, mode, compare: [] };
+}
+
+export function enterCompare(view: ViewState, slug: string): ViewState {
+  if (!isValidEntitySlug(slug)) return view;
+  return { ...view, mode: "compare", compare: [slug] };
+}
+
+export function applySearchPick(
+  view: ViewState,
+  entry: { slug: string; t0: number; t1: number },
+): ViewState {
+  if (view.mode === "compare" && view.compare.length === 1 && view.compare[0] !== entry.slug) {
+    return { ...view, compare: [view.compare[0], entry.slug] };
+  }
+  const span = Math.max(entry.t1 - entry.t0, 86_400);
+  return {
+    ...view,
+    selected: entry.slug,
+    t0: entry.t0 - span * 1.5,
+    t1: entry.t1 + span * 1.5,
+  };
+}
+
 export function parseView(
   location: Pick<Location, "pathname" | "search">,
   basePath = "/",

@@ -6,8 +6,20 @@ import { SpaceView, SPACE_MAX } from "./components/SpaceView";
 import { Timeline } from "./components/Timeline";
 import { Inspector, focusEntity } from "./components/Inspector";
 import { SearchBox } from "./components/SearchBox";
+import { CompareShell } from "./components/CompareShell";
+import { ViewSwitcher } from "./components/ViewSwitcher";
 import { useEntity, useManifest, useTimeLayer, useViewportItems } from "./lib/hooks";
-import { cursorTime, DEFAULT_VIEW, parseView, serializeView, type ViewState } from "./lib/state";
+import {
+  applySearchPick,
+  cursorTime,
+  DEFAULT_VIEW,
+  enterCompare,
+  parseView,
+  serializeView,
+  switchView,
+  type ViewMode,
+  type ViewState,
+} from "./lib/state";
 import { laneItems, mapItems } from "./lib/visible";
 import { frontAt, frontBounds } from "./lib/fronts";
 import { formatTime } from "./lib/timefmt";
@@ -177,6 +189,11 @@ export function App() {
     [],
   );
   const setCursor = useCallback((t: number | null) => setView((v) => ({ ...v, tc: t })), []);
+  const setMode = useCallback((next: ViewMode) => setView((v) => switchView(v, next)), []);
+  const startCompare = useCallback(
+    (slug: string) => setView((v) => enterCompare(v, slug)),
+    [],
+  );
   const setSpace = useCallback(
     (next: number) => setView((v) => ({ ...v, space: Math.max(0, Math.min(SPACE_MAX, next)) })),
     [],
@@ -189,10 +206,7 @@ export function App() {
     }));
 
   const onSearchPick = (e: SearchEntry) => {
-    setView((v) => {
-      const span = Math.max(e.t1 - e.t0, 86_400);
-      return { ...v, selected: e.slug, t0: e.t0 - span * 1.5, t1: e.t1 + span * 1.5 };
-    });
+    setView((v) => applySearchPick(v, e));
   };
 
   const rangeLabel = useMemo(() => {
@@ -261,6 +275,7 @@ export function App() {
         >
           <em>Timeline</em>
         </button>
+        <ViewSwitcher active={view.mode} onSwitch={setMode} />
         <SearchBox manifest={manifest} onPick={onSearchPick} />
         <div className="cat-chips">
           {manifest.categories.map((c) => (
@@ -315,6 +330,7 @@ export function App() {
           {view.space > 0 && (
             <SpaceView s={view.space} onZoom={setSpace} onSelect={setSelected} />
           )}
+          {view.mode === "compare" && <CompareShell subjects={view.compare} />}
         </div>
         <div
           className="insp-resize-handle"
@@ -326,6 +342,7 @@ export function App() {
           width={inspWidth}
           onSelect={setSelected}
           onFocusTime={setRange}
+          onCompare={startCompare}
           onClose={() => setSelected(null)}
         />
       </div>

@@ -14,10 +14,11 @@ interface Props {
   width?: number;
   onSelect: (slug: string) => void;
   onFocusTime: (t0: number, t1: number) => void;
+  onCompare: (slug: string) => void;
   onClose: () => void;
 }
 
-export function Inspector({ doc, width, onSelect, onFocusTime, onClose }: Props) {
+export function Inspector({ doc, width, onSelect, onFocusTime, onCompare, onClose }: Props) {
   if (!doc) {
     return (
       <aside className="inspector empty" style={{ width }}>
@@ -50,6 +51,9 @@ export function Inspector({ doc, width, onSelect, onFocusTime, onClose }: Props)
           <span className="prec"> · {temporal.precision.replace(/_/g, " ")}</span>
         </button>
         {doc.description && <p className="desc">{doc.description}</p>}
+        <div className="insp-actions">
+          <button className="iact" onClick={() => onCompare(doc.slug)}>Compare</button>
+        </div>
       </div>
 
       <Section title="Details" defaultOpen>
