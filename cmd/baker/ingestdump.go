@@ -76,8 +76,9 @@ func runIngestWikidataDumpWithIO(ctx context.Context, args []string, stdin io.Re
 		return fmt.Errorf("write %s: %w", reportPath, err)
 	}
 
+	modelVersion := dumpModelVersion(reportBody)
 	printDumpImportSummary(stdout, imported.Report, modelFiles, rejectFile)
-	fmt.Fprintf(stdout, "model %s -> %s\n", dumpModelVersion(reportBody), opts.out)
+	fmt.Fprintf(stdout, "model %s -> %s\n", modelVersion, opts.out)
 
 	if !opts.publish {
 		return nil
@@ -88,7 +89,7 @@ func runIngestWikidataDumpWithIO(ctx context.Context, args []string, stdin io.Re
 	}
 	warmBucket := envOr("BUCKET_WARM", "wk-warm")
 	sink := blob.BucketSink{Client: cli, Bucket: warmBucket}
-	dataset := datasetVersion()
+	dataset := modelVersion
 
 	rejectBody, err := os.ReadFile(rejectFile.Path)
 	if err != nil {
@@ -156,6 +157,10 @@ func printDumpImportSummary(out io.Writer, report ingest.WikidataDumpImportRepor
 // content address of the import report, so the same dump and the same code
 // always name the same version, and a different dump never reuses one.
 func dumpModelVersion(reportBody []byte) string {
+	return dumpContentVersion(reportBody)
+}
+
+func dumpContentVersion(reportBody []byte) string {
 	digest := sha256.Sum256(reportBody)
 	return fmt.Sprintf("wikidata-%x", digest[:6])
 }

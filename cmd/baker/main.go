@@ -50,12 +50,11 @@ const usageText = `usage: baker <command>
                                deterministic census from seed plus default
                                BUCKET_WARM/` + warmEventsKey + `, or explicit
                                --seed-only / --warm-file input
-  ingest-wikidata-dump --dump <path|-> --out <dir>
+  ingest-wikidata-dump --dump <path|-> --out <dir> [--publish]
                                normalize a Wikidata dump (.json, .json.gz,
                                .json.bz2 or stdin) into the Parquet model plus
-                               reject table and import report;
-                               --importance-floor promotes only entities at or
-                               above it, --publish writes to BUCKET_WARM`
+                               reject table and import report; --publish writes
+                               to BUCKET_WARM`
 
 func main() {
 	if len(os.Args) < 2 {

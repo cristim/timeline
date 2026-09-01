@@ -284,7 +284,7 @@ func bakeFromModel(ctx context.Context, compiler bake.LayerCompiler, req bakeMod
 	}
 
 	start := time.Now()
-	manifest, stats, err := bake.Run(ctx, sink, compiler, datasetVersion(), version, promoted, req.basemap, geo, req.goldens)
+	manifest, stats, err := bake.Run(ctx, sink, compiler, datasetVersion(version), version, promoted, req.basemap, geo, req.goldens)
 	if err != nil {
 		return err
 	}

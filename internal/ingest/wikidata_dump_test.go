@@ -216,14 +216,14 @@ func TestScanWikidataDumpRejectsInvalidBoundaries(t *testing.T) {
 		name       string
 		input      string
 		want       string
-		wantSyntax bool  // a truncated array surfaces as a typed json.SyntaxError
-		wantErr    error // an unterminated record surfaces as io.ErrUnexpectedEOF
+		wantSyntax bool
+		wantErr    error
 	}{
 		{name: "object root", input: `{}`, want: "root is not an array"},
 		{name: "scalar root", input: `1`, want: "root is not an array"},
 		{
 			name: "truncated array", input: `[{"id":"Q1","type":"item"}`,
-			want: "wikidata dump entity 1: decode", wantSyntax: true,
+			want: "read closing array", wantErr: io.EOF,
 		},
 		{
 			name: "malformed entity", input: `[{"id":"Q1","type":"item"`,

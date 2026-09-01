@@ -141,7 +141,8 @@ func TestBakeFromModelProducesValidArtifacts(t *testing.T) {
 	}
 
 	outDir := t.TempDir()
-	t.Setenv("DATASET_VERSION", "dump-fixture")
+	t.Setenv("DATASET_VERSION", "")
+	t.Setenv("GITHUB_SHA", "")
 	if err := runBakeWithCompiler(context.Background(), testLayerCompiler{}, testBasemapSpec(), []string{
 		"--model", modelDir,
 		"--geo", geoDirForEntityBetween(t, "wd-q2002", "1915-01-01", "1916-01-01"),
@@ -159,8 +160,8 @@ func TestBakeFromModelProducesValidArtifacts(t *testing.T) {
 	if err := json.Unmarshal(manifestBody, &manifest); err != nil {
 		t.Fatalf("parse manifest: %v", err)
 	}
-	if manifest.Dataset != "dump-fixture" {
-		t.Fatalf("dataset = %q", manifest.Dataset)
+	if manifest.Dataset != datasetVersion(version) {
+		t.Fatalf("dataset = %q, want derived from model version %q", manifest.Dataset, version)
 	}
 	if manifest.SeedVersion != version {
 		t.Fatalf("version = %q, want the model version %q", manifest.SeedVersion, version)
@@ -261,6 +262,45 @@ func TestBakeFromModelPromotesOnlyAboveTheImportanceFloor(t *testing.T) {
 	}
 }
 
+func TestIngestWikidataDumpPublishesUnderTheModelVersion(t *testing.T) {
+	server := newBakeS3Server(nil)
+	defer server.Close()
+	server.installEnv(t)
+
+	out := filepath.Join(t.TempDir(), "model")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := runIngestWikidataDumpWithIO(context.Background(),
+		[]string{"--dump", censusDumpFixture, "--out", out, "--publish"},
+		strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("runIngestWikidataDumpWithIO: %v", err)
+	}
+	version, err := loadDumpModelVersion(out)
+	if err != nil {
+		t.Fatalf("loadDumpModelVersion: %v", err)
+	}
+
+	requests := server.requests()
+	for _, prefix := range []string{
+		"/wk-warm-test/reports/wikidata-dump/" + version + "/",
+		"/wk-warm-test/model/" + version + "/",
+	} {
+		if !containsRequest(requests, prefix) {
+			t.Fatalf("requests = %v, want publication under %s", requests, prefix)
+		}
+	}
+	if containsRequest(requests, "/wk-warm-test/model/dev/") ||
+		containsRequest(requests, "/wk-warm-test/reports/wikidata-dump/dev/") {
+		t.Fatalf("dump publish reused DATASET_VERSION instead of model version: %v", requests)
+	}
+	if !strings.Contains(stdout.String(), "model "+version+" -> "+out) {
+		t.Fatalf("stdout = %q, want local model summary", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestBakeRejectsConflictingSourceFlags(t *testing.T) {
 	t.Parallel()
 
@@ -312,14 +352,37 @@ func TestCensusPublishesTheDumpReport(t *testing.T) {
 	server.installEnv(t)
 
 	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 	if err := runCensusWithIO(context.Background(),
 		[]string{"--wikidata-dump", censusDumpFixture, "--publish"},
-		strings.NewReader(""), &stdout, io.Discard); err != nil {
+		strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("runCensusWithIO: %v", err)
 	}
 
+	var report ingest.WikidataDumpCoverageReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("stdout is not a single JSON report: %v\n%s", err, stdout.String())
+	}
+	file, err := os.Open(censusDumpFixture)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	defer file.Close()
+	expectedReport, err := ingest.BuildWikidataDumpCoverageReport(file)
+	if err != nil {
+		t.Fatalf("BuildWikidataDumpCoverageReport: %v", err)
+	}
+	body, err := json.Marshal(expectedReport)
+	if err != nil {
+		t.Fatalf("marshal expected report: %v", err)
+	}
+	if report.InputSHA256 != expectedReport.InputSHA256 {
+		t.Fatalf("input digest = %q, want %q", report.InputSHA256, expectedReport.InputSHA256)
+	}
+
 	requests := server.requests()
-	prefix := "/wk-warm-test/reports/wikidata-census/dev/"
+	version := dumpContentVersion(body)
+	prefix := "/wk-warm-test/reports/wikidata-census/" + version + "/"
 	if !containsRequest(requests, prefix) {
 		t.Fatalf("requests = %v, want a publication under %s", requests, prefix)
 	}
@@ -335,8 +398,11 @@ func TestCensusPublishesTheDumpReport(t *testing.T) {
 	if !strings.HasSuffix(puts[0], "/report.json") || !strings.HasSuffix(puts[1], "/manifest.json") {
 		t.Fatalf("publication order = %v, want the immutable report first", puts)
 	}
-	if !strings.Contains(stdout.String(), "report -> s3://wk-warm-test/reports/wikidata-census/dev/") {
-		t.Fatalf("stdout = %q", stdout.String())
+	if strings.Contains(stdout.String(), "report ->") {
+		t.Fatalf("stdout contains diagnostics: %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "report -> s3://wk-warm-test/reports/wikidata-census/"+version+"/") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 

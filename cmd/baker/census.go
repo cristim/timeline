@@ -54,7 +54,7 @@ func runCensusWithIO(ctx context.Context, args []string, stdin io.Reader, stdout
 		return err
 	}
 	if opts.wikidataDumpSet {
-		return runWikidataDumpCoverage(ctx, opts, stdin, stdout)
+		return runWikidataDumpCoverage(ctx, opts, stdin, stdout, stderr)
 	}
 
 	cli, err := blob.New(ctx)
@@ -88,7 +88,7 @@ func runCensusWithIO(ctx context.Context, args []string, stdin io.Reader, stdout
 	return runCensusWithRunner(ctx, opts, runner)
 }
 
-func runWikidataDumpCoverage(ctx context.Context, opts censusOptions, stdin io.Reader, stdout io.Writer) error {
+func runWikidataDumpCoverage(ctx context.Context, opts censusOptions, stdin io.Reader, stdout, stderr io.Writer) error {
 	path := opts.wikidataDump
 	r := stdin
 	if path != "-" {
@@ -122,14 +122,14 @@ func runWikidataDumpCoverage(ctx context.Context, opts censusOptions, stdin io.R
 		return err
 	}
 	warmBucket := envOr("BUCKET_WARM", "wk-warm")
-	prefix := reportPrefix("wikidata-census", datasetVersion())
+	prefix := reportPrefix("wikidata-census", dumpContentVersion(body))
 	manifest, err := publishContentAddressedReport(ctx,
 		blob.BucketSink{Client: cli, Bucket: warmBucket}, prefix, prefix+"/manifest.json",
 		time.Now().UTC(), report.SchemaVersion, body)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "report -> s3://%s/%s\n", warmBucket, manifest.Report.Key)
+	fmt.Fprintf(stderr, "report -> s3://%s/%s\n", warmBucket, manifest.Report.Key)
 	return nil
 }
 
