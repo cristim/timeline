@@ -3,6 +3,7 @@ package duck
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,15 +66,12 @@ func TestWikidataDumpStagingSinkMatchesCompatibilityBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal streamed report: %v", err)
 	}
-	if err := stage.finalizeScratch(context.Background(), streamedReportBody); err != nil {
-		t.Fatalf("finalizeScratch: %v", err)
-	}
-	if _, err := os.Lstat(finalOut); !os.IsNotExist(err) {
-		t.Fatalf("final output exists before promotion: %v", err)
+	if err := stage.Finalize(context.Background(), streamedReportBody); err != nil {
+		t.Fatalf("Finalize: %v", err)
 	}
 
 	legacy := append(append([]ModelFile{}, legacyModel...), legacyReject)
-	streamed := stagedModelFiles(stage)
+	streamed := finalizedModelFiles(finalOut, stage)
 	if len(streamed) != len(legacy) {
 		t.Fatalf("streamed files = %d, want %d", len(streamed), len(legacy))
 	}
@@ -83,11 +81,13 @@ func TestWikidataDumpStagingSinkMatchesCompatibilityBytes(t *testing.T) {
 		}
 		assertSameFileBytes(t, streamed[i].Path, legacy[i].Path)
 	}
-	assertSameFileBytes(t, filepath.Join(stage.workspace.exportsPath(), importReportFileName), legacyReport)
+	assertSameFileBytes(t, filepath.Join(finalOut, importReportFileName), legacyReport)
+	assertFinalizedManifest(t, finalOut, streamed, streamedReportBody)
 	if sha256.Sum256(streamedReportBody) != sha256.Sum256(reportBody) {
 		t.Fatal("streamed import report changes the model id")
 	}
 	assertStageDataHandlesClosed(t, stage)
+	assertWorkspaceHandlesClosed(t, stage.workspace)
 	if err := stage.Abort(); err != nil {
 		t.Fatalf("Abort finalized stage: %v", err)
 	}
@@ -201,6 +201,228 @@ func TestWikidataDumpStagingSinkLeavesExistingOutputUntouched(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "model" {
 		t.Fatalf("output parent entries = %v", entries)
+	}
+}
+
+func TestWikidataDumpStagingSinkFinalizeLeavesCompetingOutputUntouched(t *testing.T) {
+	for _, kind := range []string{"file", "empty-directory", "nonempty-directory"} {
+		t.Run(kind, func(t *testing.T) {
+			parent := t.TempDir()
+			finalOut := filepath.Join(parent, "model")
+			stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+			if err != nil {
+				t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+			}
+			privatePath := stage.workspace.privatePath
+			switch kind {
+			case "file":
+				err = os.WriteFile(finalOut, []byte("competitor"), 0o600)
+			case "empty-directory", "nonempty-directory":
+				err = os.Mkdir(finalOut, 0o700)
+				if err == nil && kind == "nonempty-directory" {
+					err = os.WriteFile(filepath.Join(finalOut, "marker"), []byte("competitor"), 0o600)
+				}
+			}
+			if err != nil {
+				t.Fatalf("create competitor: %v", err)
+			}
+			if err := stage.Finalize(context.Background(), []byte("{}")); err == nil {
+				t.Fatal("Finalize succeeded over competitor")
+			}
+			if _, err := os.Lstat(finalOut); err != nil {
+				t.Fatalf("competitor removed: %v", err)
+			}
+			switch kind {
+			case "file":
+				if got, _ := os.ReadFile(finalOut); string(got) != "competitor" {
+					t.Fatalf("competitor file = %q", got)
+				}
+			case "nonempty-directory":
+				if got, _ := os.ReadFile(filepath.Join(finalOut, "marker")); string(got) != "competitor" {
+					t.Fatalf("competitor marker = %q", got)
+				}
+			}
+			if _, err := os.Lstat(privatePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("private stage remains after handled install conflict: %v", err)
+			}
+		})
+	}
+}
+
+func TestWikidataDumpStagingSinkFinalizeRefusesReplacedReadyDirectory(t *testing.T) {
+	parent := t.TempDir()
+	finalOut := filepath.Join(parent, "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	ready := filepath.Join(stage.workspace.privatePath, "ready")
+	displaced := ready + ".displaced"
+	stage.beforeInstall = func() {
+		if _, err := os.Lstat(finalOut); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("final output exists before commit: %v", err)
+			return
+		}
+		if err := os.Rename(ready, displaced); err != nil {
+			t.Errorf("displace ready: %v", err)
+			return
+		}
+		if err := os.Mkdir(ready, 0o700); err != nil {
+			t.Errorf("replace ready: %v", err)
+		}
+	}
+	err = stage.Finalize(context.Background(), []byte("{}"))
+	if err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("Finalize error = %v", err)
+	}
+	if _, err := os.Lstat(finalOut); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("final output exists: %v", err)
+	}
+	for _, path := range []string{ready, displaced} {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("ready race entry %s: info=%v err=%v", path, info, err)
+		}
+	}
+}
+
+func TestWikidataDumpStagingSinkFinalizeFailureBoundaries(t *testing.T) {
+	boundaries := []string{
+		"close-scratch-database",
+		"scratch-copy:entity.parquet", "scratch-copy:entity_category.parquet",
+		"scratch-copy:relationship.parquet", "scratch-copy:claim.parquet", "scratch-copy:reject.parquet",
+		"copy-ready:entity.parquet", "sync-ready:entity.parquet",
+		"copy-ready:entity_category.parquet", "sync-ready:entity_category.parquet",
+		"copy-ready:relationship.parquet", "sync-ready:relationship.parquet",
+		"copy-ready:claim.parquet", "sync-ready:claim.parquet",
+		"copy-ready:reject.parquet", "sync-ready:reject.parquet",
+		"copy-ready:import.json", "sync-ready:import.json",
+		"write-ready:model-files.json", "sync-ready:model-files.json",
+		"teardown-scratch", "sync-ready-directory", "install-directory",
+	}
+	for _, boundary := range boundaries {
+		t.Run(boundary, func(t *testing.T) {
+			parent := t.TempDir()
+			finalOut := filepath.Join(parent, "model")
+			stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+			if err != nil {
+				t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+			}
+			privatePath := stage.workspace.privatePath
+			stage.finalizeHook = func(got string) error {
+				if got == boundary {
+					return errors.New("injected")
+				}
+				return nil
+			}
+			err = stage.Finalize(context.Background(), []byte("{}"))
+			if err == nil || !strings.Contains(err.Error(), boundary) {
+				t.Fatalf("Finalize error = %v", err)
+			}
+			if _, err := os.Lstat(finalOut); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("final output exists after %s: %v", boundary, err)
+			}
+			if _, err := os.Lstat(privatePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("private stage remains after %s: %v", boundary, err)
+			}
+		})
+	}
+}
+
+func TestWikidataDumpStagingSinkFinalizeJoinsPostCommitFailures(t *testing.T) {
+	parent := t.TempDir()
+	finalOut := filepath.Join(parent, "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	privatePath := stage.workspace.privatePath
+	stage.finalizeHook = func(boundary string) error {
+		if boundary == "sync-parent-installed" || boundary == "cleanup-private" {
+			return errors.New("injected " + boundary)
+		}
+		return nil
+	}
+	err = stage.Finalize(context.Background(), []byte("{}"))
+	if err == nil || !strings.Contains(err.Error(), "sync-parent-installed") || !strings.Contains(err.Error(), "cleanup-private") {
+		t.Fatalf("Finalize error = %v", err)
+	}
+	entries, readErr := os.ReadDir(finalOut)
+	if readErr != nil || len(entries) != 7 {
+		t.Fatalf("committed output = %v, err %v", entries, readErr)
+	}
+	if info, statErr := os.Stat(privatePath); statErr != nil || !info.IsDir() {
+		t.Fatalf("diagnosed empty private stage = %v, err %v", info, statErr)
+	}
+	privateEntries, err := os.ReadDir(privatePath)
+	if err != nil || len(privateEntries) != 0 {
+		t.Fatalf("private stage entries = %v, err %v", privateEntries, err)
+	}
+	if err := stage.Abort(); err != nil {
+		t.Fatalf("Abort after committed error: %v", err)
+	}
+	if entriesAfter, err := os.ReadDir(finalOut); err != nil || len(entriesAfter) != 7 {
+		t.Fatalf("Abort changed committed output: %v, err %v", entriesAfter, err)
+	}
+}
+
+func TestWikidataDumpStagingSinkFinalizePreservesModelAfterParentSyncFailure(t *testing.T) {
+	for _, boundary := range []string{"sync-parent-installed", "sync-parent-cleaned"} {
+		t.Run(boundary, func(t *testing.T) {
+			parent := t.TempDir()
+			finalOut := filepath.Join(parent, "model")
+			stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+			if err != nil {
+				t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+			}
+			privatePath := stage.workspace.privatePath
+			stage.finalizeHook = func(got string) error {
+				if got == boundary {
+					return errors.New("injected")
+				}
+				return nil
+			}
+			err = stage.Finalize(context.Background(), []byte("{}"))
+			if err == nil || !strings.Contains(err.Error(), boundary) {
+				t.Fatalf("Finalize error = %v", err)
+			}
+			if entries, err := os.ReadDir(finalOut); err != nil || len(entries) != 7 {
+				t.Fatalf("committed output = %v, err %v", entries, err)
+			}
+			if _, err := os.Lstat(privatePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("private stage remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestWikidataDumpStagingSinkFinalizeCancellationDuringReadyCopy(t *testing.T) {
+	for _, cancelAt := range []string{"copy-ready:entity.parquet", "sync-ready:import.json", "sync-ready:model-files.json", "install-directory"} {
+		t.Run(cancelAt, func(t *testing.T) {
+			parent := t.TempDir()
+			finalOut := filepath.Join(parent, "model")
+			stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+			if err != nil {
+				t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+			}
+			privatePath := stage.workspace.privatePath
+			ctx, cancel := context.WithCancel(context.Background())
+			stage.finalizeHook = func(boundary string) error {
+				if boundary == cancelAt {
+					cancel()
+				}
+				return nil
+			}
+			err = stage.Finalize(ctx, []byte("{}"))
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("Finalize error = %v", err)
+			}
+			if _, err := os.Lstat(finalOut); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("final output exists after cancellation: %v", err)
+			}
+			if _, err := os.Lstat(privatePath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("private stage remains after cancellation: %v", err)
+			}
+		})
 	}
 }
 
@@ -431,6 +653,58 @@ func TestWikidataDumpStagingSinkCleanupPreservesEveryKnownReplacement(t *testing
 				if got, readErr := os.ReadFile(target); readErr != nil || string(got) != "replacement" {
 					t.Fatalf("replacement %s = %q, err %v", boundary.key, got, readErr)
 				}
+			}
+		})
+	}
+}
+
+func TestWikidataDumpStagingSinkCleanupPreservesReadyArtifactReplacements(t *testing.T) {
+	for _, name := range readyArtifactNames {
+		t.Run(name, func(t *testing.T) {
+			parent := t.TempDir()
+			stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(parent, "model"))
+			if err != nil {
+				t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+			}
+			for _, artifact := range readyArtifactNames {
+				file, err := stage.workspace.readyRoot.OpenFile(artifact, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+				if err != nil {
+					t.Fatalf("create ready artifact %s: %v", artifact, err)
+				}
+				if _, err := file.Write([]byte("owned")); err != nil {
+					t.Fatalf("write ready artifact %s: %v", artifact, err)
+				}
+				if err := stage.workspace.recordReadyFile(artifact, file); err != nil {
+					t.Fatalf("record ready artifact %s: %v", artifact, err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatalf("close ready artifact %s: %v", artifact, err)
+				}
+			}
+			readyPath := filepath.Join(stage.workspace.privatePath, "ready")
+			original := filepath.Join(readyPath, name)
+			displaced := original + ".displaced"
+			var hookErr error
+			stage.workspace.beforeRemove = func(key string) {
+				if key != "ready/"+name {
+					return
+				}
+				if hookErr = os.Rename(original, displaced); hookErr == nil {
+					hookErr = os.WriteFile(original, []byte("replacement"), 0o600)
+				}
+			}
+			err = stage.Abort()
+			if hookErr != nil {
+				t.Fatalf("replace ready artifact: %v", hookErr)
+			}
+			if err == nil || !strings.Contains(err.Error(), "identity changed") {
+				t.Fatalf("Abort error = %v", err)
+			}
+			if got, err := os.ReadFile(original); err != nil || string(got) != "replacement" {
+				t.Fatalf("replacement = %q, err %v", got, err)
+			}
+			if got, err := os.ReadFile(displaced); err != nil || string(got) != "owned" {
+				t.Fatalf("displaced original = %q, err %v", got, err)
 			}
 		})
 	}
@@ -711,4 +985,59 @@ func stagedModelFiles(stage *WikidataDumpStagingSink) []ModelFile {
 	return append(files, ModelFile{
 		Name: "reject.parquet", Path: filepath.Join(stage.workspace.exportsPath(), "reject.parquet"), Rows: stage.rejectRows,
 	})
+}
+
+func finalizedModelFiles(dir string, stage *WikidataDumpStagingSink) []ModelFile {
+	rows := map[string]int{
+		"entity": stage.entityRows, "entity_category": stage.categoryRows,
+		"relationship": stage.relationshipRows, "claim": stage.claimRows,
+	}
+	files := make([]ModelFile, 0, len(fileDefinitions)+1)
+	for _, definition := range fileDefinitions {
+		files = append(files, ModelFile{Name: definition.name, Path: filepath.Join(dir, definition.name), Rows: rows[definition.table]})
+	}
+	return append(files, ModelFile{Name: "reject.parquet", Path: filepath.Join(dir, "reject.parquet"), Rows: stage.rejectRows})
+}
+
+func assertFinalizedManifest(t *testing.T, dir string, files []ModelFile, report []byte) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join(dir, modelFilesManifestName))
+	if err != nil {
+		t.Fatalf("read model file manifest: %v", err)
+	}
+	var manifest modelFilesManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("decode model file manifest: %v", err)
+	}
+	if manifest.SchemaVersion != 1 || len(manifest.Files) != len(files) {
+		t.Fatalf("manifest header = %#v", manifest)
+	}
+	reportHash := sha256.Sum256(report)
+	if manifest.Import.Name != importReportFileName || manifest.Import.SHA256 != hex.EncodeToString(reportHash[:]) || manifest.Import.Size != int64(len(report)) {
+		t.Fatalf("manifest import = %#v", manifest.Import)
+	}
+	for i, file := range files {
+		body, err := os.ReadFile(file.Path)
+		if err != nil {
+			t.Fatalf("read finalized %s: %v", file.Name, err)
+		}
+		hash := sha256.Sum256(body)
+		got := manifest.Files[i]
+		if got.Name != file.Name || got.SHA256 != hex.EncodeToString(hash[:]) || got.Size != int64(len(body)) || got.Rows != file.Rows {
+			t.Fatalf("manifest file %d = %#v", i, got)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 7 {
+		t.Fatalf("finalized artifacts = %v, err %v", entries, err)
+	}
+}
+
+func assertWorkspaceHandlesClosed(t *testing.T, workspace *stagingWorkspace) {
+	t.Helper()
+	if workspace.publicParent != nil || workspace.publicParentRoot != nil || workspace.privateDir != nil || workspace.privateRoot != nil ||
+		workspace.scratchDir != nil || workspace.scratchRoot != nil || workspace.duckDir != nil || workspace.duckRoot != nil ||
+		workspace.exportsDir != nil || workspace.exportsRoot != nil || workspace.readyDir != nil || workspace.readyRoot != nil {
+		t.Fatalf("finalized workspace retains handles: %#v", workspace)
+	}
 }

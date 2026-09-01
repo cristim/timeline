@@ -45,6 +45,11 @@ type WikidataDumpStagingSink struct {
 
 	finalized bool
 	aborted   bool
+	committed bool
+
+	beforeInstall func()
+	insideInstall func()
+	finalizeHook  func(string) error
 }
 
 func NewWikidataDumpStagingSink(ctx context.Context, outputPath string) (_ *WikidataDumpStagingSink, err error) {
@@ -215,6 +220,9 @@ func (s *WikidataDumpStagingSink) finalizeScratch(ctx context.Context, importRep
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit staged Wikidata rows: %w", err)
 	}
+	if err := s.runFinalizeBoundary("close-scratch-database"); err != nil {
+		return err
+	}
 	if err := s.closeDuckDB(); err != nil {
 		return err
 	}
@@ -247,6 +255,9 @@ func (s *WikidataDumpStagingSink) finalizeScratch(ctx context.Context, importRep
 
 	exports := s.workspace.exportsPath()
 	for _, definition := range fileDefinitions {
+		if err := s.runFinalizeBoundary("scratch-copy:" + definition.name); err != nil {
+			return err
+		}
 		if err := s.workspace.verifyScratchPathIdentity(); err != nil {
 			return err
 		}
@@ -272,6 +283,9 @@ category_count, relationship_count, claim_count`
 		return err
 	}
 	rejectPath := filepath.Join(exports, "reject.parquet")
+	if err := s.runFinalizeBoundary("scratch-copy:reject.parquet"); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx,
 		`COPY (SELECT source, file, line, reason FROM reject ORDER BY source, file, line, reason) TO ? (FORMAT PARQUET, COMPRESSION ZSTD)`,
 		rejectPath,
@@ -412,7 +426,7 @@ ORDER BY base_slug, importance DESC, seed_id`)
 }
 
 func (s *WikidataDumpStagingSink) Abort() error {
-	if s == nil || s.aborted {
+	if s == nil || s.aborted || s.committed {
 		return nil
 	}
 	s.aborted = true
@@ -505,3 +519,13 @@ func driverExec(ctx context.Context, conn driver.Conn, query string, args ...any
 }
 
 var _ ingest.WikidataDumpSink = (*WikidataDumpStagingSink)(nil)
+
+func (s *WikidataDumpStagingSink) runFinalizeBoundary(name string) error {
+	if s.finalizeHook == nil {
+		return nil
+	}
+	if err := s.finalizeHook(name); err != nil {
+		return fmt.Errorf("finalize boundary %s: %w", name, err)
+	}
+	return nil
+}

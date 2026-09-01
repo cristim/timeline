@@ -25,12 +25,16 @@ type stagingWorkspace struct {
 	privateInfo os.FileInfo
 
 	scratchRoot *os.Root
+	scratchDir  *os.File
 	scratchInfo os.FileInfo
 	duckRoot    *os.Root
+	duckDir     *os.File
 	duckInfo    os.FileInfo
 	exportsRoot *os.Root
+	exportsDir  *os.File
 	exportsInfo os.FileInfo
 	readyRoot   *os.Root
+	readyDir    *os.File
 	readyInfo   os.FileInfo
 
 	fileIdentities map[string]os.FileInfo
@@ -54,6 +58,11 @@ const (
 	stageReadyDirectory   = "ready"
 	stagePrivateDirectory = "."
 )
+
+var readyArtifactNames = []string{
+	"entity.parquet", "entity_category.parquet", "relationship.parquet", "claim.parquet",
+	"reject.parquet", "import.json", modelFilesManifestName,
+}
 
 func newStagingWorkspace(outputPath string) (_ *stagingWorkspace, err error) {
 	absOutput, err := filepath.Abs(outputPath)
@@ -116,16 +125,16 @@ func newStagingWorkspace(outputPath string) (_ *stagingWorkspace, err error) {
 		return nil, err
 	}
 
-	if w.scratchRoot, w.scratchInfo, err = createHeldDirectory(w.privateRoot, "scratch"); err != nil {
+	if w.scratchDir, w.scratchRoot, w.scratchInfo, err = createHeldDirectory(w.privateRoot, "scratch"); err != nil {
 		return nil, fmt.Errorf("create private scratch: %w", err)
 	}
-	if w.duckRoot, w.duckInfo, err = createHeldDirectory(w.scratchRoot, "duck"); err != nil {
+	if w.duckDir, w.duckRoot, w.duckInfo, err = createHeldDirectory(w.scratchRoot, "duck"); err != nil {
 		return nil, fmt.Errorf("create private DuckDB directory: %w", err)
 	}
-	if w.exportsRoot, w.exportsInfo, err = createHeldDirectory(w.scratchRoot, "exports"); err != nil {
+	if w.exportsDir, w.exportsRoot, w.exportsInfo, err = createHeldDirectory(w.scratchRoot, "exports"); err != nil {
 		return nil, fmt.Errorf("create private exports directory: %w", err)
 	}
-	if w.readyRoot, w.readyInfo, err = createHeldDirectory(w.privateRoot, "ready"); err != nil {
+	if w.readyDir, w.readyRoot, w.readyInfo, err = createHeldDirectory(w.privateRoot, "ready"); err != nil {
 		return nil, fmt.Errorf("create private ready directory: %w", err)
 	}
 	return w, nil
@@ -196,31 +205,39 @@ func createPrivateStageDirectoryWithHook(parent *os.Root, beforeFirstOpen func(s
 	return "", nil, nil, nil, fmt.Errorf("could not allocate a unique private stage name")
 }
 
-func createHeldDirectory(parent *os.Root, name string) (_ *os.Root, _ os.FileInfo, err error) {
+func createHeldDirectory(parent *os.Root, name string) (_ *os.File, _ *os.Root, _ os.FileInfo, err error) {
 	if err := parent.Mkdir(name, 0o700); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
+	}
+	dir, err := parent.Open(name)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	root, err := parent.OpenRoot(name)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, errors.Join(err, dir.Close())
 	}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, closeRoot("close unverified directory root", root))
+			err = errors.Join(err, closeFile("close unverified directory", dir), closeRoot("close unverified directory root", root))
 		}
 	}()
+	dirInfo, err := dir.Stat()
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	rootInfo, err := root.Stat(".")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	pathInfo, err := parent.Lstat(name)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	if !pathInfo.IsDir() || !os.SameFile(pathInfo, rootInfo) {
-		return nil, nil, fmt.Errorf("directory %s identity changed while opening", name)
+	if !pathInfo.IsDir() || !os.SameFile(pathInfo, rootInfo) || !os.SameFile(pathInfo, dirInfo) {
+		return nil, nil, nil, fmt.Errorf("directory %s identity changed while opening", name)
 	}
-	return root, pathInfo, nil
+	return dir, root, pathInfo, nil
 }
 
 func (w *stagingWorkspace) duckDBPath() string {
@@ -300,6 +317,120 @@ func verifyHeldDirectory(parent *os.Root, name string, held *os.Root, want os.Fi
 
 func (w *stagingWorkspace) recordExportFile(name string, file *os.File) error {
 	return w.recordFile(w.exportsRoot, name, path.Join(stageExportsDirectory, name), file)
+}
+
+func (w *stagingWorkspace) recordReadyFile(name string, file *os.File) error {
+	return w.recordFile(w.readyRoot, name, "ready/"+name, file)
+}
+
+func (w *stagingWorkspace) verifyReadyIdentity() error {
+	if err := w.verifyPrivateIdentity(); err != nil {
+		return err
+	}
+	return verifyHeldDirectory(w.privateRoot, "ready", w.readyRoot, w.readyInfo)
+}
+
+func (w *stagingWorkspace) teardownScratch() error {
+	var errs []error
+	if err := w.verifyExportsIdentity(); err != nil {
+		return err
+	}
+	for _, file := range []struct{ name, key string }{
+		{"entity.parquet", stageEntityFile}, {"entity_category.parquet", stageCategoryFile},
+		{"relationship.parquet", stageRelationshipFile}, {"claim.parquet", stageClaimFile},
+		{"reject.parquet", stageRejectFile}, {"import.json", stageImportFile},
+	} {
+		w.removeRecordedFile(w.exportsRoot, file.name, file.key, w.verifyExportsIdentity, &errs)
+	}
+	if err := w.verifyDuckIdentity(); err != nil {
+		errs = append(errs, err)
+	} else {
+		w.removeRecordedFile(w.duckRoot, "model.duckdb.wal", stageDatabaseWALFile, w.verifyDuckIdentity, &errs)
+		w.removeRecordedFile(w.duckRoot, "model.duckdb", stageDatabaseFile, w.verifyDuckIdentity, &errs)
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	var closeErrs []error
+	closeErrs = appendCloseError(closeErrs, "close private exports root", closeRootValue(&w.exportsRoot))
+	closeErrs = appendCloseError(closeErrs, "close private exports directory", closeFileValue(&w.exportsDir))
+	closeErrs = appendCloseError(closeErrs, "close private DuckDB root", closeRootValue(&w.duckRoot))
+	closeErrs = appendCloseError(closeErrs, "close private DuckDB directory", closeFileValue(&w.duckDir))
+	if err := errors.Join(closeErrs...); err != nil {
+		return err
+	}
+	verifyScratch := func() error {
+		if err := w.verifyPrivateIdentity(); err != nil {
+			return err
+		}
+		return verifyHeldDirectory(w.privateRoot, "scratch", w.scratchRoot, w.scratchInfo)
+	}
+	w.removeRecordedDirectory(w.scratchRoot, "exports", stageExportsDirectory, w.exportsInfo, verifyScratch, &errs)
+	w.removeRecordedDirectory(w.scratchRoot, "duck", stageDuckDirectory, w.duckInfo, verifyScratch, &errs)
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	closeErrs = appendCloseError(nil, "close private scratch root", closeRootValue(&w.scratchRoot))
+	closeErrs = appendCloseError(closeErrs, "close private scratch directory", closeFileValue(&w.scratchDir))
+	if err := errors.Join(closeErrs...); err != nil {
+		return err
+	}
+	w.removeRecordedDirectory(w.privateRoot, "scratch", stageScratchDirectory, w.scratchInfo, w.verifyPrivateIdentity, &errs)
+	return errors.Join(errs...)
+}
+
+func (w *stagingWorkspace) finishCommitted(fail func(string) error) error {
+	var errs []error
+	if err := runWorkspaceBoundary(fail, "sync-parent-installed"); err != nil {
+		errs = append(errs, err)
+	}
+	if err := w.publicParent.Sync(); err != nil {
+		errs = append(errs, fmt.Errorf("sync model output parent after install: %w", err))
+	}
+	errs = appendCloseError(errs, "close committed model root", closeRootValue(&w.readyRoot))
+	errs = appendCloseError(errs, "close committed model directory", closeFileValue(&w.readyDir))
+	canRemovePrivate := true
+	if err := w.verifyPrivateIdentity(); err != nil {
+		errs = append(errs, err)
+		canRemovePrivate = false
+	}
+	if err := runWorkspaceBoundary(fail, "cleanup-private"); err != nil {
+		errs = append(errs, err)
+		canRemovePrivate = false
+	}
+	errs = appendCloseError(errs, "close private model root", closeRootValue(&w.privateRoot))
+	errs = appendCloseError(errs, "close private model directory", closeFileValue(&w.privateDir))
+	if canRemovePrivate {
+		info, err := w.publicParentRoot.Lstat(w.privateName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("stat empty private model stage: %w", err))
+		} else if !os.SameFile(info, w.privateInfo) {
+			errs = append(errs, fmt.Errorf("private model stage identity changed after install"))
+		} else if err := w.publicParentRoot.Remove(w.privateName); err != nil {
+			errs = append(errs, fmt.Errorf("remove empty private model stage: %w", err))
+		} else {
+			if err := runWorkspaceBoundary(fail, "sync-parent-cleaned"); err != nil {
+				errs = append(errs, err)
+			}
+			if err := w.publicParent.Sync(); err != nil {
+				errs = append(errs, fmt.Errorf("sync model output parent after cleanup: %w", err))
+			}
+		}
+	}
+	errs = appendCloseError(errs, "close model output parent root", closeRootValue(&w.publicParentRoot))
+	errs = appendCloseError(errs, "close model output parent", closeFileValue(&w.publicParent))
+	w.closed = true
+	return errors.Join(errs...)
+}
+
+func runWorkspaceBoundary(fail func(string) error, name string) error {
+	if fail == nil {
+		return nil
+	}
+	if err := fail(name); err != nil {
+		return fmt.Errorf("finalize boundary %s: %w", name, err)
+	}
+	return nil
 }
 
 func (w *stagingWorkspace) recordDuckFiles() error {
@@ -410,7 +541,9 @@ func (w *stagingWorkspace) cleanup() error {
 		}
 	}
 	errs = appendCloseError(errs, "close private exports root", closeRootValue(&w.exportsRoot))
+	errs = appendCloseError(errs, "close private exports directory", closeFileValue(&w.exportsDir))
 	errs = appendCloseError(errs, "close private DuckDB root", closeRootValue(&w.duckRoot))
+	errs = appendCloseError(errs, "close private DuckDB directory", closeFileValue(&w.duckDir))
 	if canClean && w.scratchRoot != nil {
 		verifyScratch := func() error {
 			if err := w.verifyPrivateIdentity(); err != nil {
@@ -422,7 +555,18 @@ func (w *stagingWorkspace) cleanup() error {
 		w.removeRecordedDirectory(w.scratchRoot, "duck", stageDuckDirectory, w.duckInfo, verifyScratch, &errs)
 	}
 	errs = appendCloseError(errs, "close private scratch root", closeRootValue(&w.scratchRoot))
+	errs = appendCloseError(errs, "close private scratch directory", closeFileValue(&w.scratchDir))
+	if canClean && w.privateRoot != nil {
+		if err := w.verifyReadyIdentity(); err != nil {
+			errs = append(errs, err)
+		} else {
+			for _, name := range readyArtifactNames {
+				w.removeRecordedFile(w.readyRoot, name, "ready/"+name, w.verifyReadyIdentity, &errs)
+			}
+		}
+	}
 	errs = appendCloseError(errs, "close private ready root", closeRootValue(&w.readyRoot))
+	errs = appendCloseError(errs, "close private ready directory", closeFileValue(&w.readyDir))
 	if canClean && w.privateRoot != nil {
 		w.removeRecordedDirectory(w.privateRoot, "scratch", stageScratchDirectory, w.scratchInfo, w.verifyPrivateIdentity, &errs)
 		w.removeRecordedDirectory(w.privateRoot, "ready", stageReadyDirectory, w.readyInfo, w.verifyPrivateIdentity, &errs)
@@ -527,6 +671,15 @@ func closeRootValue(root **os.Root) error {
 	}
 	err := (*root).Close()
 	*root = nil
+	return err
+}
+
+func closeFileValue(file **os.File) error {
+	if *file == nil {
+		return nil
+	}
+	err := (*file).Close()
+	*file = nil
 	return err
 }
 
