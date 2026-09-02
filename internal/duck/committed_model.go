@@ -12,6 +12,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 
 	"wk/internal/ingest"
 	"wk/internal/model"
@@ -32,16 +33,78 @@ type heldModelFile struct {
 	info os.FileInfo
 	hash string
 	size int64
+	rows int64
 }
 
 type CommittedModel struct {
-	parent  *os.File
-	path    string
-	info    os.FileInfo
-	root    *os.Root
-	files   map[string]*heldModelFile
-	version string
-	closed  bool
+	parent    *os.File
+	path      string
+	info      os.FileInfo
+	root      *os.Root
+	files     map[string]*heldModelFile
+	version   string
+	lifecycle sync.Mutex
+	verifyMu  sync.Mutex
+	active    int
+	closed    bool
+}
+
+// CommittedArtifactReader exposes only bounded read operations while its
+// VisitArtifacts callback is active.
+type CommittedArtifactReader interface {
+	io.Reader
+	io.ReaderAt
+	io.Seeker
+}
+
+// CommittedArtifact describes one exact file in a committed model.
+type CommittedArtifact struct {
+	Name   string
+	SHA256 string
+	Size   int64
+	Rows   int64
+	Reader CommittedArtifactReader
+}
+
+var errCommittedArtifactReaderExpired = errors.New("committed artifact reader expired")
+
+type committedArtifactReader struct {
+	mu      sync.Mutex
+	section *io.SectionReader
+	active  bool
+}
+
+func (r *committedArtifactReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.active {
+		return 0, errCommittedArtifactReaderExpired
+	}
+	return r.section.Read(p)
+}
+
+func (r *committedArtifactReader) ReadAt(p []byte, offset int64) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.active {
+		return 0, errCommittedArtifactReaderExpired
+	}
+	return r.section.ReadAt(p, offset)
+}
+
+func (r *committedArtifactReader) Seek(offset int64, whence int) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.active {
+		return 0, errCommittedArtifactReaderExpired
+	}
+	return r.section.Seek(offset, whence)
+}
+
+func (r *committedArtifactReader) expire() {
+	r.mu.Lock()
+	r.active = false
+	r.mu.Unlock()
 }
 
 func OpenCommittedModel(ctx context.Context, dir string) (_ *CommittedModel, err error) {
@@ -151,6 +214,7 @@ func openCommittedModel(ctx context.Context, dir string, beforeFinalVerify func(
 		if rows[identity.Name] != identity.Rows {
 			return nil, fmt.Errorf("model file %s rows %d, want %d", identity.Name, rows[identity.Name], identity.Rows)
 		}
+		m.files[identity.Name].rows = identity.Rows
 	}
 	if rows["entity.parquet"] != int64(report.Accepted) || rows["reject.parquet"] != int64(report.Rejected) {
 		return nil, fmt.Errorf("model/report row counts do not match accepted/rejected")
@@ -168,7 +232,11 @@ func openCommittedModel(ctx context.Context, dir string, beforeFinalVerify func(
 
 // MaterializeEntities reads the held model descriptors for HOT-tier baking.
 func (m *CommittedModel) MaterializeEntities(ctx context.Context) ([]*model.Entity, error) {
-	if err := m.Verify(ctx); err != nil {
+	if err := m.beginOperation(); err != nil {
+		return nil, err
+	}
+	defer m.endOperation()
+	if err := m.verifyUnderLease(ctx, nil); err != nil {
 		return nil, err
 	}
 	paths := make(map[string]string, 4)
@@ -179,10 +247,51 @@ func (m *CommittedModel) MaterializeEntities(ctx context.Context) ([]*model.Enti
 	if err != nil {
 		return nil, err
 	}
-	if err := m.Verify(ctx); err != nil {
+	if err := m.verifyUnderLease(ctx, nil); err != nil {
 		return nil, fmt.Errorf("verify committed model after materialization: %w", err)
 	}
 	return entities, nil
+}
+
+// VisitArtifacts supplies the exact committed files through readers that
+// expire when visit returns.
+func (m *CommittedModel) VisitArtifacts(ctx context.Context, visit func([]CommittedArtifact) error) error {
+	if visit == nil {
+		return errors.New("visit committed artifacts: nil visitor")
+	}
+	if err := m.beginOperation(); err != nil {
+		return err
+	}
+	defer m.endOperation()
+	if err := m.verifyUnderLease(ctx, nil); err != nil {
+		return fmt.Errorf("verify committed model before visiting artifacts: %w", err)
+	}
+	artifacts := make([]CommittedArtifact, 0, len(committedModelNames))
+	readers := make([]*committedArtifactReader, 0, len(committedModelNames))
+	for _, name := range committedModelNames {
+		held := m.files[name]
+		reader := &committedArtifactReader{section: io.NewSectionReader(held.file, 0, held.size), active: true}
+		readers = append(readers, reader)
+		artifacts = append(artifacts, CommittedArtifact{
+			Name: name, SHA256: held.hash, Size: held.size, Rows: held.rows, Reader: reader,
+		})
+	}
+	visitErr := func() error {
+		defer func() {
+			for _, reader := range readers {
+				reader.expire()
+			}
+		}()
+		return visit(artifacts)
+	}()
+	verifyErr := m.verifyUnderLease(ctx, nil)
+	if visitErr != nil {
+		visitErr = fmt.Errorf("visit committed artifacts: %w", visitErr)
+	}
+	if verifyErr != nil {
+		verifyErr = fmt.Errorf("verify committed model after visiting artifacts: %w", verifyErr)
+	}
+	return errors.Join(visitErr, verifyErr)
 }
 
 func (m *CommittedModel) ModelVersion() string { return m.version }
@@ -192,9 +301,35 @@ func (m *CommittedModel) Verify(ctx context.Context) error {
 }
 
 func (m *CommittedModel) verify(ctx context.Context, beforeFinalIdentity func()) error {
-	if m == nil || m.closed {
+	if err := m.beginOperation(); err != nil {
+		return err
+	}
+	defer m.endOperation()
+	return m.verifyUnderLease(ctx, beforeFinalIdentity)
+}
+
+func (m *CommittedModel) beginOperation() error {
+	if m == nil {
 		return fmt.Errorf("committed model is closed")
 	}
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+	if m.closed {
+		return fmt.Errorf("committed model is closed")
+	}
+	m.active++
+	return nil
+}
+
+func (m *CommittedModel) endOperation() {
+	m.lifecycle.Lock()
+	m.active--
+	m.lifecycle.Unlock()
+}
+
+func (m *CommittedModel) verifyUnderLease(ctx context.Context, beforeFinalIdentity func()) error {
+	m.verifyMu.Lock()
+	defer m.verifyMu.Unlock()
 	if err := m.verifyDirectory(ctx); err != nil {
 		return err
 	}
@@ -279,8 +414,16 @@ func verifyCommittedEntries(ctx context.Context, root *os.Root) (err error) {
 }
 
 func (m *CommittedModel) Close() error {
-	if m == nil || m.closed {
+	if m == nil {
 		return nil
+	}
+	m.lifecycle.Lock()
+	defer m.lifecycle.Unlock()
+	if m.closed {
+		return nil
+	}
+	if m.active > 0 {
+		return fmt.Errorf("close committed model: %d active operations", m.active)
 	}
 	m.closed = true
 	var errs []error

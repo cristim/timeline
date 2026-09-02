@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +65,230 @@ func TestOpenCommittedModelValidatesAndRetainsDescriptors(t *testing.T) {
 	if err := opened.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
+}
+
+func TestCommittedModelVisitArtifactsProvidesBoundedExpiringReaders(t *testing.T) {
+	dir, report := committedModelFixture(t)
+	opened, err := OpenCommittedModel(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	var retained []CommittedArtifactReader
+	err = opened.VisitArtifacts(context.Background(), func(artifacts []CommittedArtifact) error {
+		if len(artifacts) != len(committedModelNames) {
+			t.Fatalf("artifacts = %d, want %d", len(artifacts), len(committedModelNames))
+		}
+		for i, artifact := range artifacts {
+			if artifact.Name != committedModelNames[i] {
+				t.Fatalf("artifact %d = %q, want %q", i, artifact.Name, committedModelNames[i])
+			}
+			if _, ok := artifact.Reader.(io.Closer); ok {
+				t.Fatalf("artifact %s exposes Close", artifact.Name)
+			}
+			if _, ok := artifact.Reader.(interface{ Fd() uintptr }); ok {
+				t.Fatalf("artifact %s exposes Fd", artifact.Name)
+			}
+			if _, ok := artifact.Reader.(interface{ Name() string }); ok {
+				t.Fatalf("artifact %s exposes Name", artifact.Name)
+			}
+			body, readErr := io.ReadAll(artifact.Reader)
+			if readErr != nil {
+				t.Fatalf("read %s: %v", artifact.Name, readErr)
+			}
+			digest := sha256.Sum256(body)
+			if int64(len(body)) != artifact.Size || hex.EncodeToString(digest[:]) != artifact.SHA256 {
+				t.Fatalf("artifact %s identity = %d/%s", artifact.Name, artifact.Size, artifact.SHA256)
+			}
+			if artifact.Size > 0 {
+				first := make([]byte, 1)
+				if _, readErr := artifact.Reader.ReadAt(first, 0); readErr != nil {
+					t.Fatalf("ReadAt %s: %v", artifact.Name, readErr)
+				}
+				if _, seekErr := artifact.Reader.Seek(0, io.SeekStart); seekErr != nil {
+					t.Fatalf("Seek %s: %v", artifact.Name, seekErr)
+				}
+				got := make([]byte, 1)
+				if _, readErr := artifact.Reader.Read(got); readErr != nil || got[0] != first[0] {
+					t.Fatalf("independent offset %s = %x, %v; want %x", artifact.Name, got, readErr, first)
+				}
+			}
+			retained = append(retained, artifact.Reader)
+		}
+		if artifacts[2].Rows != int64(report.Accepted) || artifacts[6].Rows != int64(report.Rejected) {
+			t.Fatalf("entity/reject rows = %d/%d, want %d/%d", artifacts[2].Rows, artifacts[6].Rows, report.Accepted, report.Rejected)
+		}
+		if artifacts[0].Rows != 0 || artifacts[1].Rows != 0 {
+			t.Fatalf("metadata rows = %d/%d, want zero", artifacts[0].Rows, artifacts[1].Rows)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("VisitArtifacts: %v", err)
+	}
+	for i, reader := range retained {
+		if _, err := reader.Read(make([]byte, 1)); !errors.Is(err, errCommittedArtifactReaderExpired) {
+			t.Fatalf("retained reader %d error = %v", i, err)
+		}
+	}
+}
+
+func TestCommittedModelVisitArtifactsJoinsVisitorAndFinalVerificationErrors(t *testing.T) {
+	dir, _ := committedModelFixture(t)
+	opened, err := OpenCommittedModel(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	visitErr := errors.New("publication failed")
+	var retained CommittedArtifactReader
+	err = opened.VisitArtifacts(context.Background(), func(artifacts []CommittedArtifact) error {
+		retained = artifacts[2].Reader
+		file, openErr := os.OpenFile(filepath.Join(dir, "entity.parquet"), os.O_WRONLY, 0)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		if _, writeErr := file.WriteAt([]byte("changed"), 0); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+		if closeErr := file.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		return visitErr
+	})
+	if !errors.Is(err, visitErr) || !strings.Contains(err.Error(), "after visiting artifacts") {
+		t.Fatalf("VisitArtifacts error = %v", err)
+	}
+	if _, readErr := retained.Read(make([]byte, 1)); !errors.Is(readErr, errCommittedArtifactReaderExpired) {
+		t.Fatalf("retained reader error = %v", readErr)
+	}
+}
+
+func TestCommittedModelVisitArtifactsPreverifiesBeforeCallback(t *testing.T) {
+	dir, _ := committedModelFixture(t)
+	opened, err := OpenCommittedModel(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	file, err := os.OpenFile(filepath.Join(dir, "entity.parquet"), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteAt([]byte("changed"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	err = opened.VisitArtifacts(context.Background(), func([]CommittedArtifact) error {
+		calls++
+		return nil
+	})
+	if err == nil || calls != 0 {
+		t.Fatalf("VisitArtifacts = %v; callback calls=%d", err, calls)
+	}
+}
+
+func TestCommittedModelVisitArtifactsRejectsNilVisitor(t *testing.T) {
+	dir, _ := committedModelFixture(t)
+	opened, err := OpenCommittedModel(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	if err := opened.VisitArtifacts(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "nil visitor") {
+		t.Fatalf("VisitArtifacts error = %v", err)
+	}
+}
+
+func TestCommittedModelSerializesVerificationAndRejectsCloseDuringVisitor(t *testing.T) {
+	t.Run("concurrent verification", func(t *testing.T) {
+		dir, _ := committedModelFixture(t)
+		opened, err := OpenCommittedModel(context.Background(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = opened.Close() })
+		var wait sync.WaitGroup
+		errorsByWorker := make(chan error, 8)
+		for worker := 0; worker < cap(errorsByWorker); worker++ {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				for attempt := 0; attempt < 4; attempt++ {
+					if err := opened.Verify(context.Background()); err != nil {
+						errorsByWorker <- err
+						return
+					}
+				}
+			}()
+		}
+		wait.Wait()
+		close(errorsByWorker)
+		for err := range errorsByWorker {
+			t.Fatalf("concurrent Verify: %v", err)
+		}
+	})
+
+	t.Run("active visitor rejects close without invalidating readers", func(t *testing.T) {
+		dir, _ := committedModelFixture(t)
+		opened, err := OpenCommittedModel(context.Background(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entered := make(chan CommittedArtifactReader, 1)
+		release := make(chan struct{})
+		visitDone := make(chan error, 1)
+		go func() {
+			visitDone <- opened.VisitArtifacts(context.Background(), func(artifacts []CommittedArtifact) error {
+				entered <- artifacts[2].Reader
+				<-release
+				return nil
+			})
+		}()
+		reader := <-entered
+		if err := opened.Close(); err == nil || !strings.Contains(err.Error(), "active operations") {
+			t.Fatalf("Close during visitor = %v", err)
+		}
+		if _, err := reader.ReadAt(make([]byte, 1), 0); err != nil {
+			t.Fatalf("reader after rejected Close: %v", err)
+		}
+		close(release)
+		if err := <-visitDone; err != nil {
+			t.Fatalf("VisitArtifacts: %v", err)
+		}
+		if err := opened.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if _, err := reader.Read(make([]byte, 1)); !errors.Is(err, errCommittedArtifactReaderExpired) {
+			t.Fatalf("reader after visitor = %v", err)
+		}
+		if err := opened.Verify(context.Background()); err == nil || !strings.Contains(err.Error(), "closed") {
+			t.Fatalf("Verify after Close = %v", err)
+		}
+	})
+
+	t.Run("callback reentry fails close and permits verification", func(t *testing.T) {
+		dir, _ := committedModelFixture(t)
+		opened, err := OpenCommittedModel(context.Background(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = opened.VisitArtifacts(context.Background(), func([]CommittedArtifact) error {
+			if closeErr := opened.Close(); closeErr == nil || !strings.Contains(closeErr.Error(), "active operations") {
+				return fmt.Errorf("Close during callback = %v", closeErr)
+			}
+			return opened.Verify(context.Background())
+		})
+		if err != nil {
+			t.Fatalf("VisitArtifacts: %v", err)
+		}
+		if err := opened.Close(); err != nil {
+			t.Fatalf("Close after callback: %v", err)
+		}
+	})
 }
 
 func TestOpenCommittedModelRejectsExtraAndHashValidReportCountMismatch(t *testing.T) {
