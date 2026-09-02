@@ -104,17 +104,37 @@ func publishReportWithRejects(
 ) (importManifest, error) {
 	reportDigest := sha256.Sum256(reportBody)
 	rejectDigest := sha256.Sum256(rejectBody)
+	manifest, manifestBody, err := buildImportManifest(prefix, generatedAt, schemaVersion,
+		publicationObject{Size: int64(len(reportBody)), SHA256: fmt.Sprintf("%x", reportDigest)},
+		importRejectObject{Size: int64(len(rejectBody)), SHA256: fmt.Sprintf("%x", rejectDigest), Rows: rejectRowCount})
+	if err != nil {
+		return importManifest{}, err
+	}
+
+	if _, err := sink.Put(ctx, manifest.Rejects.Key, rejectBody, parquetContentType); err != nil {
+		return importManifest{}, fmt.Errorf("publish reject parquet: %w", err)
+	}
+	if _, err := sink.Put(ctx, manifest.Report.Key, reportBody, "application/json"); err != nil {
+		return importManifest{}, fmt.Errorf("publish import report: %w", err)
+	}
+	if _, err := sink.Put(ctx, prefix+"/manifest.json", manifestBody, "application/json"); err != nil {
+		return importManifest{}, fmt.Errorf("publish import manifest: %w", err)
+	}
+	return manifest, nil
+}
+
+func buildImportManifest(prefix string, generatedAt time.Time, schemaVersion int, report publicationObject, rejects importRejectObject) (importManifest, []byte, error) {
 	identityBody, err := json.Marshal(struct {
 		SchemaVersion int    `json:"schema_version"`
 		ReportSHA256  string `json:"report_sha256"`
 		RejectSHA256  string `json:"reject_sha256"`
 	}{
 		SchemaVersion: schemaVersion,
-		ReportSHA256:  fmt.Sprintf("%x", reportDigest),
-		RejectSHA256:  fmt.Sprintf("%x", rejectDigest),
+		ReportSHA256:  report.SHA256,
+		RejectSHA256:  rejects.SHA256,
 	})
 	if err != nil {
-		return importManifest{}, fmt.Errorf("encode import identity: %w", err)
+		return importManifest{}, nil, fmt.Errorf("encode import identity: %w", err)
 	}
 	importDigest := sha256.Sum256(identityBody)
 	importID := fmt.Sprintf("%x", importDigest)
@@ -125,29 +145,19 @@ func publishReportWithRejects(
 		GeneratedAt:   generatedAt.UTC().Format(time.RFC3339),
 		Report: publicationObject{
 			Key:    fmt.Sprintf("%s/%s/report.json", prefix, importID),
-			Size:   int64(len(reportBody)),
-			SHA256: fmt.Sprintf("%x", reportDigest),
+			Size:   report.Size,
+			SHA256: report.SHA256,
 		},
 		Rejects: importRejectObject{
 			Key:    fmt.Sprintf("%s/%s/reject.parquet", prefix, importID),
-			Size:   int64(len(rejectBody)),
-			SHA256: fmt.Sprintf("%x", rejectDigest),
-			Rows:   rejectRowCount,
+			Size:   rejects.Size,
+			SHA256: rejects.SHA256,
+			Rows:   rejects.Rows,
 		},
-	}
-
-	if _, err := sink.Put(ctx, manifest.Rejects.Key, rejectBody, parquetContentType); err != nil {
-		return importManifest{}, fmt.Errorf("publish reject parquet: %w", err)
-	}
-	if _, err := sink.Put(ctx, manifest.Report.Key, reportBody, "application/json"); err != nil {
-		return importManifest{}, fmt.Errorf("publish import report: %w", err)
 	}
 	manifestBody, err := json.Marshal(manifest)
 	if err != nil {
-		return importManifest{}, fmt.Errorf("encode import manifest: %w", err)
+		return importManifest{}, nil, fmt.Errorf("encode import manifest: %w", err)
 	}
-	if _, err := sink.Put(ctx, prefix+"/manifest.json", manifestBody, "application/json"); err != nil {
-		return importManifest{}, fmt.Errorf("publish import manifest: %w", err)
-	}
-	return manifest, nil
+	return manifest, manifestBody, nil
 }

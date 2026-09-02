@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -36,7 +37,7 @@ func runIngestWikidataDump(ctx context.Context, args []string) error {
 	return runIngestWikidataDumpWithIO(ctx, args, os.Stdin, os.Stdout, os.Stderr)
 }
 
-func runIngestWikidataDumpWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func runIngestWikidataDumpWithIO(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) (err error) {
 	opts, err := parseIngestDumpArgs(args, stderr)
 	if err != nil {
 		return err
@@ -48,36 +49,50 @@ func runIngestWikidataDumpWithIO(ctx context.Context, args []string, stdin io.Re
 		if err != nil {
 			return fmt.Errorf("open --dump %q: %w", opts.dump, err)
 		}
-		defer file.Close()
+		defer func() {
+			if closeErr := file.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close --dump %q: %w", opts.dump, closeErr))
+			}
+		}()
 		source = file
 	}
 
-	imported, err := ingest.ImportWikidataDump(source, ingest.WikidataDumpImportOptions{
+	staging, err := duck.NewWikidataDumpStagingSink(ctx, opts.out)
+	if err != nil {
+		return fmt.Errorf("create staged model: %w", err)
+	}
+	defer func() { err = errors.Join(err, staging.Abort()) }()
+	report, err := ingest.ImportWikidataDumpToSink(source, ingest.WikidataDumpImportOptions{
 		MaxRejectRate: opts.maxRejectRate,
-	})
+	}, staging)
 	if err != nil {
 		return err
 	}
-
-	modelFiles, err := duck.WriteModel(ctx, opts.out, imported.Entities)
-	if err != nil {
-		return fmt.Errorf("materialize model: %w", err)
-	}
-	rejectFile, err := duck.WriteRejects(ctx, opts.out, rejectRows(imported.Rejects))
-	if err != nil {
-		return fmt.Errorf("write reject parquet: %w", err)
-	}
-	reportBody, err := json.Marshal(imported.Report)
+	reportBody, err := json.Marshal(report)
 	if err != nil {
 		return fmt.Errorf("encode import report: %w", err)
 	}
-	reportPath := filepath.Join(opts.out, dumpImportReportName)
-	if err := os.WriteFile(reportPath, reportBody, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", reportPath, err)
+	if err := staging.Finalize(ctx, reportBody); err != nil {
+		return fmt.Errorf("finalize staged model: %w", err)
 	}
 
-	modelVersion := dumpModelVersion(reportBody)
-	printDumpImportSummary(stdout, imported.Report, modelFiles, rejectFile)
+	committed, err := duck.OpenCommittedModel(ctx, opts.out)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, committed.Close()) }()
+	modelVersion := committed.ModelVersion()
+	var summary []dumpArtifactSummary
+	if err := committed.VisitArtifacts(ctx, func(artifacts []duck.CommittedArtifact) error {
+		summary = make([]dumpArtifactSummary, 0, 5)
+		for _, artifact := range artifacts[2:] {
+			summary = append(summary, dumpArtifactSummary{Name: artifact.Name, Rows: artifact.Rows})
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	printDumpImportSummary(stdout, report, summary)
 	fmt.Fprintf(stdout, "model %s -> %s\n", modelVersion, opts.out)
 
 	if !opts.publish {
@@ -88,23 +103,12 @@ func runIngestWikidataDumpWithIO(ctx context.Context, args []string, stdin io.Re
 		return err
 	}
 	warmBucket := envOr("BUCKET_WARM", "wk-warm")
-	sink := blob.BucketSink{Client: cli, Bucket: warmBucket}
-	dataset := modelVersion
-
-	rejectBody, err := os.ReadFile(rejectFile.Path)
+	manifest, err := publishOpenedCommittedWikidataDump(ctx, committed, cli, warmBucket, time.Now().UTC())
 	if err != nil {
-		return fmt.Errorf("read reject parquet: %w", err)
-	}
-	manifest, err := publishReportWithRejects(ctx, sink, reportPrefix("wikidata-dump", dataset),
-		time.Now().UTC(), imported.Report.SchemaVersion, reportBody, rejectBody, rejectFile.Rows)
-	if err != nil {
-		return err
-	}
-	if err := publishWarmModel(ctx, sink, dataset, modelFiles); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "report -> s3://%s/%s\n", warmBucket, manifest.Report.Key)
-	fmt.Fprintf(stdout, "model  -> s3://%s/model/%s/\n", warmBucket, dataset)
+	fmt.Fprintf(stdout, "model  -> s3://%s/model/%s/\n", warmBucket, modelVersion)
 	return nil
 }
 
@@ -134,7 +138,12 @@ func parseIngestDumpArgs(args []string, output io.Writer) (ingestDumpOptions, er
 	}, nil
 }
 
-func printDumpImportSummary(out io.Writer, report ingest.WikidataDumpImportReport, modelFiles []duck.ModelFile, rejectFile duck.ModelFile) {
+type dumpArtifactSummary struct {
+	Name string
+	Rows int64
+}
+
+func printDumpImportSummary(out io.Writer, report ingest.WikidataDumpImportReport, artifacts []dumpArtifactSummary) {
 	fmt.Fprintf(out, "wikidata dump %s (%s): %d items, %d accepted, %d filtered, %d rejected (rate %.4f, gate %.4f)\n",
 		report.InputSHA256[:12], report.Compression,
 		report.Items, report.Accepted, report.Filtered, report.Rejected, report.RejectRate, report.MaxRejectRate)
@@ -147,10 +156,9 @@ func printDumpImportSummary(out io.Writer, report ingest.WikidataDumpImportRepor
 	for _, row := range report.AcceptedByType {
 		fmt.Fprintf(out, "  type     %7d %s\n", row.Count, row.Type)
 	}
-	for _, file := range modelFiles {
-		fmt.Fprintf(out, "  parquet  %7d rows %s\n", file.Rows, file.Name)
+	for _, artifact := range artifacts {
+		fmt.Fprintf(out, "  parquet  %7d rows %s\n", artifact.Rows, artifact.Name)
 	}
-	fmt.Fprintf(out, "  parquet  %7d rows %s\n", rejectFile.Rows, rejectFile.Name)
 }
 
 // dumpModelVersion names the dataset a model directory produces. It is the

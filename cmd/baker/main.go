@@ -54,7 +54,10 @@ const usageText = `usage: baker <command>
                                normalize a Wikidata dump (.json, .json.gz,
                                .json.bz2 or stdin) into the Parquet model plus
                                reject table and import report; --publish writes
-                               to BUCKET_WARM`
+                               to BUCKET_WARM
+  publish-wikidata-model --model <dir>
+                               retry publication of an already committed model
+                               without reading the source dump again`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -82,6 +85,8 @@ func main() {
 		err = runCensus(ctx, os.Args[2:])
 	case "ingest-wikidata-dump":
 		err = runIngestWikidataDump(ctx, os.Args[2:])
+	case "publish-wikidata-model":
+		err = runPublishWikidataModel(ctx, os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)

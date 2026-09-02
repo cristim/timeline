@@ -3,16 +3,19 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -919,12 +922,15 @@ type bakeS3Server struct {
 	server           *httptest.Server
 	warmBody         []byte
 	failPutSubstring string
+	failGetSubstring string
 	mu               sync.Mutex
 	recorded         []string
+	objects          map[string][]byte
+	checksums        map[string]string
 }
 
 func newBakeS3Server(warmBody []byte) *bakeS3Server {
-	s := &bakeS3Server{warmBody: warmBody}
+	s := &bakeS3Server{warmBody: warmBody, objects: make(map[string][]byte), checksums: make(map[string]string)}
 	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		s.recorded = append(s.recorded, r.Method+" "+r.URL.Path)
@@ -932,9 +938,36 @@ func newBakeS3Server(warmBody []byte) *bakeS3Server {
 		w.Header().Set("Content-Type", "application/xml")
 		switch r.Method {
 		case http.MethodHead:
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`<Error><Code>NoSuchKey</Code></Error>`))
+			s.mu.Lock()
+			body, exists := s.objects[r.URL.Path]
+			checksum := s.checksums[r.URL.Path]
+			s.mu.Unlock()
+			if !exists {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			w.Header().Set("ETag", fmt.Sprintf(`"%x"`, md5.Sum(body)))
+			if checksum != "" {
+				w.Header().Set("X-Amz-Checksum-Sha256", checksum)
+				w.Header().Set("X-Amz-Checksum-Type", "FULL_OBJECT")
+			}
+			w.WriteHeader(http.StatusOK)
 		case http.MethodGet:
+			if s.failGetSubstring != "" && strings.Contains(r.URL.Path, s.failGetSubstring) {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`<Error><Code>InvalidRequest</Code><Message>injected get failure</Message></Error>`))
+				return
+			}
+			s.mu.Lock()
+			stored, exists := s.objects[r.URL.Path]
+			s.mu.Unlock()
+			if exists {
+				w.Header().Set("Content-Length", strconv.Itoa(len(stored)))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(stored)
+				return
+			}
 			if strings.HasSuffix(r.URL.Path, "/wk-warm-test/"+warmEventsKey) && s.warmBody != nil {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write(s.warmBody)
@@ -947,6 +980,30 @@ func newBakeS3Server(warmBody []byte) *bakeS3Server {
 				w.WriteHeader(http.StatusBadRequest)
 				_, _ = w.Write([]byte(`<Error><Code>InvalidRequest</Code><Message>injected put failure</Message></Error>`))
 				return
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			s.mu.Lock()
+			_, exists := s.objects[r.URL.Path]
+			if r.Header.Get("If-None-Match") == "*" && exists {
+				s.mu.Unlock()
+				w.WriteHeader(http.StatusPreconditionFailed)
+				_, _ = w.Write([]byte(`<Error><Code>PreconditionFailed</Code></Error>`))
+				return
+			}
+			checksum := r.Header.Get("X-Amz-Checksum-Sha256")
+			if checksum == "" {
+				checksum = r.Trailer.Get("X-Amz-Checksum-Sha256")
+			}
+			s.objects[r.URL.Path] = append([]byte(nil), body...)
+			s.checksums[r.URL.Path] = checksum
+			s.mu.Unlock()
+			if checksum != "" {
+				w.Header().Set("X-Amz-Checksum-Sha256", checksum)
+				w.Header().Set("X-Amz-Checksum-Type", "FULL_OBJECT")
 			}
 			w.WriteHeader(http.StatusOK)
 		default:
@@ -977,6 +1034,12 @@ func (s *bakeS3Server) requests() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.recorded)
+}
+
+func (s *bakeS3Server) object(path string) []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.objects[path]...)
 }
 
 func containsRequest(requests []string, substring string) bool {

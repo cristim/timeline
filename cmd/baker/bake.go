@@ -369,23 +369,16 @@ func publishWarmModel(ctx context.Context, sink bake.Sink, dataset string, files
 		})
 	}
 
-	identity := struct {
-		SchemaVersion int             `json:"schema_version"`
-		Files         []warmModelFile `json:"files"`
-	}{SchemaVersion: duck.SchemaVersion(), Files: make([]warmModelFile, len(publication))}
+	metadata := make([]warmModelFile, len(publication))
 	for i := range publication {
-		identity.Files[i] = publication[i].metadata
+		metadata[i] = publication[i].metadata
 	}
-	identityBody, err := json.Marshal(identity)
+	manifest, manifestBody, err := buildWarmModelManifest(dataset, metadata)
 	if err != nil {
-		return fmt.Errorf("encode model identity: %w", err)
+		return err
 	}
-	modelDigest := sha256.Sum256(identityBody)
-	manifest := warmModelManifest{SchemaVersion: duck.SchemaVersion(), ModelID: fmt.Sprintf("%x", modelDigest)}
-	manifest.Files = make([]warmModelFile, len(publication))
 	for i := range publication {
-		publication[i].metadata.Key = fmt.Sprintf("model/%s/%s/%s", dataset, manifest.ModelID, publication[i].metadata.Name)
-		manifest.Files[i] = publication[i].metadata
+		publication[i].metadata = manifest.Files[i]
 	}
 
 	for _, file := range publication {
@@ -393,13 +386,37 @@ func publishWarmModel(ctx context.Context, sink bake.Sink, dataset string, files
 			return fmt.Errorf("publish model file %s: %w", file.metadata.Name, err)
 		}
 	}
-	manifestBody, err := json.Marshal(manifest)
-	if err != nil {
-		return fmt.Errorf("encode model manifest: %w", err)
-	}
 	manifestKey := fmt.Sprintf("model/%s/manifest.json", dataset)
 	if _, err := sink.Put(ctx, manifestKey, manifestBody, "application/json"); err != nil {
 		return fmt.Errorf("publish model manifest: %w", err)
 	}
 	return nil
+}
+
+func buildWarmModelManifest(dataset string, files []warmModelFile) (warmModelManifest, []byte, error) {
+	if len(files) != 4 {
+		return warmModelManifest{}, nil, fmt.Errorf("build warm model manifest: got %d files, want 4", len(files))
+	}
+	identity := struct {
+		SchemaVersion int             `json:"schema_version"`
+		Files         []warmModelFile `json:"files"`
+	}{SchemaVersion: duck.SchemaVersion(), Files: files}
+	identityBody, err := json.Marshal(identity)
+	if err != nil {
+		return warmModelManifest{}, nil, fmt.Errorf("encode model identity: %w", err)
+	}
+	modelDigest := sha256.Sum256(identityBody)
+	manifest := warmModelManifest{
+		SchemaVersion: duck.SchemaVersion(), ModelID: fmt.Sprintf("%x", modelDigest),
+		Files: make([]warmModelFile, len(files)),
+	}
+	for i, file := range files {
+		file.Key = fmt.Sprintf("model/%s/%s/%s", dataset, manifest.ModelID, file.Name)
+		manifest.Files[i] = file
+	}
+	body, err := json.Marshal(manifest)
+	if err != nil {
+		return warmModelManifest{}, nil, fmt.Errorf("encode model manifest: %w", err)
+	}
+	return manifest, body, nil
 }
