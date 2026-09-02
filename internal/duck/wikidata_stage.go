@@ -25,11 +25,12 @@ const importReportFileName = "import.json"
 // WikidataDumpStagingSink keeps dump-scale import state in private DuckDB
 // scratch space. It is not a readable model until a later promotion step.
 type WikidataDumpStagingSink struct {
-	ctx       context.Context
-	workspace *stagingWorkspace
-	connector *duckdb.Connector
-	conn      driver.Conn
-	tx        driver.Tx
+	ctx         context.Context
+	workspace   *stagingWorkspace
+	connector   *duckdb.Connector
+	conn        driver.Conn
+	tx          driver.Tx
+	seenQIDStmt driver.Stmt
 
 	entityAppender       *duckdb.Appender
 	categoryAppender     *duckdb.Appender
@@ -90,6 +91,14 @@ func NewWikidataDumpStagingSink(ctx context.Context, outputPath string) (_ *Wiki
 	if _, err := driverExec(ctx, s.conn, string(schema)); err != nil {
 		return nil, fmt.Errorf("create staging DuckDB schema: %w", err)
 	}
+	preparer, ok := s.conn.(driver.ConnPrepareContext)
+	if !ok {
+		return nil, fmt.Errorf("staging DuckDB does not support context-aware prepared statements")
+	}
+	s.seenQIDStmt, err = preparer.PrepareContext(ctx, `INSERT INTO seen_qid VALUES (?) ON CONFLICT DO NOTHING`)
+	if err != nil {
+		return nil, fmt.Errorf("prepare wikidata id insert: %w", err)
+	}
 	if s.entityAppender, err = duckdb.NewAppenderFromConn(s.conn, "", "entity"); err != nil {
 		return nil, fmt.Errorf("open entity appender: %w", err)
 	}
@@ -115,8 +124,7 @@ func (s *WikidataDumpStagingSink) MarkSeenQID(qid string) error {
 	if err := s.requireWritable(); err != nil {
 		return err
 	}
-	result, err := driverExec(s.ctx, s.conn,
-		`INSERT INTO seen_qid VALUES (?) ON CONFLICT DO NOTHING`, qid)
+	result, err := driverStmtExec(s.ctx, s.seenQIDStmt, qid)
 	if err != nil {
 		return fmt.Errorf("record wikidata id %s: %w", qid, err)
 	}
@@ -212,7 +220,7 @@ func (s *WikidataDumpStagingSink) finalizeScratch(ctx context.Context, importRep
 			err = errors.Join(err, s.Abort())
 		}
 	}()
-	if err := s.closeAppenders(); err != nil {
+	if err := s.closeWriters(); err != nil {
 		return err
 	}
 	tx := s.tx
@@ -263,14 +271,18 @@ func (s *WikidataDumpStagingSink) finalizeScratch(ctx context.Context, importRep
 		}
 		path := filepath.Join(exports, definition.name)
 		projection := "*"
+		source := definition.table
+		orderBy := definition.orderBy
 		if definition.table == "entity" {
-			projection = `input_order, seed_id, slug, type, name, description, t0, t1, precision,
-status, importance, has_point, point_lon, point_lat, wikidata, wikipedia, media_thumb,
-category_count, relationship_count, claim_count`
+			projection = `e.input_order, e.seed_id, t.slug AS slug, e.type, e.name, e.description, e.t0, e.t1, e.precision,
+	e.status, e.importance, e.has_point, e.point_lon, e.point_lat, e.wikidata, e.wikipedia, e.media_thumb,
+	e.category_count, e.relationship_count, e.claim_count`
+			source = `entity AS e JOIN taken_slug AS t ON e.seed_id = t.seed_id`
+			orderBy = "e.input_order"
 		}
 		query := fmt.Sprintf(
 			"COPY (SELECT %s FROM %s ORDER BY %s) TO ? (FORMAT PARQUET, COMPRESSION ZSTD)",
-			projection, definition.table, definition.orderBy,
+			projection, source, orderBy,
 		)
 		if _, err := db.ExecContext(ctx, query, path); err != nil {
 			return fmt.Errorf("write staged %s: %w", definition.name, err)
@@ -355,11 +367,20 @@ ORDER BY base_slug, importance DESC, seed_id`)
 	if err != nil {
 		return fmt.Errorf("read staged slug order: %w", err)
 	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			err = errors.Join(err, fmt.Errorf("close staged slug rows: %w", closeErr))
+	var claimStmt *sql.Stmt
+	closeInputs := func() error {
+		var closeErrs []error
+		if rows != nil {
+			closeErrs = appendCloseError(closeErrs, "close staged slug rows", rows.Close())
+			rows = nil
 		}
-	}()
+		if claimStmt != nil {
+			closeErrs = appendCloseError(closeErrs, "close staged slug claim", claimStmt.Close())
+			claimStmt = nil
+		}
+		return errors.Join(closeErrs...)
+	}
+	defer func() { err = errors.Join(err, closeInputs()) }()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin staged slug assignment: %w", err)
@@ -372,6 +393,10 @@ ORDER BY base_slug, importance DESC, seed_id`)
 			}
 		}
 	}()
+	claimStmt, err = tx.PrepareContext(ctx, `INSERT INTO taken_slug VALUES (?, ?) ON CONFLICT DO NOTHING`)
+	if err != nil {
+		return fmt.Errorf("prepare staged slug claim: %w", err)
+	}
 	for rows.Next() {
 		var base, seedID, entityType, wikidata string
 		var t0 float64
@@ -391,8 +416,7 @@ ORDER BY base_slug, importance DESC, seed_id`)
 		}
 		slug := ""
 		for _, candidate := range candidates {
-			result, err := tx.ExecContext(ctx,
-				`INSERT INTO taken_slug VALUES (?, ?) ON CONFLICT DO NOTHING`, candidate, seedID)
+			result, err := claimStmt.ExecContext(ctx, candidate, seedID)
 			if err != nil {
 				return fmt.Errorf("claim staged slug %q: %w", candidate, err)
 			}
@@ -408,15 +432,20 @@ ORDER BY base_slug, importance DESC, seed_id`)
 		if slug == "" {
 			return fmt.Errorf("unresolvable slug collision on %q (seed id %q)", base, seedID)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE entity SET slug = ? WHERE seed_id = ?`, slug, seedID); err != nil {
-			return fmt.Errorf("store staged slug %q: %w", slug, err)
-		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read staged slug rows: %w", err)
 	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close staged slug rows: %w", err)
+	if err := closeInputs(); err != nil {
+		return err
+	}
+	var entityCount, slugCount int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT (SELECT count(*) FROM entity), (SELECT count(*) FROM taken_slug)`).Scan(&entityCount, &slugCount); err != nil {
+		return fmt.Errorf("count staged entity and slug rows: %w", err)
+	}
+	if slugCount != entityCount {
+		return fmt.Errorf("staged model has %d entities and %d assigned slugs", entityCount, slugCount)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit staged slug assignment: %w", err)
@@ -431,7 +460,7 @@ func (s *WikidataDumpStagingSink) Abort() error {
 	}
 	s.aborted = true
 	var errs []error
-	if err := s.closeAppenders(); err != nil {
+	if err := s.closeWriters(); err != nil {
 		errs = append(errs, err)
 	}
 	if s.tx != nil {
@@ -454,11 +483,18 @@ func (s *WikidataDumpStagingSink) Abort() error {
 	return errors.Join(errs...)
 }
 
-func (s *WikidataDumpStagingSink) closeAppenders() error {
+func (s *WikidataDumpStagingSink) closeWriters() error {
 	if s == nil {
 		return nil
 	}
 	var errs []error
+	if s.seenQIDStmt != nil {
+		stmt := s.seenQIDStmt
+		s.seenQIDStmt = nil
+		if err := stmt.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close wikidata id statement: %w", err))
+		}
+	}
 	for _, appender := range []struct {
 		name string
 		ptr  **duckdb.Appender
@@ -472,10 +508,11 @@ func (s *WikidataDumpStagingSink) closeAppenders() error {
 		if *appender.ptr == nil {
 			continue
 		}
-		if err := (*appender.ptr).Close(); err != nil {
+		value := *appender.ptr
+		*appender.ptr = nil
+		if err := value.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close %s appender: %w", appender.name, err))
 		}
-		*appender.ptr = nil
 	}
 	return errors.Join(errs...)
 }
@@ -516,6 +553,18 @@ func driverExec(ctx context.Context, conn driver.Conn, query string, args ...any
 		named[i] = driver.NamedValue{Ordinal: i + 1, Value: arg}
 	}
 	return execer.ExecContext(ctx, query, named)
+}
+
+func driverStmtExec(ctx context.Context, stmt driver.Stmt, args ...any) (driver.Result, error) {
+	execer, ok := stmt.(driver.StmtExecContext)
+	if !ok {
+		return nil, fmt.Errorf("DuckDB statement does not support context execution")
+	}
+	named := make([]driver.NamedValue, len(args))
+	for i, arg := range args {
+		named[i] = driver.NamedValue{Ordinal: i + 1, Value: arg}
+	}
+	return execer.ExecContext(ctx, named)
 }
 
 var _ ingest.WikidataDumpSink = (*WikidataDumpStagingSink)(nil)

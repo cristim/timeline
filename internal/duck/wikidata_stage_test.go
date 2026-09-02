@@ -821,6 +821,55 @@ func TestWikidataDumpStagingSinkMatchesSlugFallbacks(t *testing.T) {
 	}
 }
 
+func TestWikidataDumpStagingSinkRejectsEarlyDuplicateAfterThousandsOfMarks(t *testing.T) {
+	t.Parallel()
+
+	stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(t.TempDir(), "model"))
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	privatePath := stage.workspace.privatePath
+	for i := range 5_000 {
+		if err := stage.MarkSeenQID(fmt.Sprintf("Q%d", i+1)); err != nil {
+			t.Fatalf("MarkSeenQID %d: %v", i+1, err)
+		}
+	}
+	if err := stage.MarkSeenQID("Q7"); err == nil || !strings.Contains(err.Error(), "duplicate wikidata id Q7") {
+		t.Fatalf("duplicate MarkSeenQID error = %v", err)
+	}
+	if err := stage.Abort(); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if stage.seenQIDStmt != nil {
+		t.Fatal("Abort retained the seen-QID statement")
+	}
+	if _, err := os.Lstat(privatePath); !os.IsNotExist(err) {
+		t.Fatalf("private stage remains after abort: %v", err)
+	}
+}
+
+func TestWikidataDumpStagingSinkCleansUpAfterCanceledMarkSeenQID(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stage, err := NewWikidataDumpStagingSink(ctx, filepath.Join(t.TempDir(), "model"))
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	privatePath := stage.workspace.privatePath
+	cancel()
+	if err := stage.MarkSeenQID("Q1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled MarkSeenQID error = %v, want context.Canceled", err)
+	}
+	if err := stage.Abort(); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if _, err := os.Lstat(privatePath); !os.IsNotExist(err) {
+		t.Fatalf("private stage remains after abort: %v", err)
+	}
+}
+
 func TestWikidataDumpStagingSinkRejectsEmptySeedID(t *testing.T) {
 	t.Parallel()
 
@@ -942,10 +991,10 @@ func cloneStageEntities(entities []*model.Entity) []*model.Entity {
 
 func assertStageDataHandlesClosed(t *testing.T, stage *WikidataDumpStagingSink) {
 	t.Helper()
-	if stage.tx != nil || stage.conn != nil || stage.connector != nil ||
+	if stage.tx != nil || stage.conn != nil || stage.connector != nil || stage.seenQIDStmt != nil ||
 		stage.entityAppender != nil || stage.categoryAppender != nil ||
 		stage.relationshipAppender != nil || stage.claimAppender != nil || stage.rejectAppender != nil {
-		t.Fatal("finalizeScratch returned with a DuckDB transaction, connection, connector, or appender still held")
+		t.Fatal("staging sink returned with a DuckDB transaction, connection, connector, statement, or appender still held")
 	}
 }
 
