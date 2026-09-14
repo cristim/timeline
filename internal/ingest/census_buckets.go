@@ -61,6 +61,9 @@ func censusBucketFor(year float64) (float64, float64) {
 
 // censusYearForEntity is the year a normalized entity is attributed to.
 func censusYearForEntity(entity *model.Entity) float64 {
+	if entity.CensusYear != nil {
+		return normalizeSignedZero(*entity.CensusYear)
+	}
 	return censusYearAt(entity.T0, entity.Precision)
 }
 

@@ -59,8 +59,9 @@ type sparqlResponse struct {
 // WikidataRecord is the normalized form of one imported entity, kept alongside
 // the SeedEntity fields so it flows through the standard Validate path.
 type WikidataRecord struct {
-	Seed      model.SeedEntity
-	PartOfQID string // resolved to a rel only if the target was also imported
+	Seed       model.SeedEntity
+	PartOfQID  string // resolved to a rel only if the target was also imported
+	CensusYear *float64
 }
 
 type FetchStats struct {
@@ -170,7 +171,7 @@ func normalizeBinding(b map[string]struct {
 	if qid == "" || label == "" || label == qid {
 		return nil, "", false // unlabeled items are not worth rendering
 	}
-	t0, precision, ok := parseWikidataTime(b["time"].Value)
+	t0, precision, censusYear, ok := parseWikidataTimeWithCensusYear(b["time"].Value)
 	if !ok {
 		return nil, "", false
 	}
@@ -197,8 +198,9 @@ func normalizeBinding(b map[string]struct {
 	sitelinks, _ := strconv.Atoi(b["sitelinks"].Value)
 	seed.Importance = importanceFromSitelinks(sitelinks)
 	return &WikidataRecord{
-		Seed:      seed,
-		PartOfQID: qidRe.FindString(b["partOf"].Value),
+		Seed:       seed,
+		PartOfQID:  qidRe.FindString(b["partOf"].Value),
+		CensusYear: censusYear,
 	}, qid, true
 }
 
@@ -213,21 +215,26 @@ func importanceFromSitelinks(n int) float64 {
 // parseWikidataTime handles WDQS xsd:dateTime values including negative years
 // ("-0052-03-15T00:00:00Z"), which time.Parse rejects.
 func parseWikidataTime(v string) (float64, string, bool) {
+	t, precision, _, ok := parseWikidataTimeWithCensusYear(v)
+	return t, precision, ok
+}
+
+func parseWikidataTimeWithCensusYear(v string) (float64, string, *float64, bool) {
 	if v == "" {
-		return 0, "", false
+		return 0, "", nil, false
 	}
 	neg := strings.HasPrefix(v, "-")
 	s := strings.TrimPrefix(v, "-")
 	parts := strings.SplitN(strings.TrimSuffix(s, "Z"), "T", 2)
 	date := strings.Split(parts[0], "-")
 	if len(date) != 3 {
-		return 0, "", false
+		return 0, "", nil, false
 	}
 	year, err1 := strconv.Atoi(date[0])
 	month, err2 := strconv.Atoi(date[1])
 	day, err3 := strconv.Atoi(date[2])
 	if err1 != nil || err2 != nil || err3 != nil {
-		return 0, "", false
+		return 0, "", nil, false
 	}
 	if neg {
 		year = -year
@@ -240,10 +247,15 @@ func parseWikidataTime(v string) (float64, string, bool) {
 		if month == 1 && day == 1 {
 			precision = "year" // truthy WDQS output loses precision; Jan 1 is
 		} //                       overwhelmingly a year-precision statement
-		return float64(t.Unix()), precision, true
+		return float64(t.Unix()), precision, nil, true
 	}
-	frac := (float64(month-1) + float64(day-1)/30.0) / 12.0
-	return model.YearToSeconds(float64(year) + frac), "year", true
+	censusYear := float64(year)
+	return approximateWikidataTime(censusYear, month, day), "year", &censusYear, true
+}
+
+func approximateWikidataTime(year float64, month, day int) float64 {
+	frac := (float64(month-1) + float64(day-1)/31.0) / 12.0
+	return model.YearToSeconds(year + frac)
 }
 
 var pointRe = regexp.MustCompile(`Point\(([-0-9.eE+]+) ([-0-9.eE+]+)\)`)

@@ -84,6 +84,261 @@ func TestWarmEventProducerPreservesCenturyBoundaryUTCSeconds(t *testing.T) {
 	}
 }
 
+func TestWarmEventProducerKeepsOutOfCalendarRangeDecember31InStatedCentury(t *testing.T) {
+	t.Parallel()
+
+	tc := warmBoundaryCase{
+		qid:        "Q9990000101",
+		name:       "Boundary 101 BCE event",
+		at:         "-0101-12-31T00:00:00Z",
+		articleURL: "https://en.wikipedia.org/wiki/Boundary_101_BCE_event",
+	}
+	record, qid, ok := normalizeBinding(warmBoundaryBinding(tc), EventClasses[0])
+	if !ok || qid != tc.qid {
+		t.Fatalf("normalizeBinding(%s) = %#v, %q, %t", tc.at, record, qid, ok)
+	}
+
+	encoded, err := EncodeWarmEvents([]WikidataRecord{*record})
+	if err != nil {
+		t.Fatalf("EncodeWarmEvents: %v", err)
+	}
+	res, err := LoadSeed("../../data/seed")
+	if err != nil {
+		t.Fatalf("LoadSeed: %v", err)
+	}
+	before, err := BuildCensusReport(res, WarmSourceNone, "")
+	if err != nil {
+		t.Fatalf("BuildCensusReport(before): %v", err)
+	}
+	beforeStatedCentury := censusReportBucketTotal(before, -200, 100)
+	beforeNextCentury := censusReportBucketTotal(before, -100, 100)
+
+	added, skipped, err := MergeWarmEvents(res, encoded)
+	if err != nil {
+		t.Fatalf("MergeWarmEvents: %v", err)
+	}
+	if added != 1 || skipped != 0 || len(res.Rejects) != 0 {
+		t.Fatalf("merge result: added=%d skipped=%d rejects=%v", added, skipped, res.Rejects)
+	}
+
+	entity := findEntityByWikidata(t, res, tc.qid)
+	if got := model.SecondsToYear(entity.T0); got <= -101 || got >= -100 {
+		t.Fatalf("SecondsToYear(T0) = %v, want inside stated year (-101, -100)", got)
+	}
+	after, err := BuildCensusReport(res, WarmSourceWarmFile, testSHA256("warm-dec31"))
+	if err != nil {
+		t.Fatalf("BuildCensusReport(after): %v", err)
+	}
+	if got := censusReportBucketTotal(after, -200, 100); got != beforeStatedCentury+1 {
+		t.Fatalf("stated-century bucket count = %d, want %d", got, beforeStatedCentury+1)
+	}
+	if got := censusReportBucketTotal(after, -100, 100); got != beforeNextCentury {
+		t.Fatalf("next-century bucket count = %d, want unchanged %d", got, beforeNextCentury)
+	}
+}
+
+func TestMergeWarmEventsRejectsIncompatibleCensusMetadata(t *testing.T) {
+	t.Parallel()
+
+	res, err := LoadSeed("../../data/seed")
+	if err != nil {
+		t.Fatalf("LoadSeed: %v", err)
+	}
+	before, err := BuildCensusReport(res, WarmSourceNone, "")
+	if err != nil {
+		t.Fatalf("BuildCensusReport(before): %v", err)
+	}
+	beforeBucket := censusReportBucketTotal(before, -200, 100)
+	base := warmBoundaryCase{
+		qid:        "Q9990000201",
+		name:       "Metadata boundary event",
+		at:         "-0101-01-01T00:00:00Z",
+		articleURL: "https://en.wikipedia.org/wiki/Metadata_boundary_event",
+	}
+	record, _, ok := normalizeBinding(warmBoundaryBinding(base), EventClasses[0])
+	if !ok {
+		t.Fatal("normalizeBinding failed")
+	}
+
+	modern := *record
+	modern.CensusYear = float64Pointer(1900)
+	fractional := *record
+	fractional.Seed.ID = "wd-q9990000202"
+	fractional.Seed.Wikidata = "Q9990000202"
+	fractional.CensusYear = float64Pointer(-101.5)
+	outOfRange := *record
+	outOfRange.Seed.ID = "wd-q9990000203"
+	outOfRange.Seed.Wikidata = "Q9990000203"
+	outOfRange.CensusYear = float64Pointer(-201)
+	wrongPrecision := *record
+	wrongPrecision.Seed.ID = "wd-q9990000204"
+	wrongPrecision.Seed.Wikidata = "Q9990000204"
+	wrongPrecision.Seed.Precision = "century"
+	wrongPrecision.CensusYear = float64Pointer(-101)
+	adjacentYear := *record
+	adjacentYear.Seed.ID = "wd-q9990000205"
+	adjacentYear.Seed.Wikidata = "Q9990000205"
+	adjacentYear.CensusYear = float64Pointer(-102)
+	valid := *record
+	valid.Seed.ID = "wd-q9990000206"
+	valid.Seed.Wikidata = "Q9990000206"
+	valid.CensusYear = float64Pointer(-101)
+	modernQIDReuse := modern
+	modernQIDReuse.Seed.ID = "wd-q9990000207"
+	modernQIDReuse.CensusYear = float64Pointer(-101)
+
+	warm := marshalWarmEvents(t, modern, fractional, outOfRange, wrongPrecision, adjacentYear, valid, modernQIDReuse)
+	added, skipped, err := MergeWarmEvents(res, warm)
+	if err != nil {
+		t.Fatalf("MergeWarmEvents: %v", err)
+	}
+	if added != 2 || skipped != 0 {
+		t.Fatalf("merge result: added=%d skipped=%d, want 2/0", added, skipped)
+	}
+	if res.WarmParsed != 7 || res.WarmAccepted != 2 || res.WarmDuplicatesSkipped != 0 {
+		t.Fatalf("warm counters = parsed:%d accepted:%d skipped:%d, want 7/2/0", res.WarmParsed, res.WarmAccepted, res.WarmDuplicatesSkipped)
+	}
+	if len(res.Rejects) != 5 {
+		t.Fatalf("rejects = %d, want 5: %#v", len(res.Rejects), res.Rejects)
+	}
+	report, err := BuildCensusReport(res, WarmSourceWarmFile, testSHA256("warm-metadata"))
+	if err != nil {
+		t.Fatalf("BuildCensusReport: %v", err)
+	}
+	if got := censusReportBucketTotal(report, -200, 100); got != beforeBucket+2 {
+		t.Fatalf("accepted metadata census bucket = %d, want %d", got, beforeBucket+2)
+	}
+	if findEntityByWikidata(t, res, "Q9990000206").CensusYear == nil ||
+		*findEntityByWikidata(t, res, "Q9990000206").CensusYear != -101 {
+		t.Fatal("accepted source year was not preserved")
+	}
+	if got := findEntityByWikidata(t, res, "Q9990000201").SeedID; got != "wd-q9990000207" {
+		t.Fatalf("reused QID merged as %q, want wd-q9990000207", got)
+	}
+	for _, qid := range []string{"Q9990000202", "Q9990000203", "Q9990000204", "Q9990000205"} {
+		for _, entity := range res.Entities {
+			if entity.Wikidata == qid {
+				t.Fatalf("rejected QID %s entered merged entities", qid)
+			}
+		}
+	}
+}
+
+func TestMergeWarmEventsAcceptsProducerCensusYearBoundaries(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		qid         string
+		at          string
+		year        float64
+		bucketStart float64
+		bucketSpan  float64
+	}{
+		{qid: "Q9990000300", at: "-0101-12-31T00:00:00Z", year: -101, bucketStart: -200, bucketSpan: 100},
+		{qid: "Q9990000301", at: "0000-01-01T00:00:00Z", year: 0, bucketStart: 0, bucketSpan: 100},
+		{qid: "Q9990000302", at: "10000-01-01T00:00:00Z", year: 10000, bucketStart: 10000, bucketSpan: 10000},
+		{qid: "Q9990000303", at: "-30000000000-01-01T00:00:00Z", year: -30000000000, bucketStart: -30000000000, bucketSpan: 1000000000},
+		{qid: "Q9990000304", at: "-30000000000-12-31T00:00:00Z", year: -30000000000, bucketStart: -30000000000, bucketSpan: 1000000000},
+		{qid: "Q9990000305", at: "30000000000-01-01T00:00:00Z", year: 30000000000, bucketStart: 30000000000, bucketSpan: 1000000000},
+		{qid: "Q9990000306", at: "30000000000-12-31T00:00:00Z", year: 30000000000, bucketStart: 30000000000, bucketSpan: 1000000000},
+	}
+	records := make([]WikidataRecord, 0, len(cases))
+	for _, tc := range cases {
+		input := warmBoundaryCase{qid: tc.qid, name: "Boundary " + tc.qid, at: tc.at, articleURL: "https://example.com/" + tc.qid}
+		record, _, ok := normalizeBinding(warmBoundaryBinding(input), EventClasses[0])
+		if !ok {
+			t.Fatalf("normalizeBinding(%s) failed: record=%#v", tc.at, record)
+		}
+		if record.CensusYear == nil || *record.CensusYear != tc.year {
+			t.Fatalf("producer census year for %s = %v, want %v", tc.at, record.CensusYear, tc.year)
+		}
+		records = append(records, *record)
+	}
+	res, err := LoadSeed("../../data/seed")
+	if err != nil {
+		t.Fatalf("LoadSeed: %v", err)
+	}
+	before, err := BuildCensusReport(res, WarmSourceNone, "")
+	if err != nil {
+		t.Fatalf("BuildCensusReport(before): %v", err)
+	}
+	beforeCounts := make(map[[2]float64]int)
+	for _, tc := range cases {
+		beforeCounts[[2]float64{tc.bucketStart, tc.bucketSpan}] = censusReportBucketTotal(before, tc.bucketStart, tc.bucketSpan)
+	}
+	wantCounts := make(map[[2]float64]int)
+	for key, count := range beforeCounts {
+		wantCounts[key] = count
+	}
+	for _, tc := range cases {
+		key := [2]float64{tc.bucketStart, tc.bucketSpan}
+		wantCounts[key]++
+	}
+	added, skipped, err := MergeWarmEvents(res, marshalWarmEvents(t, records...))
+	if err != nil {
+		t.Fatalf("MergeWarmEvents: %v", err)
+	}
+	if added != len(cases) || skipped != 0 || len(res.Rejects) != 0 {
+		t.Fatalf("merge result: added=%d skipped=%d rejects=%v", added, skipped, res.Rejects)
+	}
+	after, err := BuildCensusReport(res, WarmSourceWarmFile, testSHA256("warm-boundaries"))
+	if err != nil {
+		t.Fatalf("BuildCensusReport(after): %v", err)
+	}
+	for key, want := range wantCounts {
+		if got := censusReportBucketTotal(after, key[0], key[1]); got != want {
+			t.Fatalf("census bucket start=%v span=%v count=%d, want %d", key[0], key[1], got, want)
+		}
+	}
+	for _, tc := range cases {
+		entity := findEntityByWikidata(t, res, tc.qid)
+		if entity.CensusYear == nil || *entity.CensusYear != tc.year {
+			t.Fatalf("merged census year for %s = %v, want %v", tc.qid, entity.CensusYear, tc.year)
+		}
+	}
+}
+
+func TestWarmEventProducerRetainsExtremeTimeRejection(t *testing.T) {
+	t.Parallel()
+
+	for _, year := range []string{"100000000000000-01-01T00:00:00Z", "10000000000000000-01-01T00:00:00Z"} {
+		input := warmBoundaryCase{qid: "Q99900004" + year[:1], name: year, at: year, articleURL: "https://example.com/extreme"}
+		record, _, ok := normalizeBinding(warmBoundaryBinding(input), EventClasses[0])
+		if !ok {
+			t.Fatalf("normalizeBinding(%s) failed", year)
+		}
+		res, err := LoadSeed("../../data/seed")
+		if err != nil {
+			t.Fatalf("LoadSeed: %v", err)
+		}
+		added, _, err := MergeWarmEvents(res, marshalWarmEvents(t, *record))
+		if err != nil {
+			t.Fatalf("MergeWarmEvents(%s): %v", year, err)
+		}
+		if added != 0 || res.WarmAccepted != 0 || len(res.Rejects) != 1 {
+			t.Fatalf("extreme %s: added=%d accepted=%d rejects=%d", year, added, res.WarmAccepted, len(res.Rejects))
+		}
+	}
+}
+
+func censusReportBucketTotal(report CensusReport, startYear, spanYears float64) int {
+	for _, bucket := range report.Buckets {
+		if bucket.StartYear == startYear && bucket.SpanYears == spanYears {
+			return bucket.Total.Count
+		}
+	}
+	return 0
+}
+
+func marshalWarmEvents(t *testing.T, records ...WikidataRecord) []byte {
+	t.Helper()
+	encoded, err := EncodeWarmEvents(records)
+	if err != nil {
+		t.Fatalf("EncodeWarmEvents: %v", err)
+	}
+	return encoded
+}
+
 func TestMergeWarmEventsAcceptsNormalizedFixture(t *testing.T) {
 	t.Parallel()
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"wk/internal/model"
@@ -14,14 +15,15 @@ import (
 // wk-warm: the standard seed schema plus unresolved cross-references.
 type WarmEvent struct {
 	model.SeedEntity
-	PartOfQID string `json:"part_of_qid,omitempty"`
+	PartOfQID  string   `json:"part_of_qid,omitempty"`
+	CensusYear *float64 `json:"census_year,omitempty"`
 }
 
 func EncodeWarmEvents(records []WikidataRecord) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	for _, r := range records {
-		if err := enc.Encode(WarmEvent{SeedEntity: r.Seed, PartOfQID: r.PartOfQID}); err != nil {
+		if err := enc.Encode(WarmEvent{SeedEntity: r.Seed, PartOfQID: r.PartOfQID, CensusYear: r.CensusYear}); err != nil {
 			return nil, err
 		}
 	}
@@ -71,6 +73,11 @@ func MergeWarmEvents(res *Result, warm []byte) (added, skipped int, err error) {
 			res.Rejects = append(res.Rejects, Reject{Source: RejectSourceWarm, File: "warm:events", Line: line, Reason: reason})
 			continue
 		}
+		if reason := validateWarmCensusYear(e, we.CensusYear); reason != "" {
+			res.Rejects = append(res.Rejects, Reject{Source: RejectSourceWarm, File: "warm:events", Line: line, Reason: reason})
+			continue
+		}
+		e.CensusYear = we.CensusYear
 		qidToSeedID[e.Wikidata] = e.SeedID
 		pendings = append(pendings, pending{e, we.PartOfQID})
 		res.WarmAccepted++
@@ -98,4 +105,32 @@ func MergeWarmEvents(res *Result, warm []byte) (added, skipped int, err error) {
 		return 0, 0, err
 	}
 	return added, skipped, nil
+}
+
+func validateWarmCensusYear(entity *model.Entity, censusYear *float64) string {
+	if censusYear == nil {
+		return ""
+	}
+	year := *censusYear
+	if math.IsNaN(year) || math.IsInf(year, 0) || math.Trunc(year) != year {
+		return fmt.Sprintf("census_year %v must be a finite integral year", year)
+	}
+	if year > 0 && year < 10000 {
+		return fmt.Sprintf("census_year %v is outside the warm producer domain", year)
+	}
+	if entity.Precision != "year" {
+		return fmt.Sprintf("census_year %v requires year precision, got %q", year, entity.Precision)
+	}
+	start, err := model.ParseSeedTime(jsonTime(approximateWikidataTime(year, 1, 1)))
+	if err != nil {
+		return fmt.Sprintf("census_year %v start bound: %v", year, err)
+	}
+	end, err := model.ParseSeedTime(jsonTime(approximateWikidataTime(year, 12, 31)))
+	if err != nil {
+		return fmt.Sprintf("census_year %v end bound: %v", year, err)
+	}
+	if entity.T0 < start || entity.T0 > end {
+		return fmt.Sprintf("t0 %v is outside census_year %v bounds [%v, %v]", entity.T0, year, start, end)
+	}
+	return ""
 }

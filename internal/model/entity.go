@@ -100,6 +100,7 @@ type Entity struct {
 	Description string
 	T0, T1      float64 // seconds since 1970
 	Precision   string
+	CensusYear  *float64 // source-stated year for census attribution, when seconds cannot preserve it
 	Status      string
 	Categories  []string
 	Importance  float64
