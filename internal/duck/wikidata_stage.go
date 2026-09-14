@@ -20,7 +20,10 @@ import (
 //go:embed sql/wikidata_stage.sql
 var wikidataStageSQL embed.FS
 
-const importReportFileName = "import.json"
+const (
+	importReportFileName              = "import.json"
+	wikidataStageTransactionItemLimit = 10_000
+)
 
 // WikidataDumpStagingSink keeps dump-scale import state in private DuckDB
 // scratch space. It is not a readable model until a later promotion step.
@@ -43,14 +46,20 @@ type WikidataDumpStagingSink struct {
 	relationshipRows int
 	claimRows        int
 	rejectRows       int
+	transactionItems int
+	transactionLimit int
 
-	finalized bool
-	aborted   bool
-	committed bool
+	finalized        bool
+	aborted          bool
+	committed        bool
+	commitAmbiguous  bool
+	unownedDuckFiles bool
 
-	beforeInstall func()
-	insideInstall func()
-	finalizeHook  func(string) error
+	beforeInstall  func()
+	insideInstall  func()
+	finalizeHook   func(string) error
+	rotationHook   func(string) error
+	slugCommitHook func(string) error
 }
 
 func NewWikidataDumpStagingSink(ctx context.Context, outputPath string) (_ *WikidataDumpStagingSink, err error) {
@@ -58,7 +67,11 @@ func NewWikidataDumpStagingSink(ctx context.Context, outputPath string) (_ *Wiki
 	if err != nil {
 		return nil, err
 	}
-	s := &WikidataDumpStagingSink{ctx: ctx, workspace: workspace}
+	s := &WikidataDumpStagingSink{
+		ctx:              ctx,
+		workspace:        workspace,
+		transactionLimit: wikidataStageTransactionItemLimit,
+	}
 	defer func() {
 		if err != nil {
 			err = errors.Join(err, s.Abort())
@@ -124,6 +137,14 @@ func (s *WikidataDumpStagingSink) MarkSeenQID(qid string) error {
 	if err := s.requireWritable(); err != nil {
 		return err
 	}
+	if s.transactionLimit <= 0 {
+		return fmt.Errorf("wikidata staging transaction limit must be positive")
+	}
+	if s.transactionItems >= s.transactionLimit {
+		if err := s.rotateIngestTransaction(); err != nil {
+			return err
+		}
+	}
 	result, err := driverStmtExec(s.ctx, s.seenQIDStmt, qid)
 	if err != nil {
 		return fmt.Errorf("record wikidata id %s: %w", qid, err)
@@ -134,6 +155,88 @@ func (s *WikidataDumpStagingSink) MarkSeenQID(qid string) error {
 	}
 	if rows == 0 {
 		return fmt.Errorf("duplicate wikidata id %s", qid)
+	}
+	s.transactionItems++
+	return nil
+}
+
+type stagingAppender struct {
+	name string
+	ptr  **duckdb.Appender
+}
+
+func (s *WikidataDumpStagingSink) appenders() []stagingAppender {
+	return []stagingAppender{
+		{name: "entity", ptr: &s.entityAppender},
+		{name: "category", ptr: &s.categoryAppender},
+		{name: "relationship", ptr: &s.relationshipAppender},
+		{name: "claim", ptr: &s.claimAppender},
+		{name: "reject", ptr: &s.rejectAppender},
+	}
+}
+
+func (s *WikidataDumpStagingSink) rotateIngestTransaction() error {
+	if err := runStageBoundary(s.rotationHook, "before-flush"); err != nil {
+		return err
+	}
+	var flushErrs []error
+	for _, appender := range s.appenders() {
+		if *appender.ptr == nil {
+			continue
+		}
+		if err := (*appender.ptr).FlushWithCancel(s.ctx); err != nil {
+			flushErrs = append(flushErrs, fmt.Errorf("flush %s appender: %w", appender.name, err))
+		}
+	}
+	if err := errors.Join(flushErrs...); err != nil {
+		return err
+	}
+	if err := s.commitRawTransaction(); err != nil {
+		return fmt.Errorf("commit staged Wikidata batch: %w", err)
+	}
+	if err := runStageBoundary(s.rotationHook, "after-commit"); err != nil {
+		return err
+	}
+	beginner, ok := s.conn.(driver.ConnBeginTx)
+	if !ok {
+		return fmt.Errorf("staging DuckDB does not support transactions")
+	}
+	tx, err := beginner.BeginTx(s.ctx, driver.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin next staging DuckDB transaction: %w", err)
+	}
+	s.tx = tx
+	s.transactionItems = 0
+	return nil
+}
+
+func (s *WikidataDumpStagingSink) commitRawTransaction() error {
+	if s.tx == nil {
+		return fmt.Errorf("staging DuckDB transaction is not active")
+	}
+	if err := s.workspace.recordDuckFiles(); err != nil {
+		return err
+	}
+	if err := s.workspace.verifyRecordedDuckFiles(false); err != nil {
+		return err
+	}
+	tx := s.tx
+	s.tx = nil
+	commitErr := tx.Commit()
+	if commitErr != nil {
+		s.commitAmbiguous = true
+		identityErr := s.workspace.verifyRecordedDuckFiles(false)
+		return errors.Join(commitErr, identityErr)
+	}
+	return errors.Join(s.workspace.recordDuckFilesAfterSuccessfulCommit(), s.workspace.verifyRecordedDuckFiles(false))
+}
+
+func runStageBoundary(hook func(string) error, name string) error {
+	if hook == nil {
+		return nil
+	}
+	if err := hook(name); err != nil {
+		return fmt.Errorf("staging boundary %s: %w", name, err)
 	}
 	return nil
 }
@@ -223,18 +326,16 @@ func (s *WikidataDumpStagingSink) finalizeScratch(ctx context.Context, importRep
 	if err := s.closeWriters(); err != nil {
 		return err
 	}
-	tx := s.tx
-	s.tx = nil
-	if err := tx.Commit(); err != nil {
+	if err := s.commitRawTransaction(); err != nil {
 		return fmt.Errorf("commit staged Wikidata rows: %w", err)
 	}
 	if err := s.runFinalizeBoundary("close-scratch-database"); err != nil {
 		return err
 	}
-	if err := s.closeDuckDB(); err != nil {
+	if err := s.closePreservingDuckFiles(s.closeDuckDB); err != nil {
 		return err
 	}
-	if err := s.workspace.recordDuckFiles(); err != nil {
+	if err := s.workspace.verifyRecordedDuckFiles(true); err != nil {
 		return err
 	}
 	if err := s.workspace.verifyScratchPathIdentity(); err != nil {
@@ -247,17 +348,22 @@ func (s *WikidataDumpStagingSink) finalizeScratch(ctx context.Context, importRep
 	}
 	db.SetMaxOpenConns(2)
 	dbClosed := false
+	closeDB := func() error {
+		if dbClosed {
+			return nil
+		}
+		dbClosed = true
+		return db.Close()
+	}
 	defer func() {
 		if !dbClosed {
-			if closeErr := db.Close(); closeErr != nil {
-				err = errors.Join(err, fmt.Errorf("close staged Wikidata exports: %w", closeErr))
-			}
+			err = errors.Join(err, s.closePreservingDuckFiles(closeDB))
 		}
 	}()
 	if err := validateStagedReferences(ctx, db); err != nil {
 		return err
 	}
-	if err := assignStagedSlugs(ctx, db); err != nil {
+	if err := s.assignStagedSlugs(ctx, db); err != nil {
 		return err
 	}
 
@@ -325,11 +431,10 @@ func (s *WikidataDumpStagingSink) finalizeScratch(ctx context.Context, importRep
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close staged import report: %w", err)
 	}
-	dbClosed = true
-	if err := db.Close(); err != nil {
+	if err := s.closePreservingDuckFiles(closeDB); err != nil {
 		return fmt.Errorf("close staged Wikidata exports: %w", err)
 	}
-	if err := s.workspace.recordDuckFiles(); err != nil {
+	if err := s.workspace.verifyRecordedDuckFiles(true); err != nil {
 		return err
 	}
 	s.finalized = true
@@ -358,7 +463,10 @@ func validateStagedReferences(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-func assignStagedSlugs(ctx context.Context, db *sql.DB) (err error) {
+func (s *WikidataDumpStagingSink) assignStagedSlugs(ctx context.Context, db *sql.DB) (err error) {
+	if s.transactionLimit <= 0 {
+		return fmt.Errorf("wikidata staging transaction limit must be positive")
+	}
 	rows, err := db.QueryContext(ctx, `
 SELECT base_slug, seed_id, t0, type, wikidata,
        row_number() OVER (PARTITION BY base_slug ORDER BY importance DESC, seed_id) - 1 AS base_rank
@@ -368,6 +476,7 @@ ORDER BY base_slug, importance DESC, seed_id`)
 		return fmt.Errorf("read staged slug order: %w", err)
 	}
 	var claimStmt *sql.Stmt
+	var tx *sql.Tx
 	closeInputs := func() error {
 		var closeErrs []error
 		if rows != nil {
@@ -381,23 +490,61 @@ ORDER BY base_slug, importance DESC, seed_id`)
 		return errors.Join(closeErrs...)
 	}
 	defer func() { err = errors.Join(err, closeInputs()) }()
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin staged slug assignment: %w", err)
-	}
-	committed := false
 	defer func() {
-		if !committed {
+		if tx != nil {
 			if rollbackErr := tx.Rollback(); rollbackErr != nil {
 				err = errors.Join(err, fmt.Errorf("rollback staged slug assignment: %w", rollbackErr))
 			}
+			tx = nil
 		}
 	}()
-	claimStmt, err = tx.PrepareContext(ctx, `INSERT INTO taken_slug VALUES (?, ?) ON CONFLICT DO NOTHING`)
-	if err != nil {
-		return fmt.Errorf("prepare staged slug claim: %w", err)
+	beginBatch := func() error {
+		var beginErr error
+		tx, beginErr = db.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return fmt.Errorf("begin staged slug assignment: %w", beginErr)
+		}
+		claimStmt, beginErr = tx.PrepareContext(ctx, `INSERT INTO taken_slug VALUES (?, ?) ON CONFLICT DO NOTHING`)
+		if beginErr != nil {
+			return fmt.Errorf("prepare staged slug claim: %w", beginErr)
+		}
+		return nil
 	}
+	commitBatch := func() error {
+		stmt := claimStmt
+		claimStmt = nil
+		if closeErr := stmt.Close(); closeErr != nil {
+			return fmt.Errorf("close staged slug claim: %w", closeErr)
+		}
+		if identityErr := errors.Join(s.workspace.recordDuckFiles(), s.workspace.verifyRecordedDuckFiles(false)); identityErr != nil {
+			return identityErr
+		}
+		if hookErr := runStageBoundary(s.slugCommitHook, "before-slug-commit"); hookErr != nil {
+			return hookErr
+		}
+		batch := tx
+		tx = nil
+		if commitErr := batch.Commit(); commitErr != nil {
+			s.commitAmbiguous = true
+			hookErr := runStageBoundary(s.slugCommitHook, "after-slug-commit-error")
+			identityErr := s.workspace.verifyRecordedDuckFiles(false)
+			return errors.Join(fmt.Errorf("commit staged slug assignment: %w", commitErr), hookErr, identityErr)
+		}
+		if identityErr := errors.Join(s.workspace.recordDuckFilesAfterSuccessfulCommit(), s.workspace.verifyRecordedDuckFiles(false)); identityErr != nil {
+			return identityErr
+		}
+		if hookErr := runStageBoundary(s.slugCommitHook, "after-slug-commit"); hookErr != nil {
+			return hookErr
+		}
+		return nil
+	}
+	assigned := 0
 	for rows.Next() {
+		if tx == nil {
+			if err := beginBatch(); err != nil {
+				return err
+			}
+		}
 		var base, seedID, entityType, wikidata string
 		var t0 float64
 		var rank int64
@@ -432,25 +579,38 @@ ORDER BY base_slug, importance DESC, seed_id`)
 		if slug == "" {
 			return fmt.Errorf("unresolvable slug collision on %q (seed id %q)", base, seedID)
 		}
+		assigned++
+		if assigned%s.transactionLimit == 0 {
+			if err := commitBatch(); err != nil {
+				return err
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read staged slug rows: %w", err)
+	}
+	if rows != nil {
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close staged slug rows: %w", err)
+		}
+		rows = nil
+	}
+	if tx != nil {
+		if err := commitBatch(); err != nil {
+			return err
+		}
 	}
 	if err := closeInputs(); err != nil {
 		return err
 	}
 	var entityCount, slugCount int64
-	if err := tx.QueryRowContext(ctx, `
+	if err := db.QueryRowContext(ctx, `
 		SELECT (SELECT count(*) FROM entity), (SELECT count(*) FROM taken_slug)`).Scan(&entityCount, &slugCount); err != nil {
 		return fmt.Errorf("count staged entity and slug rows: %w", err)
 	}
 	if slugCount != entityCount {
 		return fmt.Errorf("staged model has %d entities and %d assigned slugs", entityCount, slugCount)
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit staged slug assignment: %w", err)
-	}
-	committed = true
 	return nil
 }
 
@@ -460,20 +620,28 @@ func (s *WikidataDumpStagingSink) Abort() error {
 	}
 	s.aborted = true
 	var errs []error
-	if err := s.closeWriters(); err != nil {
-		errs = append(errs, err)
-	}
-	if s.tx != nil {
-		if err := s.tx.Rollback(); err != nil {
-			errs = append(errs, fmt.Errorf("rollback staged Wikidata rows: %w", err))
+	if err := s.closePreservingDuckFiles(func() error {
+		var closeErrs []error
+		closeErrs = append(closeErrs, s.closeSeenQIDStatement())
+		closeErrs = append(closeErrs, s.closeAppenders())
+		if s.tx != nil {
+			if rollbackErr := s.tx.Rollback(); rollbackErr != nil {
+				closeErrs = append(closeErrs, fmt.Errorf("rollback staged Wikidata rows: %w", rollbackErr))
+			}
+			s.tx = nil
 		}
-		s.tx = nil
-	}
-	if err := s.closeDuckDB(); err != nil {
+		closeErrs = append(closeErrs, s.closeDuckDB())
+		return errors.Join(closeErrs...)
+	}); err != nil {
 		errs = append(errs, err)
 	}
 	if s.workspace != nil {
-		if err := s.workspace.recordDuckFiles(); err != nil {
+		if !s.unownedDuckFiles && !s.commitAmbiguous {
+			if err := s.workspace.recordDuckFiles(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if err := s.workspace.verifyRecordedDuckFiles(true); err != nil {
 			errs = append(errs, err)
 		}
 		if err := s.workspace.cleanup(); err != nil {
@@ -483,10 +651,38 @@ func (s *WikidataDumpStagingSink) Abort() error {
 	return errors.Join(errs...)
 }
 
+func (s *WikidataDumpStagingSink) closePreservingDuckFiles(close func() error) error {
+	if s == nil || s.workspace == nil {
+		return close()
+	}
+	preserved, preserveErr := s.workspace.preserveUnownedDuckFiles()
+	if len(preserved) > 0 || preserveErr != nil {
+		s.unownedDuckFiles = true
+	}
+	var errs []error
+	if preserveErr != nil {
+		errs = append(errs, preserveErr)
+	}
+	for _, file := range preserved {
+		errs = append(errs, fmt.Errorf("preserved unowned private stage file %s as %s", file.key, file.preserved))
+	}
+	if closeErr := close(); closeErr != nil {
+		errs = append(errs, closeErr)
+	}
+	if restoreErr := s.workspace.restorePreservedDuckFiles(preserved); restoreErr != nil {
+		errs = append(errs, restoreErr)
+	}
+	return errors.Join(errs...)
+}
+
 func (s *WikidataDumpStagingSink) closeWriters() error {
 	if s == nil {
 		return nil
 	}
+	return errors.Join(s.closeSeenQIDStatement(), s.closeAppenders())
+}
+
+func (s *WikidataDumpStagingSink) closeSeenQIDStatement() error {
 	var errs []error
 	if s.seenQIDStmt != nil {
 		stmt := s.seenQIDStmt
@@ -495,16 +691,12 @@ func (s *WikidataDumpStagingSink) closeWriters() error {
 			errs = append(errs, fmt.Errorf("close wikidata id statement: %w", err))
 		}
 	}
-	for _, appender := range []struct {
-		name string
-		ptr  **duckdb.Appender
-	}{
-		{name: "entity", ptr: &s.entityAppender},
-		{name: "category", ptr: &s.categoryAppender},
-		{name: "relationship", ptr: &s.relationshipAppender},
-		{name: "claim", ptr: &s.claimAppender},
-		{name: "reject", ptr: &s.rejectAppender},
-	} {
+	return errors.Join(errs...)
+}
+
+func (s *WikidataDumpStagingSink) closeAppenders() error {
+	var errs []error
+	for _, appender := range s.appenders() {
 		if *appender.ptr == nil {
 			continue
 		}

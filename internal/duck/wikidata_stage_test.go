@@ -3,6 +3,8 @@ package duck
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -763,6 +765,14 @@ func TestWikidataDumpStagingSinkMatchesGlobalSlugCollisions(t *testing.T) {
 		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
 	}
 	privatePath := stage.workspace.privatePath
+	stage.transactionLimit = 1
+	slugCommits := 0
+	stage.slugCommitHook = func(boundary string) error {
+		if boundary == "after-slug-commit" {
+			slugCommits++
+		}
+		return nil
+	}
 	t.Cleanup(func() { _ = stage.Abort() })
 	for i, entity := range entities {
 		if err := stage.MarkSeenQID(fmt.Sprintf("Q%d", i+1)); err != nil {
@@ -775,6 +785,9 @@ func TestWikidataDumpStagingSinkMatchesGlobalSlugCollisions(t *testing.T) {
 	if err := stage.finalizeScratch(context.Background(), []byte("{}")); err == nil ||
 		!strings.Contains(err.Error(), "unresolvable slug collision") {
 		t.Fatalf("finalizeScratch error = %v, want %v", err, wantErr)
+	}
+	if slugCommits == 0 {
+		t.Fatal("cross-base collision occurred before any slug batch committed")
 	}
 	if _, err := os.Lstat(privatePath); !os.IsNotExist(err) {
 		t.Fatalf("private stage remains after failed finalization: %v", err)
@@ -799,6 +812,14 @@ func TestWikidataDumpStagingSinkMatchesSlugFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
 	}
+	stage.transactionLimit = 1
+	slugCommits := 0
+	stage.slugCommitHook = func(boundary string) error {
+		if boundary == "after-slug-commit" {
+			slugCommits++
+		}
+		return nil
+	}
 	t.Cleanup(func() { _ = stage.Abort() })
 	for i, entity := range entities {
 		if err := stage.MarkSeenQID(fmt.Sprintf("Q%d", i+1)); err != nil {
@@ -810,6 +831,9 @@ func TestWikidataDumpStagingSinkMatchesSlugFallbacks(t *testing.T) {
 	}
 	if err := stage.finalizeScratch(context.Background(), []byte("{}")); err != nil {
 		t.Fatalf("finalizeScratch: %v", err)
+	}
+	if slugCommits != len(entities) {
+		t.Fatalf("slug commits = %d, want %d", slugCommits, len(entities))
 	}
 	legacyDir := t.TempDir()
 	legacy, err := WriteModel(context.Background(), legacyDir, want)
@@ -845,6 +869,1008 @@ func TestWikidataDumpStagingSinkRejectsEarlyDuplicateAfterThousandsOfMarks(t *te
 	}
 	if _, err := os.Lstat(privatePath); !os.IsNotExist(err) {
 		t.Fatalf("private stage remains after abort: %v", err)
+	}
+}
+
+func TestWikidataDumpStagingSinkRotatesCompleteItemsAndRejectsCrossBatchDuplicate(t *testing.T) {
+	t.Parallel()
+
+	finalOut := filepath.Join(t.TempDir(), "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	stage.transactionLimit = 1
+	privatePath := stage.workspace.privatePath
+
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("mark accepted item: %v", err)
+	}
+	if err := stage.AcceptEntity(testStageEntity("Q1", "Alpha", 1)); err != nil {
+		t.Fatalf("accept item: %v", err)
+	}
+	if err := stage.MarkSeenQID("Q2"); err != nil {
+		t.Fatalf("mark rejected item: %v", err)
+	}
+	if err := stage.Reject(ingest.Reject{Source: ingest.RejectSourceWikidataDump, File: "dump", Line: 2, Reason: "bad"}); err != nil {
+		t.Fatalf("reject item: %v", err)
+	}
+	if err := stage.MarkSeenQID("Q3"); err != nil {
+		t.Fatalf("mark filtered item: %v", err)
+	}
+	if err := stage.MarkSeenQID("Q1"); err == nil || !strings.Contains(err.Error(), "duplicate wikidata id Q1") {
+		t.Fatalf("cross-batch duplicate error = %v", err)
+	}
+	if err := stage.Abort(); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if err := stage.Abort(); err != nil {
+		t.Fatalf("second Abort: %v", err)
+	}
+	if _, err := os.Lstat(privatePath); !os.IsNotExist(err) {
+		t.Fatalf("private stage remains: %v", err)
+	}
+	if _, err := os.Lstat(finalOut); !os.IsNotExist(err) {
+		t.Fatalf("final output exists: %v", err)
+	}
+}
+
+func TestWikidataDumpStagingSinkRotationCancellationCleansCommittedPrefix(t *testing.T) {
+	t.Parallel()
+
+	for _, boundary := range []string{"before-flush", "after-commit"} {
+		t.Run(boundary, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			stage, err := NewWikidataDumpStagingSink(ctx, filepath.Join(t.TempDir(), "model"))
+			if err != nil {
+				t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+			}
+			stage.transactionLimit = 1
+			privatePath := stage.workspace.privatePath
+			stage.rotationHook = func(got string) error {
+				if got == boundary {
+					cancel()
+				}
+				return nil
+			}
+			if err := stage.MarkSeenQID("Q1"); err != nil {
+				t.Fatalf("first MarkSeenQID: %v", err)
+			}
+			value := 1.0
+			entity := testStageEntity("Q1", "Alpha", 1)
+			entity.Rel = []model.SeedRel{{Type: "part_of", Target: "Q1"}}
+			entity.Props = []model.SeedProp{{
+				Property: "count", Value: &value, ValueType: "number", Source: "test", PublishedAt: "2026-09-02",
+			}}
+			if err := stage.AcceptEntity(entity); err != nil {
+				t.Fatalf("AcceptEntity: %v", err)
+			}
+			if err := stage.Reject(ingest.Reject{Source: ingest.RejectSourceWikidataDump, File: "dump", Line: 1, Reason: "bad"}); err != nil {
+				t.Fatalf("Reject: %v", err)
+			}
+			err = stage.MarkSeenQID("Q2")
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("rotation error = %v, want context cancellation", err)
+			}
+			if boundary == "before-flush" {
+				flushFailed := strings.Contains(err.Error(), "flush ") && strings.Contains(err.Error(), " appender")
+				if !flushFailed && !strings.Contains(err.Error(), "begin next staging DuckDB transaction") {
+					t.Fatalf("rotation error does not identify canceled flush or begin: %v", err)
+				}
+			}
+			abortErr := stage.Abort()
+			if boundary == "before-flush" {
+				if abortErr != nil && !strings.Contains(abortErr.Error(), "Current transaction is aborted") {
+					t.Fatalf("Abort error = %v, want nil or aborted transaction close error", abortErr)
+				}
+			} else if abortErr != nil {
+				t.Fatalf("Abort: %v", abortErr)
+			}
+			assertStageDataHandlesClosed(t, stage)
+			if err := stage.Abort(); err != nil {
+				t.Fatalf("second Abort: %v", err)
+			}
+			if _, err := os.Lstat(privatePath); !os.IsNotExist(err) {
+				t.Fatalf("private stage remains: %v", err)
+			}
+		})
+	}
+}
+
+type stagedCommitErrorTx struct {
+	driver.Tx
+	delegate      bool
+	afterDelegate func()
+	err           error
+}
+
+func (tx *stagedCommitErrorTx) Commit() error {
+	if tx.delegate {
+		if err := tx.Tx.Commit(); err != nil {
+			return err
+		}
+		if tx.afterDelegate != nil {
+			tx.afterDelegate()
+		}
+	}
+	return tx.err
+}
+
+func TestWikidataDumpStagingSinkAmbiguousCommitPreservesNewUnrecordedWAL(t *testing.T) {
+	t.Parallel()
+
+	stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(t.TempDir(), "model"))
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("MarkSeenQID: %v", err)
+	}
+	sentinel := errors.New("ambiguous committed result")
+	walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+	displaced := walPath + ".displaced"
+	var hookErr error
+	stage.tx = &stagedCommitErrorTx{
+		Tx: stage.tx, delegate: true, err: sentinel,
+		afterDelegate: func() {
+			if stage.workspace.fileIdentities[stageDatabaseWALFile] != nil {
+				hookErr = fmt.Errorf("WAL was already recorded before the real commit")
+				return
+			}
+			if err := os.Rename(walPath, displaced); err != nil {
+				hookErr = err
+				return
+			}
+			hookErr = os.WriteFile(walPath, []byte("replacement"), 0o600)
+		},
+	}
+	err = stage.finalizeScratch(context.Background(), []byte("{}"))
+	if hookErr != nil {
+		t.Fatalf("replace committed WAL: %v", hookErr)
+	}
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "has no recorded identity") {
+		t.Fatalf("finalize error = %v", err)
+	}
+	for _, path := range []string{walPath, displaced} {
+		if _, statErr := os.Lstat(path); statErr != nil {
+			t.Fatalf("ambiguous cleanup removed %s: %v", path, statErr)
+		}
+	}
+	if got, readErr := os.ReadFile(walPath); readErr != nil || string(got) != "replacement" {
+		t.Fatalf("replacement WAL = %q, err %v", got, readErr)
+	}
+	if !strings.Contains(err.Error(), "model.duckdb.wal.unowned-") {
+		t.Fatalf("finalize error does not report preserved WAL link: %v", err)
+	}
+}
+
+func TestWikidataDumpStagingSinkAmbiguousRawCommitCleansKnownFiles(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("injected commit result")
+	for _, site := range []string{"rotation", "final"} {
+		for _, delegate := range []bool{false, true} {
+			name := fmt.Sprintf("%s/delegate=%t", site, delegate)
+			t.Run(name, func(t *testing.T) {
+				stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(t.TempDir(), "model"))
+				if err != nil {
+					t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+				}
+				privatePath := stage.workspace.privatePath
+				if err := stage.MarkSeenQID("Q1"); err != nil {
+					t.Fatalf("MarkSeenQID: %v", err)
+				}
+				if delegate {
+					ensureStageWALForTest(t, stage)
+				}
+				stage.tx = &stagedCommitErrorTx{Tx: stage.tx, delegate: delegate, err: sentinel}
+				if site == "rotation" {
+					stage.transactionLimit = 1
+					err = stage.MarkSeenQID("Q2")
+				} else {
+					err = stage.finalizeScratch(context.Background(), []byte("{}"))
+				}
+				if !errors.Is(err, sentinel) {
+					t.Fatalf("commit error = %v, want sentinel", err)
+				}
+				if !stage.commitAmbiguous {
+					t.Fatal("commit error did not mark ownership ambiguous")
+				}
+				if !stage.aborted {
+					if err := stage.Abort(); err != nil {
+						t.Fatalf("Abort: %v", err)
+					}
+				}
+				assertStageDataHandlesClosed(t, stage)
+				if _, err := os.Lstat(privatePath); !os.IsNotExist(err) {
+					t.Fatalf("private stage remains: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestWikidataDumpStagingSinkAmbiguousCommitPreservesRecordedWALReplacement(t *testing.T) {
+	t.Parallel()
+
+	stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(t.TempDir(), "model"))
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	stage.transactionLimit = 1
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("first MarkSeenQID: %v", err)
+	}
+	if err := stage.MarkSeenQID("Q2"); err != nil {
+		t.Fatalf("rotation MarkSeenQID: %v", err)
+	}
+	if stage.workspace.fileIdentities[stageDatabaseWALFile] == nil {
+		t.Fatal("successful rotation did not record the WAL")
+	}
+
+	sentinel := errors.New("ambiguous committed result")
+	walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+	displaced := walPath + ".displaced"
+	var hookErr error
+	stage.tx = &stagedCommitErrorTx{
+		Tx: stage.tx, delegate: true, err: sentinel,
+		afterDelegate: func() {
+			if err := os.Rename(walPath, displaced); err != nil {
+				hookErr = err
+				return
+			}
+			hookErr = os.WriteFile(walPath, []byte("replacement"), 0o600)
+		},
+	}
+	err = stage.MarkSeenQID("Q3")
+	if hookErr != nil {
+		t.Fatalf("replace recorded WAL: %v", hookErr)
+	}
+	if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("rotation error = %v", err)
+	}
+	if abortErr := stage.Abort(); abortErr == nil || !strings.Contains(abortErr.Error(), "identity changed") {
+		t.Fatalf("Abort error = %v", abortErr)
+	}
+	for _, path := range []string{walPath, displaced} {
+		if _, statErr := os.Lstat(path); statErr != nil {
+			t.Fatalf("ambiguous cleanup removed %s: %v", path, statErr)
+		}
+	}
+	if got, readErr := os.ReadFile(walPath); readErr != nil || string(got) != "replacement" {
+		t.Fatalf("replacement WAL = %q, err %v", got, readErr)
+	}
+}
+
+func TestWikidataDumpStagingSinkSlugCommitBoundariesCleanPrivatePrefixes(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("injected slug boundary")
+	for _, test := range []struct {
+		name      string
+		boundary  string
+		cancel    bool
+		ambiguous bool
+	}{
+		{name: "before hook error rolls back", boundary: "before-slug-commit"},
+		{name: "canceled real commit is ambiguous", boundary: "before-slug-commit", cancel: true, ambiguous: true},
+		{name: "after successful commit", boundary: "after-slug-commit"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(t.TempDir(), "model"))
+			if err != nil {
+				t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+			}
+			stage.transactionLimit = 1
+			privatePath := stage.workspace.privatePath
+			if err := stage.MarkSeenQID("Q1"); err != nil {
+				t.Fatalf("MarkSeenQID: %v", err)
+			}
+			if err := stage.AcceptEntity(testStageEntity("Q1", "Alpha", 1)); err != nil {
+				t.Fatalf("AcceptEntity: %v", err)
+			}
+			stage.slugCommitHook = func(got string) error {
+				if got != test.boundary {
+					return nil
+				}
+				if test.cancel {
+					cancel()
+					return nil
+				}
+				return sentinel
+			}
+			err = stage.finalizeScratch(ctx, []byte("{}"))
+			if test.cancel {
+				if !errors.Is(err, context.Canceled) && !strings.Contains(err.Error(), "transaction has already been committed or rolled back") {
+					t.Fatalf("canceled commit error = %v", err)
+				}
+			} else if !errors.Is(err, sentinel) {
+				t.Fatalf("hook error = %v, want sentinel", err)
+			}
+			if stage.commitAmbiguous != test.ambiguous {
+				t.Fatalf("commitAmbiguous = %t, want %t", stage.commitAmbiguous, test.ambiguous)
+			}
+			assertStageDataHandlesClosed(t, stage)
+			if _, err := os.Lstat(privatePath); !os.IsNotExist(err) {
+				t.Fatalf("private stage remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestWikidataDumpStagingSinkCanceledSlugCommitPreservesUnrecordedWAL(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(t.TempDir(), "model"))
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	stage.transactionLimit = 1
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("MarkSeenQID: %v", err)
+	}
+	if err := stage.AcceptEntity(testStageEntity("Q1", "Alpha", 1)); err != nil {
+		t.Fatalf("AcceptEntity: %v", err)
+	}
+	ensureStageWALForTest(t, stage)
+	walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+	displaced := walPath + ".displaced"
+	var hookErr error
+	stage.slugCommitHook = func(boundary string) error {
+		switch boundary {
+		case "before-slug-commit":
+			cancel()
+		case "after-slug-commit-error":
+			delete(stage.workspace.fileIdentities, stageDatabaseWALFile)
+			if _, err := os.Lstat(walPath); err == nil {
+				if err := os.Rename(walPath, displaced); err != nil {
+					hookErr = err
+					return nil
+				}
+			} else if !os.IsNotExist(err) {
+				hookErr = err
+				return nil
+			}
+			hookErr = os.WriteFile(walPath, []byte("unrecorded"), 0o600)
+		}
+		return nil
+	}
+	err = stage.finalizeScratch(ctx, []byte("{}"))
+	if hookErr != nil {
+		t.Fatalf("create unrecorded WAL: %v", hookErr)
+	}
+	if !stage.commitAmbiguous || !strings.Contains(err.Error(), "has no recorded identity") {
+		t.Fatalf("canceled slug commit error = %v, ambiguous=%t", err, stage.commitAmbiguous)
+	}
+	if got, readErr := os.ReadFile(walPath); readErr != nil || string(got) != "unrecorded" {
+		t.Fatalf("unrecorded WAL = %q, err %v", got, readErr)
+	}
+	if _, statErr := os.Lstat(stage.workspace.privatePath); statErr != nil {
+		t.Fatalf("ambiguous cleanup removed private container: %v", statErr)
+	}
+}
+
+func TestWikidataDumpStagingSinkBatchingPreservesExactModelBytes(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile("../ingest/testdata/wikidata-dump-census.json")
+	if err != nil {
+		t.Fatalf("read census fixture: %v", err)
+	}
+	build := func(limit int) (map[string][]byte, int) {
+		out := filepath.Join(t.TempDir(), "model")
+		stage, err := NewWikidataDumpStagingSink(context.Background(), out)
+		if err != nil {
+			t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+		}
+		stage.transactionLimit = limit
+		slugCommits := 0
+		stage.slugCommitHook = func(boundary string) error {
+			if boundary == "after-slug-commit" {
+				slugCommits++
+			}
+			return nil
+		}
+		report, err := ingest.ImportWikidataDumpToSink(strings.NewReader(string(body)), ingest.WikidataDumpImportOptions{}, stage)
+		if err != nil {
+			t.Fatalf("ImportWikidataDumpToSink: %v", err)
+		}
+		reportBody, err := json.Marshal(report)
+		if err != nil {
+			t.Fatalf("marshal report: %v", err)
+		}
+		if err := stage.Finalize(context.Background(), reportBody); err != nil {
+			t.Fatalf("Finalize: %v", err)
+		}
+		artifacts := make(map[string][]byte)
+		for _, name := range []string{
+			"entity.parquet", "entity_category.parquet", "relationship.parquet", "claim.parquet",
+			"reject.parquet", "import.json", "model-files.json",
+		} {
+			contents, err := os.ReadFile(filepath.Join(out, name))
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			artifacts[name] = contents
+		}
+		return artifacts, slugCommits
+	}
+
+	oneRow, oneRowSlugCommits := build(1)
+	production, _ := build(wikidataStageTransactionItemLimit)
+	if oneRowSlugCommits < 2 {
+		t.Fatalf("one-row slug commits = %d, want multiple batches", oneRowSlugCommits)
+	}
+	if !reflect.DeepEqual(oneRow, production) {
+		for name := range production {
+			if !reflect.DeepEqual(oneRow[name], production[name]) {
+				t.Errorf("%s differs across transaction limits", name)
+			}
+		}
+	}
+}
+
+func TestWikidataDumpStagingSinkPreservesWALReappearingAfterVerifiedAbsence(t *testing.T) {
+	for _, ambiguous := range []bool{false, true} {
+		t.Run(fmt.Sprintf("ambiguous=%t", ambiguous), func(t *testing.T) {
+			stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(t.TempDir(), "model"))
+			if err != nil {
+				t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+			}
+			if err := stage.closeWriters(); err != nil {
+				t.Fatalf("closeWriters: %v", err)
+			}
+			if err := stage.tx.Rollback(); err != nil {
+				t.Fatalf("Rollback: %v", err)
+			}
+			stage.tx = nil
+			if err := stage.closeDuckDB(); err != nil {
+				t.Fatalf("closeDuckDB: %v", err)
+			}
+			if err := stage.workspace.verifyRecordedDuckFiles(true); err != nil {
+				t.Fatalf("verify closed database: %v", err)
+			}
+			ensureStageWALForTest(t, stage)
+			if err := stage.workspace.duckRoot.Remove("model.duckdb.wal"); err != nil {
+				t.Fatalf("remove recorded WAL: %v", err)
+			}
+			stage.commitAmbiguous = ambiguous
+			stage.workspace.beforeRemove = func(key string) {
+				if key == stageDatabaseWALFile {
+					if err := stage.workspace.duckRoot.WriteFile("model.duckdb.wal", []byte("replacement"), 0o600); err != nil {
+						t.Errorf("recreate WAL: %v", err)
+					}
+				}
+			}
+			err = stage.Abort()
+			if err == nil || !strings.Contains(err.Error(), "has no recorded identity") {
+				t.Fatalf("Abort error = %v", err)
+			}
+			walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+			if got, readErr := os.ReadFile(walPath); readErr != nil || string(got) != "replacement" {
+				t.Fatalf("replacement WAL = %q, err %v", got, readErr)
+			}
+		})
+	}
+}
+
+func TestWikidataDumpStagingSinkReportsRequiredDatabaseAbsence(t *testing.T) {
+	t.Parallel()
+
+	stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(t.TempDir(), "model"))
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	if err := stage.closeWriters(); err != nil {
+		t.Fatalf("closeWriters: %v", err)
+	}
+	if err := stage.tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+	stage.tx = nil
+	if err := stage.closeDuckDB(); err != nil {
+		t.Fatalf("closeDuckDB: %v", err)
+	}
+	if err := stage.workspace.duckRoot.Remove("model.duckdb"); err != nil {
+		t.Fatalf("remove database: %v", err)
+	}
+	stage.commitAmbiguous = true
+	err = stage.Abort()
+	if err == nil || !strings.Contains(err.Error(), "private stage file "+stageDatabaseFile+" is missing") {
+		t.Fatalf("Abort error = %v", err)
+	}
+}
+
+func TestWikidataDumpStagingSinkDirectAbortAdoptsFilesCreatedDuringRollback(t *testing.T) {
+	t.Parallel()
+
+	stage, err := NewWikidataDumpStagingSink(context.Background(), filepath.Join(t.TempDir(), "model"))
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	privatePath := stage.workspace.privatePath
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("MarkSeenQID: %v", err)
+	}
+	if err := stage.AcceptEntity(testStageEntity("Q1", "Alpha", 1)); err != nil {
+		t.Fatalf("AcceptEntity: %v", err)
+	}
+	if err := stage.Abort(); err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if _, err := os.Lstat(privatePath); !os.IsNotExist(err) {
+		t.Fatalf("ordinary abort retained private stage: %v", err)
+	}
+}
+
+func TestWikidataDumpStagingSinkCanceledSlugCommitAfterDurableBatchPreservesReplacement(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	finalOut := filepath.Join(t.TempDir(), "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	stage.transactionLimit = 1
+	t.Cleanup(func() { _ = stage.Abort() })
+	walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+	displaced := walPath + ".durable-displaced"
+	var hookErr error
+	var replacementInfo os.FileInfo
+	commits := 0
+	stage.slugCommitHook = func(boundary string) error {
+		switch boundary {
+		case "after-slug-commit":
+			commits++
+		case "before-slug-commit":
+			if commits == 1 {
+				cancel()
+				return nil
+			}
+		case "after-slug-commit-error":
+			if err := os.Rename(walPath, displaced); err != nil {
+				hookErr = err
+				return nil
+			}
+			hookErr = os.WriteFile(walPath, []byte("durable-prefix-replacement"), 0o600)
+			if hookErr == nil {
+				replacementInfo, hookErr = os.Stat(walPath)
+			}
+		}
+		return nil
+	}
+	for i, entity := range []*model.Entity{
+		testStageEntity("Q1", "Alpha", 1),
+		testStageEntity("Q2", "Beta", 1),
+	} {
+		if err := stage.MarkSeenQID(fmt.Sprintf("Q%d", i+1)); err != nil {
+			t.Fatalf("MarkSeenQID: %v", err)
+		}
+		if err := stage.AcceptEntity(entity); err != nil {
+			t.Fatalf("AcceptEntity: %v", err)
+		}
+	}
+	err = stage.finalizeScratch(ctx, []byte("{}"))
+	if hookErr != nil {
+		t.Fatalf("replacement hook: %v", hookErr)
+	}
+	if commits != 1 || (!errors.Is(err, context.Canceled) && !errors.Is(err, sql.ErrTxDone)) || !stage.commitAmbiguous {
+		t.Fatalf("finalize error = %v, commits = %d", err, commits)
+	}
+	info, statErr := os.Stat(walPath)
+	if statErr != nil {
+		t.Fatalf("stat replacement WAL: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(walPath); readErr != nil || string(got) != "durable-prefix-replacement" || !os.SameFile(info, replacementInfo) {
+		t.Fatalf("replacement WAL = %q, err %v", got, readErr)
+	}
+	if _, statErr := os.Lstat(stage.workspace.privatePath); statErr != nil {
+		t.Fatalf("preserved private container missing: %v", statErr)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if _, statErr := os.Lstat(finalOut); !os.IsNotExist(statErr) {
+		t.Fatalf("final output exists: %v", statErr)
+	}
+}
+
+func TestWikidataDumpStagingSinkSlugPrecommitReplacementIsNotAdopted(t *testing.T) {
+	finalOut := filepath.Join(t.TempDir(), "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	stage.transactionLimit = 1
+	t.Cleanup(func() { _ = stage.Abort() })
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("MarkSeenQID: %v", err)
+	}
+	if err := stage.AcceptEntity(testStageEntity("Q1", "Alpha", 1)); err != nil {
+		t.Fatalf("AcceptEntity: %v", err)
+	}
+	if err := stage.MarkSeenQID("Q2"); err != nil {
+		t.Fatalf("second MarkSeenQID: %v", err)
+	}
+	if err := stage.AcceptEntity(testStageEntity("Q2", "Beta", 1)); err != nil {
+		t.Fatalf("second AcceptEntity: %v", err)
+	}
+	walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+	displaced := walPath + ".slug-precommit-displaced"
+	var hookErr error
+	var replacementInfo os.FileInfo
+	commits := 0
+	stage.slugCommitHook = func(boundary string) error {
+		if boundary != "after-slug-commit" {
+			return nil
+		}
+		commits++
+		if commits != 1 {
+			return nil
+		}
+		ensureStageWALForTest(t, stage)
+		if err := os.Rename(walPath, displaced); err != nil {
+			hookErr = err
+			return nil
+		}
+		hookErr = os.WriteFile(walPath, []byte("slug-precommit-replacement"), 0o600)
+		if hookErr == nil {
+			replacementInfo, hookErr = os.Stat(walPath)
+		}
+		return nil
+	}
+	err = stage.finalizeScratch(context.Background(), []byte("{}"))
+	if hookErr != nil {
+		t.Fatalf("replacement hook: %v", hookErr)
+	}
+	if commits != 1 || err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("finalize error = %v, commits = %d", err, commits)
+	}
+	info, statErr := os.Stat(walPath)
+	if statErr != nil {
+		t.Fatalf("stat replacement WAL: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(walPath); readErr != nil || string(got) != "slug-precommit-replacement" || !os.SameFile(info, replacementInfo) {
+		t.Fatalf("replacement database = %q, err %v", got, readErr)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if _, statErr := os.Lstat(finalOut); !os.IsNotExist(statErr) {
+		t.Fatalf("final output exists: %v", statErr)
+	}
+}
+
+func TestWikidataDumpStagingSinkSlugHookUnknownWALIsNotAdopted(t *testing.T) {
+	finalOut := filepath.Join(t.TempDir(), "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	stage.transactionLimit = 1
+	t.Cleanup(func() { _ = stage.Abort() })
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("MarkSeenQID: %v", err)
+	}
+	if err := stage.AcceptEntity(testStageEntity("Q1", "Alpha", 1)); err != nil {
+		t.Fatalf("AcceptEntity: %v", err)
+	}
+	walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+	var replacementInfo os.FileInfo
+	sentinel := errors.New("ordinary slug hook error")
+	var hookErr error
+	stage.slugCommitHook = func(boundary string) error {
+		if boundary != "before-slug-commit" {
+			return nil
+		}
+		if err := os.WriteFile(walPath, []byte("unknown-wal"), 0o600); err != nil {
+			hookErr = err
+		} else {
+			replacementInfo, hookErr = os.Stat(walPath)
+		}
+		return sentinel
+	}
+	err = stage.finalizeScratch(context.Background(), []byte("{}"))
+	if hookErr != nil {
+		t.Fatalf("unknown WAL hook: %v", hookErr)
+	}
+	if !errors.Is(err, sentinel) || stage.commitAmbiguous || !stage.unownedDuckFiles {
+		t.Fatalf("finalize error = %v, want ordinary hook error", err)
+	}
+	info, statErr := os.Stat(walPath)
+	if statErr != nil {
+		t.Fatalf("stat unknown WAL: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(walPath); readErr != nil || string(got) != "unknown-wal" || !os.SameFile(info, replacementInfo) {
+		t.Fatalf("unknown WAL = %q, err %v", got, readErr)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if _, statErr := os.Lstat(finalOut); !os.IsNotExist(statErr) {
+		t.Fatalf("final output exists: %v", statErr)
+	}
+}
+
+func TestWikidataDumpStagingSinkBeforeFlushReplacementIsPreserved(t *testing.T) {
+	finalOut := filepath.Join(t.TempDir(), "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	t.Cleanup(func() { _ = stage.Abort() })
+	stage.transactionLimit = 1
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("first MarkSeenQID: %v", err)
+	}
+	if err := stage.MarkSeenQID("Q2"); err != nil {
+		t.Fatalf("second MarkSeenQID: %v", err)
+	}
+	walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+	displaced := walPath + ".before-flush-displaced"
+	var hookErr error
+	var replacementInfo os.FileInfo
+	stage.rotationHook = func(boundary string) error {
+		if boundary != "before-flush" {
+			return nil
+		}
+		if err := os.Rename(walPath, displaced); err != nil {
+			hookErr = err
+			return nil
+		}
+		hookErr = os.WriteFile(walPath, []byte("before-flush-replacement"), 0o600)
+		if hookErr == nil {
+			replacementInfo, hookErr = os.Stat(walPath)
+		}
+		return nil
+	}
+	err = stage.MarkSeenQID("Q3")
+	if hookErr != nil {
+		t.Fatalf("replacement hook: %v", hookErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("rotation error = %v", err)
+	}
+	if abortErr := stage.Abort(); abortErr != nil && !strings.Contains(abortErr.Error(), "identity changed") {
+		t.Fatalf("Abort: %v", abortErr)
+	}
+	info, statErr := os.Stat(walPath)
+	if statErr != nil {
+		t.Fatalf("stat replacement WAL: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(walPath); readErr != nil || string(got) != "before-flush-replacement" || !os.SameFile(info, replacementInfo) {
+		t.Fatalf("replacement WAL = %q, err %v", got, readErr)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if _, statErr := os.Lstat(finalOut); !os.IsNotExist(statErr) {
+		t.Fatalf("final output exists: %v", statErr)
+	}
+}
+
+func TestWikidataDumpStagingSinkInitialRawCloseReplacementIsPreserved(t *testing.T) {
+	finalOut := filepath.Join(t.TempDir(), "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	t.Cleanup(func() { _ = stage.Abort() })
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("MarkSeenQID: %v", err)
+	}
+	walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+	displaced := walPath + ".finalize-close-displaced"
+	var hookErr error
+	var replacementInfo os.FileInfo
+	stage.finalizeHook = func(boundary string) error {
+		if boundary != "close-scratch-database" {
+			return nil
+		}
+		if err := os.Rename(walPath, displaced); err != nil {
+			hookErr = err
+			return nil
+		}
+		hookErr = os.WriteFile(walPath, []byte("finalize-close-replacement"), 0o600)
+		if hookErr == nil {
+			replacementInfo, hookErr = os.Stat(walPath)
+		}
+		return nil
+	}
+	err = stage.finalizeScratch(context.Background(), []byte("{}"))
+	if hookErr != nil {
+		t.Fatalf("replacement hook: %v", hookErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("finalize error = %v, want identity diagnostic", err)
+	}
+	info, statErr := os.Stat(walPath)
+	if statErr != nil {
+		t.Fatalf("stat replacement WAL: %v", statErr)
+	}
+	if got, readErr := os.ReadFile(walPath); readErr != nil || string(got) != "finalize-close-replacement" || !os.SameFile(info, replacementInfo) {
+		t.Fatalf("replacement WAL = %q, err %v", got, readErr)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if _, statErr := os.Lstat(finalOut); !os.IsNotExist(statErr) {
+		t.Fatalf("final output exists: %v", statErr)
+	}
+}
+
+func TestRestorePreservedDuckFilesRejectsReplacedPreservationLink(t *testing.T) {
+	w, err := newStagingWorkspace(filepath.Join(t.TempDir(), "model"))
+	if err != nil {
+		t.Fatalf("newStagingWorkspace: %v", err)
+	}
+	defer func() { _ = w.cleanup() }()
+	if err := w.duckRoot.WriteFile("model.duckdb.wal", []byte("replacement"), 0o600); err != nil {
+		t.Fatalf("write WAL: %v", err)
+	}
+	originalInfo, err := w.duckRoot.Lstat("model.duckdb.wal")
+	if err != nil {
+		t.Fatalf("stat original WAL: %v", err)
+	}
+	preserved, err := w.preserveUnownedDuckFiles()
+	if err != nil || len(preserved) != 1 {
+		t.Fatalf("preserve = %#v, err %v", preserved, err)
+	}
+	if err := w.duckRoot.Remove(preserved[0].preserved); err != nil {
+		t.Fatalf("remove preservation link: %v", err)
+	}
+	if err := w.duckRoot.WriteFile(preserved[0].preserved, []byte("sentinel"), 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	displaced := preserved[0].name + ".displaced"
+	if err := w.duckRoot.Rename(preserved[0].name, displaced); err != nil {
+		t.Fatalf("rename fixed path: %v", err)
+	}
+	err = w.restorePreservedDuckFiles(preserved)
+	if err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("restore error = %v, want identity diagnostic", err)
+	}
+	if _, statErr := w.duckRoot.Lstat(preserved[0].name); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("fixed path recreated from sentinel: %v", statErr)
+	}
+	if displacedInfo, statErr := w.duckRoot.Lstat(displaced); statErr != nil || !os.SameFile(displacedInfo, originalInfo) {
+		t.Fatalf("displaced original identity = %v, err %v", displacedInfo, statErr)
+	}
+	if got, readErr := w.duckRoot.ReadFile(displaced); readErr != nil || string(got) != "replacement" {
+		t.Fatalf("displaced original bytes = %q, err %v", got, readErr)
+	}
+	if got, readErr := w.duckRoot.ReadFile(preserved[0].preserved); readErr != nil || string(got) != "sentinel" {
+		t.Fatalf("sentinel bytes = %q, err %v", got, readErr)
+	}
+}
+
+func TestWikidataDumpStagingSinkSlugCommittedHookErrorPreservesWAL(t *testing.T) {
+	finalOut := filepath.Join(t.TempDir(), "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	stage.transactionLimit = 1
+	t.Cleanup(func() { _ = stage.Abort() })
+	walPath := filepath.Join(stage.workspace.privatePath, stageDatabaseWALFile)
+	displaced := walPath + ".original"
+	sentinel := errors.New("ordinary postcommit stop")
+	var original os.FileInfo
+	stage.slugCommitHook = func(boundary string) error {
+		if boundary != "after-slug-commit" {
+			return nil
+		}
+		if err := os.Rename(walPath, displaced); err != nil {
+			return err
+		}
+		if err := os.WriteFile(walPath, []byte("replacement"), 0o600); err != nil {
+			return err
+		}
+		var statErr error
+		original, statErr = os.Stat(walPath)
+		if statErr != nil {
+			return statErr
+		}
+		return sentinel
+	}
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("MarkSeenQID: %v", err)
+	}
+	if err := stage.AcceptEntity(testStageEntity("Q1", "Alpha", 1)); err != nil {
+		t.Fatalf("AcceptEntity: %v", err)
+	}
+	err = stage.finalizeScratch(context.Background(), []byte("{}"))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("finalize error = %v, want %v", err, sentinel)
+	}
+	if stage.commitAmbiguous || !stage.unownedDuckFiles {
+		t.Fatalf("ownership state ambiguous=%t unowned=%t", stage.commitAmbiguous, stage.unownedDuckFiles)
+	}
+	got, statErr := os.Stat(walPath)
+	if statErr != nil {
+		t.Fatalf("replacement WAL lost: %v", statErr)
+	}
+	body, readErr := os.ReadFile(walPath)
+	if readErr != nil || string(body) != "replacement" || !os.SameFile(got, original) {
+		t.Fatalf("replacement WAL = %q, err %v", body, readErr)
+	}
+	if _, statErr := os.Lstat(stage.workspace.privatePath); statErr != nil {
+		t.Fatalf("private container missing: %v", statErr)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if _, statErr := os.Lstat(finalOut); !os.IsNotExist(statErr) {
+		t.Fatalf("final output exists: %v", statErr)
+	}
+}
+
+func TestWikidataDumpStagingSinkFlushFailureAttemptsAllAppendersAndDoesNotCommit(t *testing.T) {
+	finalOut := filepath.Join(t.TempDir(), "model")
+	stage, err := NewWikidataDumpStagingSink(context.Background(), finalOut)
+	if err != nil {
+		t.Fatalf("NewWikidataDumpStagingSink: %v", err)
+	}
+	t.Cleanup(func() { _ = stage.Abort() })
+	stage.transactionLimit = 1
+	if err := stage.MarkSeenQID("Q1"); err != nil {
+		t.Fatalf("MarkSeenQID: %v", err)
+	}
+	value := 1.0
+	entity := testStageEntity("Q1", "Alpha", 1)
+	entity.Rel = []model.SeedRel{{Type: "part_of", Target: "Q1"}}
+	entity.Props = []model.SeedProp{{Property: "count", Value: &value, ValueType: "measured", Source: "test"}}
+	if err := stage.AcceptEntity(entity); err != nil {
+		t.Fatalf("AcceptEntity: %v", err)
+	}
+	if err := stage.Reject(ingest.Reject{Source: ingest.RejectSourceWikidataDump, File: "dump", Line: 1, Reason: "bad"}); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	sentinel := errors.New("commit must not be attempted")
+	commitCalled := false
+	watchedTx := &stagedCommitErrorTx{
+		Tx: stage.tx, delegate: true,
+		afterDelegate: func() { commitCalled = true },
+		err:           sentinel,
+	}
+	stage.tx = watchedTx
+	var hookErr error
+	stage.rotationHook = func(boundary string) error {
+		if boundary != "before-flush" {
+			return nil
+		}
+		_, hookErr = driverExec(stage.ctx, stage.conn, `INSERT INTO seen_qid VALUES (?)`, "Q1")
+		return nil
+	}
+	err = stage.MarkSeenQID("Q2")
+	if hookErr == nil || (!strings.Contains(strings.ToLower(hookErr.Error()), "duplicate") && !strings.Contains(strings.ToLower(hookErr.Error()), "constraint")) {
+		t.Fatalf("hook error = %v, want duplicate/constraint failure", hookErr)
+	}
+	if err == nil {
+		t.Fatal("rotation succeeded after the transaction was aborted")
+	}
+	for _, appender := range []string{"entity", "category", "relationship", "claim", "reject"} {
+		if !strings.Contains(err.Error(), "flush "+appender+" appender") {
+			t.Fatalf("rotation error = %v, missing %s flush", err, appender)
+		}
+	}
+	if stage.tx != watchedTx {
+		t.Fatalf("transaction detached after flush failure: %T", stage.tx)
+	}
+	if commitCalled || errors.Is(err, sentinel) {
+		t.Fatalf("commit called or sentinel returned: called=%t err=%v", commitCalled, err)
+	}
+	if abortErr := stage.Abort(); abortErr != nil && !strings.Contains(abortErr.Error(), "Current transaction is aborted") {
+		t.Fatalf("Abort: %v", abortErr)
+	}
+	assertStageDataHandlesClosed(t, stage)
+	if _, statErr := os.Lstat(stage.workspace.privatePath); !os.IsNotExist(statErr) {
+		t.Fatalf("private stage remains: %v", statErr)
+	}
+	if _, statErr := os.Lstat(finalOut); !os.IsNotExist(statErr) {
+		t.Fatalf("final output exists: %v", statErr)
+	}
+}
+
+func testStageEntity(seedID, name string, importance float64) *model.Entity {
+	return &model.Entity{
+		SeedID: seedID, Name: name, Type: "event", T0: model.YearToSeconds(1900), T1: model.YearToSeconds(1900),
+		Precision: "year", Status: "documented", Importance: importance, Categories: []string{"science"},
 	}
 }
 

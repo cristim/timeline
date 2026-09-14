@@ -434,6 +434,17 @@ func runWorkspaceBoundary(fail func(string) error, name string) error {
 }
 
 func (w *stagingWorkspace) recordDuckFiles() error {
+	return w.recordDuckFileIdentities(false)
+}
+
+func (w *stagingWorkspace) recordDuckFilesAfterSuccessfulCommit() error {
+	return w.recordDuckFileIdentities(true)
+}
+
+func (w *stagingWorkspace) recordDuckFileIdentities(adoptChanged bool) error {
+	if err := w.verifyDuckIdentity(); err != nil {
+		return err
+	}
 	var errs []error
 	for _, file := range []struct {
 		name string
@@ -442,8 +453,186 @@ func (w *stagingWorkspace) recordDuckFiles() error {
 		{name: "model.duckdb", key: stageDatabaseFile},
 		{name: "model.duckdb.wal", key: stageDatabaseWALFile},
 	} {
-		if err := w.recordFile(w.duckRoot, file.name, file.key, nil); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := w.recordDuckFileIdentity(file.name, file.key, adoptChanged); err != nil && !errors.Is(err, os.ErrNotExist) {
 			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (w *stagingWorkspace) recordDuckFileIdentity(name, key string, adoptChanged bool) error {
+	if w.duckRoot == nil {
+		return fmt.Errorf("record private stage file %s: containing root is closed", key)
+	}
+	pathInfo, err := w.duckRoot.Lstat(name)
+	if err != nil {
+		return fmt.Errorf("record private stage file %s: %w", key, err)
+	}
+	if !pathInfo.Mode().IsRegular() {
+		return fmt.Errorf("private stage file %s is not regular", key)
+	}
+	if recorded := w.fileIdentities[key]; recorded != nil && !os.SameFile(recorded, pathInfo) && !adoptChanged {
+		return fmt.Errorf("private stage file %s identity changed", key)
+	}
+	w.fileIdentities[key] = pathInfo
+	return nil
+}
+
+func (w *stagingWorkspace) verifyRecordedDuckFiles(clearAbsentWAL bool) error {
+	if err := w.verifyDuckIdentity(); err != nil {
+		return err
+	}
+	var errs []error
+	for _, file := range []struct {
+		name     string
+		key      string
+		required bool
+	}{
+		{name: "model.duckdb", key: stageDatabaseFile, required: true},
+		{name: "model.duckdb.wal", key: stageDatabaseWALFile},
+	} {
+		want := w.fileIdentities[file.key]
+		got, err := w.duckRoot.Lstat(file.name)
+		if errors.Is(err, os.ErrNotExist) {
+			if file.required {
+				errs = append(errs, fmt.Errorf("private stage file %s is missing", file.key))
+			} else if clearAbsentWAL && want != nil {
+				delete(w.fileIdentities, file.key)
+				w.runBeforeRemove(file.key)
+			}
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("stat private stage file %s: %w", file.key, err))
+			continue
+		}
+		if !got.Mode().IsRegular() {
+			errs = append(errs, fmt.Errorf("private stage file %s is not regular", file.key))
+			continue
+		}
+		if want == nil {
+			errs = append(errs, fmt.Errorf("private stage file %s has no recorded identity", file.key))
+			continue
+		}
+		if !os.SameFile(got, want) {
+			errs = append(errs, fmt.Errorf("private stage file %s identity changed", file.key))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+type preservedDuckFile struct {
+	name      string
+	key       string
+	preserved string
+	original  os.FileInfo
+}
+
+func (w *stagingWorkspace) preserveUnownedDuckFiles() ([]preservedDuckFile, error) {
+	if err := w.verifyDuckIdentity(); err != nil {
+		return nil, err
+	}
+	var preserved []preservedDuckFile
+	var errs []error
+	for _, file := range []struct {
+		name string
+		key  string
+	}{
+		{name: "model.duckdb", key: stageDatabaseFile},
+		{name: "model.duckdb.wal", key: stageDatabaseWALFile},
+	} {
+		want := w.fileIdentities[file.key]
+		got, err := w.duckRoot.Lstat(file.name)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("stat private stage file %s: %w", file.key, err))
+			continue
+		}
+		if !got.Mode().IsRegular() {
+			errs = append(errs, fmt.Errorf("private stage file %s is not regular", file.key))
+			continue
+		}
+		if want != nil && os.SameFile(got, want) {
+			continue
+		}
+		preserveName, err := w.createUnownedDuckFileLink(file.name, got)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("preserve unowned private stage file %s: %w", file.key, err))
+			continue
+		}
+		preserved = append(preserved, preservedDuckFile{name: file.name, key: file.key, preserved: preserveName, original: got})
+	}
+	return preserved, errors.Join(errs...)
+}
+
+func (w *stagingWorkspace) createUnownedDuckFileLink(name string, want os.FileInfo) (string, error) {
+	for range 100 {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			return "", fmt.Errorf("generate preservation name: %w", err)
+		}
+		preserved := name + ".unowned-" + hex.EncodeToString(token[:])
+		if _, err := w.duckRoot.Lstat(preserved); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("stat preservation link %s: %w", preserved, err)
+		}
+		if err := w.duckRoot.Link(name, preserved); err != nil {
+			return "", fmt.Errorf("link %s to %s: %w", name, preserved, err)
+		}
+		got, err := w.duckRoot.Lstat(preserved)
+		if err != nil {
+			return "", fmt.Errorf("stat preservation link %s: %w", preserved, err)
+		}
+		if !os.SameFile(got, want) {
+			return "", fmt.Errorf("preservation link %s identity changed", preserved)
+		}
+		return preserved, nil
+	}
+	return "", fmt.Errorf("could not allocate a unique preservation name for %s", name)
+}
+
+func (w *stagingWorkspace) restorePreservedDuckFiles(preserved []preservedDuckFile) error {
+	if len(preserved) == 0 {
+		return nil
+	}
+	if err := w.verifyDuckIdentity(); err != nil {
+		return err
+	}
+	var errs []error
+	for _, file := range preserved {
+		if _, err := w.duckRoot.Lstat(file.name); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("stat private stage file %s: %w", file.key, err))
+			continue
+		}
+		preservedInfo, err := w.duckRoot.Lstat(file.preserved)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("stat preserved private stage file %s: %w", file.key, err))
+			continue
+		}
+		if !preservedInfo.Mode().IsRegular() {
+			errs = append(errs, fmt.Errorf("preserved private stage file %s is not regular", file.key))
+			continue
+		}
+		if !os.SameFile(preservedInfo, file.original) {
+			errs = append(errs, fmt.Errorf("preserved private stage file %s identity changed", file.key))
+			continue
+		}
+		if err := w.duckRoot.Link(file.preserved, file.name); err != nil {
+			errs = append(errs, fmt.Errorf("restore preserved private stage file %s: %w", file.key, err))
+			continue
+		}
+		restoredInfo, err := w.duckRoot.Lstat(file.name)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("stat restored private stage file %s: %w", file.key, err))
+			continue
+		}
+		if !os.SameFile(restoredInfo, file.original) {
+			errs = append(errs, fmt.Errorf("restored private stage file %s identity changed", file.key))
 		}
 	}
 	return errors.Join(errs...)
@@ -493,7 +682,10 @@ func (w *stagingWorkspace) verifyDuckIdentity() error {
 	if err := verifyHeldDirectory(w.privateRoot, "scratch", w.scratchRoot, w.scratchInfo); err != nil {
 		return err
 	}
-	return verifyHeldDirectory(w.scratchRoot, "duck", w.duckRoot, w.duckInfo)
+	if err := verifyHeldDirectory(w.scratchRoot, "duck", w.duckRoot, w.duckInfo); err != nil {
+		return fmt.Errorf("private stage directory %s identity changed: %w", stageDuckDirectory, err)
+	}
+	return nil
 }
 
 func (w *stagingWorkspace) cleanup() error {
@@ -517,7 +709,9 @@ func (w *stagingWorkspace) cleanup() error {
 		} else {
 			if err := w.verifyExportsIdentity(); err != nil {
 				errs = append(errs, err)
+				canClean = false
 			} else {
+				errCount := len(errs)
 				for _, file := range []struct {
 					name string
 					key  string
@@ -531,12 +725,20 @@ func (w *stagingWorkspace) cleanup() error {
 				} {
 					w.removeRecordedFile(w.exportsRoot, file.name, file.key, w.verifyExportsIdentity, &errs)
 				}
+				if len(errs) != errCount {
+					canClean = false
+				}
 			}
 			if err := w.verifyDuckIdentity(); err != nil {
 				errs = append(errs, err)
+				canClean = false
 			} else {
+				errCount := len(errs)
 				w.removeRecordedFile(w.duckRoot, "model.duckdb.wal", stageDatabaseWALFile, w.verifyDuckIdentity, &errs)
 				w.removeRecordedFile(w.duckRoot, "model.duckdb", stageDatabaseFile, w.verifyDuckIdentity, &errs)
+				if len(errs) != errCount {
+					canClean = false
+				}
 			}
 		}
 	}
