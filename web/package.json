@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
+    "test:preview": "node --test tests/static-preview.test.mjs",
     "preview": "vite preview",
     "e2e": "playwright test"
   },

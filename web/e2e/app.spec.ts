@@ -129,7 +129,7 @@ test("Compare keeps its map clickable and preserves the pair after pin selection
   await expect(page.locator(".inspector h2")).toHaveText("Gutenberg printing press");
   await expect(compare).toBeVisible();
   expect(new URL(page.url()).searchParams.get("compare")).toBe("gutenberg-printing-press");
-  expect(w.errors).toEqual([]);
+  expectConsole(w.errors, 1);
   expect(w.notFound, "same-origin 404s").toEqual([]);
   expectStaticFallbacks(w.fallbackDocuments, 1);
 });

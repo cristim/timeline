@@ -24,7 +24,6 @@ const staticPreviewBase: Plugin = {
         response.end(readFileSync(fallbackDocument));
         return;
       }
-      request.url = request.url.slice("/timeline".length);
       next();
     });
   },
