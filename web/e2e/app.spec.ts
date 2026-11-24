@@ -254,6 +254,39 @@ test("canonical zero, pending, pair, and legacy Compare routes restore directly"
   expectStaticFallbacks(w.fallbackDocuments, 2);
 });
 
+test("static entity pages are indexable 200 documents and hydrate Compare query params", async ({ page }) => {
+  test.skip(!process.env.E2E_STATIC, "static entity HTML exists only in the built Pages artifact");
+  const response = await page.request.get("./entity/tyrannosaurus-rex/");
+  expect(response.status()).toBe(200);
+  const html = await response.text();
+  expect(html).toContain("<h1>Tyrannosaurus rex</h1>");
+  expect(html).toContain('<link rel="canonical" href="https://cristim.github.io/timeline/entity/tyrannosaurus-rex/"');
+  expect(html).toContain('src="/timeline/assets/');
+  expect(html).toContain('href="/timeline/assets/');
+
+  const w = watch(page);
+  await page.goto("./entity/tyrannosaurus-rex/?compare=african-bush-elephant");
+  await booted(page);
+  await expect(page.locator(".compare-shell .cmp-identities")).toContainText("African bush elephant");
+  expect(new URL(page.url()).searchParams.get("compare")).toBe("african-bush-elephant");
+  expectConsole(w.errors);
+  expect(w.notFound, "same-origin 404s").toEqual([]);
+  expectStaticFallbacks(w.fallbackDocuments, 0);
+});
+
+test("unknown static entity routes remain document and data 404s", async ({ page }) => {
+  test.skip(!process.env.E2E_STATIC, "unknown route status is a static-hosting contract");
+  const w = watch(page);
+  const response = await page.goto("./entity/unknown-but-valid/");
+  expect(response?.status()).toBe(404);
+  await booted(page);
+  await expect(page.locator(".inspector.empty")).toBeVisible();
+  expectConsole(w.errors, 1, 1);
+  expect(w.notFound, "expected missing entity artifact").toHaveLength(1);
+  expect(w.notFound[0]).toMatch(/\/entity\/unknown-but-valid\.json$/);
+  expectStaticFallbacks(w.fallbackDocuments, 1);
+});
+
 test("a syntactically valid missing Compare subject is reported without hiding the first", async ({ page }) => {
   const w = watch(page);
   await page.goto("./entity/tyrannosaurus-rex?compare=missing-subject");
