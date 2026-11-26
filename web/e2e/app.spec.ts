@@ -260,6 +260,8 @@ test("static entity pages are indexable 200 documents and hydrate Compare query 
   expect(response.status()).toBe(200);
   const html = await response.text();
   expect(html).toContain("<h1>Tyrannosaurus rex</h1>");
+  expect(html).toContain("<dt>When</dt><dd>68 Myr ago – 66 Myr ago</dd>");
+  expect(html).toContain('href="https://www.wikidata.org/wiki/Q14332"');
   expect(html).toContain('<link rel="canonical" href="https://cristim.github.io/timeline/entity/tyrannosaurus-rex/"');
   expect(html).toContain('src="/timeline/assets/');
   expect(html).toContain('href="/timeline/assets/');

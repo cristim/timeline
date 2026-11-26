@@ -86,6 +86,20 @@ test("serves the timeline static preview without redirect loops", async () => {
   assert.equal(deepRoute.statusCode, 404);
   assert.equal(deepRoute.body, readFileSync(fallbackDocument, "utf8"));
 
+  const staticEntityPage = await request(
+    `${timelinePreview.origin}/timeline/entity/tyrannosaurus-rex/?compare=african-bush-elephant`,
+    "text/html",
+  );
+  assert.equal(staticEntityPage.statusCode, 200);
+  assert.match(staticEntityPage.body, /<h1>Tyrannosaurus rex<\/h1>/);
+
+  const unknownStaticEntityPage = await request(
+    `${timelinePreview.origin}/timeline/entity/unknown-but-valid/`,
+    "text/html",
+  );
+  assert.equal(unknownStaticEntityPage.statusCode, 404);
+  assert.equal(unknownStaticEntityPage.body, readFileSync(fallbackDocument, "utf8"));
+
   const rootRedirect = await request(`${timelinePreview.origin}/`);
   assert.equal(rootRedirect.statusCode, 302);
   assert.equal(rootRedirect.headers.get("location"), "/timeline/");

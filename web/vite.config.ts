@@ -18,7 +18,10 @@ const staticPreviewBase: Plugin = {
         response.end("not found");
         return;
       }
-      if (pathname !== "/" && request.headers.accept?.includes("text/html")) {
+      const hasStaticIndex =
+        pathname.endsWith("/") &&
+        existsSync(fileURLToPath(new URL(`.${pathname}index.html`, `file://${previewRoot}`)));
+      if (pathname !== "/" && !hasStaticIndex && request.headers.accept?.includes("text/html")) {
         response.statusCode = 404;
         response.setHeader("Content-Type", "text/html; charset=utf-8");
         response.end(readFileSync(fallbackDocument));

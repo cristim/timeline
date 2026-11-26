@@ -60,6 +60,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - run: node --test ../scripts/render-static-entity-pages.test.mjs
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
